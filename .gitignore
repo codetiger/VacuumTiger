@@ -27,3 +27,27 @@ fp-info-cache
 # Exported BOM files
 *.xml
 *.csv
+
+# Rust
+/target/
+**/target
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.so
+*.a
+*.lib
+*.dylib

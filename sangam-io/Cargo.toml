@@ -1,0 +1,36 @@
+[package]
+name = "sangam-io"
+version = "0.1.0"
+edition = "2024"
+authors = ["CodeTiger"]
+license = "Apache-2.0"
+repository = "https://github.com/codetiger/VacuumTiger"
+description = "High-level robot API for robotic vacuum cleaners - where robotic signals meet 🤖🌊"
+keywords = ["robotics", "vacuum", "embedded-linux", "robot-api"]
+categories = ["robotics", "api-bindings"]
+
+[dependencies]
+# Serial I/O
+serialport = { version = "4.5", optional = true }
+
+# Error handling
+thiserror = "2.0"
+
+# Logging
+log = "0.4"
+
+# Utilities
+parking_lot = "0.12"  # For faster mutexes
+
+[dev-dependencies]
+env_logger = "0.11"
+
+[features]
+default = ["std", "gd32"]
+std = ["serialport"]
+gd32 = []
+lidar = []
+
+[[example]]
+name = "test_lidar_scenario"
+required-features = ["std", "gd32", "lidar"]
