@@ -37,7 +37,7 @@ pub enum Error {
         /// Expected checksum value
         expected: u8,
         /// Actual checksum value
-        actual: u8
+        actual: u8,
     },
 
     /// Device error code

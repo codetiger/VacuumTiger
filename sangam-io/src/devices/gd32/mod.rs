@@ -80,11 +80,39 @@ impl Gd32Driver {
     /// Sends initialization command every 200ms for up to 5 seconds
     /// until GD32 responds with CMD=0x15 status packet.
     fn initialize_device(transport: &Arc<Mutex<Box<dyn Transport>>>) -> Result<()> {
+        // STEP 1: Flush any leftover data from previous session
+        log::debug!("GD32: Flushing serial buffer...");
+        {
+            let mut transport = transport.lock();
+            let mut discard = vec![0u8; 1024];
+            let mut total_flushed = 0;
+
+            // Read until buffer is empty
+            while transport.available()? > 0 {
+                let read = transport.read(&mut discard)?;
+                total_flushed += read;
+                if read == 0 {
+                    break;
+                }
+            }
+
+            if total_flushed > 0 {
+                log::debug!("GD32: Flushed {} bytes of old data", total_flushed);
+            }
+        }
+
+        // Small delay to ensure buffer is clear
+        thread::sleep(Duration::from_millis(100));
+
+        // STEP 2: Send initialization commands
         let init_cmd = Gd32Command::default_initialize();
         let init_packet = init_cmd.encode();
         let start = Instant::now();
         let timeout = Duration::from_secs(5);
         let retry_interval = Duration::from_millis(200);
+
+        // Packet buffer to accumulate bytes across reads
+        let mut packet_buffer: Vec<u8> = Vec::new();
 
         while start.elapsed() < timeout {
             // Send initialization command
@@ -96,10 +124,11 @@ impl Gd32Driver {
 
             log::debug!("GD32: Sent initialization command");
 
-            // Try to read response
+            // Try to read response with packet accumulation
             let read_start = Instant::now();
             while read_start.elapsed() < retry_interval {
-                if let Some(response) = Self::try_read_response(transport)?
+                if let Some(response) =
+                    Self::try_read_response_buffered(transport, &mut packet_buffer)?
                     && response.is_status_packet()
                 {
                     log::info!("GD32: Device initialized successfully");
@@ -123,35 +152,77 @@ impl Gd32Driver {
         Ok(())
     }
 
-    /// Try to read a response packet (non-blocking)
-    fn try_read_response(
+    /// Try to read a response packet with buffering (non-blocking)
+    fn try_read_response_buffered(
         transport: &Arc<Mutex<Box<dyn Transport>>>,
+        packet_buffer: &mut Vec<u8>,
     ) -> Result<Option<Gd32Response>> {
         let mut transport = transport.lock();
 
         // Check if data is available
         let available = transport.available()?;
-        if available < 6 {
-            // Minimum packet size
-            return Ok(None);
-        }
+        if available > 0 {
+            // Read new data and append to buffer
+            let mut temp_buffer = vec![0u8; available.min(256)];
+            let bytes_read = transport.read(&mut temp_buffer)?;
 
-        // Try to read a full packet
-        let mut buffer = vec![0u8; 256];
-        let bytes_read = transport.read(&mut buffer)?;
-
-        if bytes_read == 0 {
-            return Ok(None);
-        }
-
-        // Try to decode the packet
-        match Gd32Response::decode(&buffer[..bytes_read]) {
-            Ok(response) => Ok(Some(response)),
-            Err(e) => {
-                log::warn!("GD32: Failed to decode packet: {}", e);
-                Ok(None)
+            if bytes_read > 0 {
+                packet_buffer.extend_from_slice(&temp_buffer[..bytes_read]);
+                log::debug!(
+                    "GD32: Read {} bytes, buffer now {} bytes",
+                    bytes_read,
+                    packet_buffer.len()
+                );
             }
         }
+
+        // Release lock before processing
+        drop(transport);
+
+        // Try to decode a packet from accumulated buffer
+        if packet_buffer.len() >= 6 {
+            match Gd32Response::decode_with_sync(packet_buffer) {
+                Ok((bytes_consumed, response)) => {
+                    // Remove consumed bytes from buffer
+                    packet_buffer.drain(..bytes_consumed);
+                    log::debug!(
+                        "GD32: Decoded packet (CMD=0x{:02X}), {} bytes remaining in buffer",
+                        response.cmd_id,
+                        packet_buffer.len()
+                    );
+                    return Ok(Some(response));
+                }
+                Err(e) => {
+                    // If buffer is getting too large without valid packets, discard some bytes to make progress
+                    log::debug!(
+                        "GD32: Decode error: {}, buffer size: {}",
+                        e,
+                        packet_buffer.len()
+                    );
+                    if packet_buffer.len() > 512 {
+                        // Search for sync bytes manually, discard everything before first sync
+                        let mut found_sync = false;
+                        for i in 0..packet_buffer.len().saturating_sub(1) {
+                            if packet_buffer[i] == 0xFA && packet_buffer[i + 1] == 0xFB {
+                                // Found sync, keep from here
+                                packet_buffer.drain(..i);
+                                found_sync = true;
+                                log::debug!("GD32: Discarded {} bytes of garbage, found sync", i);
+                                break;
+                            }
+                        }
+                        if !found_sync {
+                            // No sync found, keep only last byte (might be first half of sync)
+                            let to_discard = packet_buffer.len() - 1;
+                            packet_buffer.drain(..to_discard);
+                            log::debug!("GD32: No sync found, discarded {} bytes", to_discard);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     /// Set lidar motor power

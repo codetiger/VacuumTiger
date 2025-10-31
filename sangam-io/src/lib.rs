@@ -12,23 +12,20 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use sangam_io::prelude::*;
+//! use sangam_io::devices::Gd32Driver;
+//! use sangam_io::drivers::MotorDriver;
+//! use sangam_io::transport::SerialTransport;
 //!
 //! # fn main() -> sangam_io::Result<()> {
-//! // Build robot with GD32 motor controller
-//! let mut robot = Robot::builder()
-//!     .with_gd32("/dev/ttyS3")?
-//!     .build()?;
+//! // Initialize GD32 motor controller
+//! let transport = SerialTransport::open("/dev/ttyS3", 115200)?;
+//! let mut motor = Gd32Driver::new(transport)?;
 //!
-//! // Move forward
-//! robot.move_forward(0.5)?; // 0.5 m/s
+//! // Set velocity (forward at 0.2 m/s, no rotation)
+//! motor.set_velocity(0.2, 0.0)?;
 //!
-//! // Get sensor data
-//! let odom = robot.odometry()?;
-//! let battery = robot.battery()?;
-//!
-//! println!("Position: ({}, {})", odom.x, odom.y);
-//! println!("Battery: {}%", battery.level);
+//! // Control lidar power
+//! motor.set_lidar_power(true)?;
 //! # Ok(())
 //! # }
 //! ```

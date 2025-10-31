@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 2: Initialize Delta-2D Lidar
     log::info!("Step 2: Initializing Delta-2D Lidar...");
-    let lidar_transport = SerialTransport::open("/dev/ttyS2", 115200)?;
+    let lidar_transport = SerialTransport::open("/dev/ttyS1", 115200)?;
     let mut lidar = Delta2DDriver::new(lidar_transport)?;
     log::info!("✓ Lidar driver initialized");
     log::info!("");
