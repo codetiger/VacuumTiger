@@ -19,9 +19,11 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(20);
 ///
 /// The thread will:
 /// 1. Send CMD=0x66 heartbeat every 20ms with motor speed commands
-/// 2. Read and process CMD=0x15 status packets
-/// 3. Update shared state with encoder and battery data
-/// 4. Run until shutdown flag is set
+/// 2. Send CMD=0x71 telemetry query every ~27ms (matches AuxCtrl frequency)
+/// 3. Send CMD=0x06 wake command every ~250ms (matches AuxCtrl frequency)
+/// 4. Read and process CMD=0x15 status packets
+/// 5. Update shared state with encoder and battery data
+/// 6. Run until shutdown flag is set
 pub fn spawn_heartbeat_thread(
     transport: Arc<Mutex<Box<dyn Transport>>>,
     state: Arc<Mutex<Gd32State>>,
@@ -66,6 +68,12 @@ pub fn spawn_heartbeat_thread(
             // Send packet
             {
                 let mut transport = transport.lock();
+
+                // Log TX on first heartbeat and every 50th
+                if heartbeat_count == 1 || heartbeat_count % 50 == 0 {
+                    log::debug!("GD32: TX {} bytes: {:02X?}", packet.len(), &packet[..packet.len().min(32)]);
+                }
+
                 if let Err(e) = transport.write(&packet) {
                     log::error!("GD32: Heartbeat send error: {}", e);
                     continue;
@@ -74,6 +82,13 @@ pub fn spawn_heartbeat_thread(
                     log::error!("GD32: Heartbeat flush error: {}", e);
                     continue;
                 }
+            }
+
+            // Send CMD=0x06 wake command periodically (every ~250ms)
+            // AuxCtrl sends this 1,421x in 6min = ~4/sec = every ~250ms
+            // At 20ms intervals, every 12th heartbeat = 240ms
+            if heartbeat_count % 12 == 0 {
+                send_command_unlocked(&transport, &Gd32Command::Wake);
             }
 
             if heartbeat_count % 50 == 0 {
@@ -94,6 +109,14 @@ pub fn spawn_heartbeat_thread(
 
         log::info!("GD32: Heartbeat thread stopped");
     })
+}
+
+/// Send a command without logging (helper for heartbeat loop)
+fn send_command_unlocked(transport: &Arc<Mutex<Box<dyn Transport>>>, cmd: &Gd32Command) {
+    let packet = cmd.encode();
+    let mut transport = transport.lock();
+    let _ = transport.write(&packet);
+    let _ = transport.flush();
 }
 
 /// Read and process any available response packets
@@ -119,9 +142,22 @@ fn read_and_process_responses(
         return Ok(());
     }
 
+    // Log raw bytes received
+    log::debug!(
+        "GD32: RX {} bytes: {:02X?}",
+        bytes_read,
+        &buffer[..bytes_read.min(32)]
+    );
+
     // Try to decode response
     match Gd32Response::decode(&buffer[..bytes_read]) {
         Ok(response) => {
+            log::debug!(
+                "GD32: RX decoded - CMD=0x{:02X}, payload_len={}",
+                response.cmd_id,
+                response.payload.len()
+            );
+
             if response.is_status_packet() {
                 // Update shared state
                 let mut state = state.lock();
@@ -133,16 +169,19 @@ fn read_and_process_responses(
                 state.error_code = response.error_code;
 
                 log::debug!(
-                    "GD32: Status update - Battery: {:.2}V ({}%), Encoders: L={}, R={}",
+                    "GD32: Status update - Battery: {:.2}V ({}%), Encoders: L={}, R={}, Error={}",
                     response.battery_voltage,
                     response.battery_level,
                     response.encoder_left,
-                    response.encoder_right
+                    response.encoder_right,
+                    response.error_code
                 );
+            } else {
+                log::debug!("GD32: Non-status response: CMD=0x{:02X}", response.cmd_id);
             }
         }
         Err(e) => {
-            log::debug!("GD32: Failed to decode packet: {}", e);
+            log::warn!("GD32: Failed to decode packet: {} (bytes: {:02X?})", e, &buffer[..bytes_read.min(16)]);
         }
     }
 

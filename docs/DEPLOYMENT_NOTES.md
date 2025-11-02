@@ -12,7 +12,7 @@ scp binary root@vacuum:/tmp/test
 
 **Solution**: Use `cat` over SSH instead
 ```bash
-cat binary | sshpass -p 'vacuum@123' ssh root@vacuum "cat > /tmp/test && chmod +x /tmp/test"
+cat binary | sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "cat > /tmp/test && chmod +x /tmp/test"
 ```
 
 This works because:
@@ -51,22 +51,22 @@ cargo build --release --example test_lidar_scenario --features="std,gd32,lidar"
 
 # Step 2: Deploy binary
 cat ../target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario | \
-  sshpass -p 'vacuum@123' ssh root@vacuum "cat > /tmp/test_lidar && chmod +x /tmp/test_lidar"
+  sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "cat > /tmp/test_lidar && chmod +x /tmp/test_lidar"
 
 # Step 3: Disable AuxCtrl
-sshpass -p 'vacuum@123' ssh root@vacuum "mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && killall -9 AuxCtrl"
+sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && killall -9 AuxCtrl"
 
 # Step 4: Run test
-sshpass -p 'vacuum@123' ssh root@vacuum "RUST_LOG=debug /tmp/test_lidar"
+sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "RUST_LOG=debug /tmp/test_lidar"
 
 # Step 5: Restore original firmware
-sshpass -p 'vacuum@123' ssh root@vacuum "mv /usr/sbin/AuxCtrl.bak /usr/sbin/AuxCtrl"
+sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "mv /usr/sbin/AuxCtrl.bak /usr/sbin/AuxCtrl"
 ```
 
 ### 4. Alternative: One-Command Test (with auto-restore)
 
 ```bash
-sshpass -p 'vacuum@123' ssh root@vacuum "
+sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "
   mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && \
   killall -9 AuxCtrl 2>/dev/null; \
   RUST_LOG=debug /tmp/test_lidar; \

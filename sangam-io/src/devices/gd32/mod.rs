@@ -34,38 +34,83 @@ pub struct Gd32Driver {
 impl Gd32Driver {
     /// Create new GD32 driver and initialize device
     ///
-    /// This will:
-    /// 1. Send CMD=0x08 initialization loop (up to 5 seconds)
-    /// 2. Send wake command (CMD=0x06)
-    /// 3. Set control mode (CMD=0x8D)
-    /// 4. Start heartbeat thread (CMD=0x66 every 20ms)
+    /// This matches AuxCtrl's exact initialization sequence from MITM capture:
+    /// 1. CMD=0x0C (Init sync), 0x8D (LED), 0x07 (Version), 0x65 (Motor type), 0x71 (Telemetry)
+    /// 2. CMD=0x8D burst (4x at T+245ms)
+    /// 3. CMD=0x06 (Wake at T+253ms)
+    /// 4. Brush init: 0x69, 0x6B (at T+280ms)
+    /// 5. CMD=0x66 heartbeat starts (at T+289ms)
     pub fn new<T: Transport + 'static>(transport: T) -> Result<Self> {
         let transport = Arc::new(Mutex::new(Box::new(transport) as Box<dyn Transport>));
         let state = Arc::new(Mutex::new(Gd32State::default()));
         let shutdown = Arc::new(Mutex::new(false));
 
-        // Phase 1: Initialization sequence
-        log::info!("GD32: Starting initialization sequence");
-        Self::initialize_device(&transport)?;
+        // Phase 1: Initial command burst (T+0ms) - matches AuxCtrl
+        log::info!("GD32: Sending initial command burst");
 
-        // Phase 2: Wake and setup
-        log::info!("GD32: Sending wake command");
-        Self::send_command(&transport, &Gd32Command::Wake)?;
-        thread::sleep(Duration::from_millis(50));
+        // CMD=0x0C - Init sync (first command AuxCtrl sends)
+        log::debug!("  -> CMD=0x0C (InitSync)");
+        Self::send_command(&transport, &Gd32Command::InitSync)?;
+        thread::sleep(Duration::from_millis(8));
 
-        log::info!("GD32: Setting control mode");
+        // CMD=0x8D - Button LED (early)
+        log::debug!("  -> CMD=0x8D (ButtonLED)");
         Self::send_command(&transport, &Gd32Command::ButtonLedState(0x01))?;
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(8));
 
-        // Phase 3: Start heartbeat thread
-        log::info!("GD32: Starting heartbeat thread");
+        // CMD=0x07 - System setup/version query
+        log::debug!("  -> CMD=0x07 (SystemSetup)");
+        Self::send_command(&transport, &Gd32Command::SystemSetup)?;
+        thread::sleep(Duration::from_millis(8));
+
+        // CMD=0x65 - Motor control type (mode=0)
+        log::debug!("  -> CMD=0x65 (MotorType=0)");
+        Self::send_command(&transport, &Gd32Command::MotorType(0))?;
+        thread::sleep(Duration::from_millis(8));
+
+        // CMD=0x71 - Lidar PWM (set to 0 initially, will be set properly when powering lidar)
+        log::debug!("  -> CMD=0x71 (LidarPWM=0)");
+        Self::send_command(&transport, &Gd32Command::LidarPWM(0))?;
+
+        // Phase 2: Wait ~245ms then send LED burst
+        log::info!("GD32: Waiting 245ms before LED burst");
+        thread::sleep(Duration::from_millis(200)); // Conservative timing
+
+        log::info!("GD32: Sending button LED burst (4x)");
+        for i in 0..4 {
+            Self::send_command(&transport, &Gd32Command::ButtonLedState(0x01))?;
+            if i < 3 {
+                thread::sleep(Duration::from_millis(8));
+            }
+        }
+
+        // Phase 3: Wake command (T+253ms)
+        thread::sleep(Duration::from_millis(8));
+        log::info!("GD32: Sending wake command (CMD=0x06)");
+        Self::send_command(&transport, &Gd32Command::Wake)?;
+
+        // Phase 4: Brush initialization (T+280ms)
+        thread::sleep(Duration::from_millis(27));
+        log::info!("GD32: Initializing brushes");
+        Self::send_command(&transport, &Gd32Command::SideBrushSpeed(0))?;
+        thread::sleep(Duration::from_millis(1));
+        Self::send_command(&transport, &Gd32Command::BrushControl(0x64))?; // Value from MITM log
+
+        // Phase 5: Start heartbeat thread (T+289ms)
+        thread::sleep(Duration::from_millis(9));
+        log::info!("GD32: Starting heartbeat thread (CMD=0x66)");
         let heartbeat_thread = Some(heartbeat::spawn_heartbeat_thread(
             Arc::clone(&transport),
             Arc::clone(&state),
             Arc::clone(&shutdown),
         ));
 
-        log::info!("GD32: Initialization complete");
+        // Wait for GD32 to respond with STATUS_DATA
+        log::info!("GD32: Waiting for STATUS_DATA (CMD=0x15) from GD32...");
+        Self::wait_for_status_packet(&transport, &state)?;
+        log::info!("GD32: Received STATUS_DATA - GD32 is ready");
+
+        log::info!("GD32: Initialization complete - ready for operations");
 
         Ok(Gd32Driver {
             transport,
@@ -75,160 +120,96 @@ impl Gd32Driver {
         })
     }
 
-    /// Initialize device with CMD=0x08 loop
+
+    /// Wait for GD32 to send CMD=0x15 STATUS_DATA packet
     ///
-    /// Sends initialization command every 200ms for up to 5 seconds
-    /// until GD32 responds with CMD=0x15 status packet.
-    fn initialize_device(transport: &Arc<Mutex<Box<dyn Transport>>>) -> Result<()> {
-        // STEP 1: Flush any leftover data from previous session
-        log::debug!("GD32: Flushing serial buffer...");
-        {
-            let mut transport = transport.lock();
-            let mut discard = vec![0u8; 1024];
-            let mut total_flushed = 0;
-
-            // Read until buffer is empty
-            while transport.available()? > 0 {
-                let read = transport.read(&mut discard)?;
-                total_flushed += read;
-                if read == 0 {
-                    break;
-                }
-            }
-
-            if total_flushed > 0 {
-                log::debug!("GD32: Flushed {} bytes of old data", total_flushed);
-            }
-        }
-
-        // Small delay to ensure buffer is clear
-        thread::sleep(Duration::from_millis(100));
-
-        // STEP 2: Send initialization commands
-        let init_cmd = Gd32Command::default_initialize();
-        let init_packet = init_cmd.encode();
+    /// The heartbeat thread receives and processes status packets.
+    /// We check the shared state to see if battery voltage has been populated,
+    /// which indicates that at least one status packet has been received.
+    fn wait_for_status_packet(
+        _transport: &Arc<Mutex<Box<dyn Transport>>>,
+        state: &Arc<Mutex<Gd32State>>,
+    ) -> Result<()> {
         let start = Instant::now();
-        let timeout = Duration::from_secs(5);
-        let retry_interval = Duration::from_millis(200);
-
-        // Packet buffer to accumulate bytes across reads
-        let mut packet_buffer: Vec<u8> = Vec::new();
+        let timeout = Duration::from_secs(2);
 
         while start.elapsed() < timeout {
-            // Send initialization command
-            {
-                let mut transport = transport.lock();
-                transport.write(&init_packet)?;
-                transport.flush()?;
+            // Check if we've received status data from heartbeat thread
+            let current_state = state.lock();
+            if current_state.battery_voltage > 0.0 {
+                // Battery voltage populated means we got CMD=0x15
+                drop(current_state);
+                return Ok(());
             }
+            drop(current_state);
 
-            log::debug!("GD32: Sent initialization command");
-
-            // Try to read response with packet accumulation
-            let read_start = Instant::now();
-            while read_start.elapsed() < retry_interval {
-                if let Some(response) =
-                    Self::try_read_response_buffered(transport, &mut packet_buffer)?
-                    && response.is_status_packet()
-                {
-                    log::info!("GD32: Device initialized successfully");
-                    return Ok(());
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
+            thread::sleep(Duration::from_millis(20)); // Check every heartbeat interval
         }
 
         Err(Error::InitializationFailed(
-            "GD32 initialization timeout (no response after 5 seconds)".into(),
+            "GD32 did not send STATUS_DATA (CMD=0x15) after 2 seconds".into(),
         ))
     }
 
     /// Send a command to the GD32
     fn send_command(transport: &Arc<Mutex<Box<dyn Transport>>>, cmd: &Gd32Command) -> Result<()> {
         let packet = cmd.encode();
+        log::debug!("GD32: TX CMD=0x{:02X}, {} bytes: {:02X?}", cmd.cmd_id(), packet.len(), &packet);
         let mut transport = transport.lock();
         transport.write(&packet)?;
         transport.flush()?;
         Ok(())
     }
 
-    /// Try to read a response packet with buffering (non-blocking)
-    fn try_read_response_buffered(
-        transport: &Arc<Mutex<Box<dyn Transport>>>,
-        packet_buffer: &mut Vec<u8>,
-    ) -> Result<Option<Gd32Response>> {
-        let mut transport = transport.lock();
 
-        // Check if data is available
-        let available = transport.available()?;
-        if available > 0 {
-            // Read new data and append to buffer
-            let mut temp_buffer = vec![0u8; available.min(256)];
-            let bytes_read = transport.read(&mut temp_buffer)?;
-
-            if bytes_read > 0 {
-                packet_buffer.extend_from_slice(&temp_buffer[..bytes_read]);
-                log::debug!(
-                    "GD32: Read {} bytes, buffer now {} bytes",
-                    bytes_read,
-                    packet_buffer.len()
-                );
-            }
-        }
-
-        // Release lock before processing
-        drop(transport);
-
-        // Try to decode a packet from accumulated buffer
-        if packet_buffer.len() >= 6 {
-            match Gd32Response::decode_with_sync(packet_buffer) {
-                Ok((bytes_consumed, response)) => {
-                    // Remove consumed bytes from buffer
-                    packet_buffer.drain(..bytes_consumed);
-                    log::debug!(
-                        "GD32: Decoded packet (CMD=0x{:02X}), {} bytes remaining in buffer",
-                        response.cmd_id,
-                        packet_buffer.len()
-                    );
-                    return Ok(Some(response));
-                }
-                Err(e) => {
-                    // If buffer is getting too large without valid packets, discard some bytes to make progress
-                    log::debug!(
-                        "GD32: Decode error: {}, buffer size: {}",
-                        e,
-                        packet_buffer.len()
-                    );
-                    if packet_buffer.len() > 512 {
-                        // Search for sync bytes manually, discard everything before first sync
-                        let mut found_sync = false;
-                        for i in 0..packet_buffer.len().saturating_sub(1) {
-                            if packet_buffer[i] == 0xFA && packet_buffer[i + 1] == 0xFB {
-                                // Found sync, keep from here
-                                packet_buffer.drain(..i);
-                                found_sync = true;
-                                log::debug!("GD32: Discarded {} bytes of garbage, found sync", i);
-                                break;
-                            }
-                        }
-                        if !found_sync {
-                            // No sync found, keep only last byte (might be first half of sync)
-                            let to_discard = packet_buffer.len() - 1;
-                            packet_buffer.drain(..to_discard);
-                            log::debug!("GD32: No sync found, discarded {} bytes", to_discard);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(None)
+    /// Set motor control mode via CMD=0x65
+    ///
+    /// Mode values:
+    /// - 0x00: Initialization/idle mode
+    /// - 0x02: Navigation/cleaning mode (required for lidar control)
+    pub fn set_motor_mode(&mut self, mode: u8) -> Result<()> {
+        log::info!("GD32: Setting motor mode: 0x{:02X}", mode);
+        Self::send_command(&self.transport, &Gd32Command::MotorType(mode))?;
+        log::debug!("GD32: Sent CMD=0x65 (MotorType=0x{:02X})", mode);
+        Ok(())
     }
 
-    /// Set lidar motor power
-    pub fn set_lidar_power(&mut self, on: bool) -> Result<()> {
-        log::info!("GD32: Setting lidar power: {}", on);
-        Self::send_command(&self.transport, &Gd32Command::LidarPower(on))
+    /// Send lidar preparation command via CMD=0xA2
+    ///
+    /// Must be sent before enabling lidar power (CMD=0x97).
+    /// Discovered via MITM capture of AuxCtrl cleaning session.
+    pub fn send_lidar_prep(&mut self) -> Result<()> {
+        log::info!("GD32: Sending lidar preparation command");
+        Self::send_command(&self.transport, &Gd32Command::LidarPrep)?;
+        log::debug!("GD32: Sent CMD=0xA2 (LidarPrep)");
+        Ok(())
+    }
+
+    /// Set lidar motor power via CMD=0x97
+    ///
+    /// Controls GPIO 233 through GD32 firmware using CMD=0x97.
+    /// Discovered via AuxCtrl decompilation at address 0x00060988.
+    /// NOTE: Must send CMD=0xA2 (LidarPrep) before this command!
+    pub fn set_lidar_power(&mut self, enable: bool) -> Result<()> {
+        log::info!("GD32: Setting lidar power: {}", enable);
+        Self::send_command(&self.transport, &Gd32Command::LidarPower(enable))?;
+        log::debug!("GD32: Sent CMD=0x97 (LidarPower={})", enable);
+        Ok(())
+    }
+
+    /// Set lidar motor PWM speed via CMD=0x71
+    ///
+    /// Controls lidar motor speed (0-100%).
+    /// Discovered via AuxCtrl decompilation at address 0x0003f604.
+    ///
+    /// # Arguments
+    /// * `pwm_percent` - PWM duty cycle (0-100%). Values outside range will be clamped.
+    pub fn set_lidar_pwm(&mut self, pwm_percent: i32) -> Result<()> {
+        let clamped = pwm_percent.clamp(0, 100);
+        log::info!("GD32: Setting lidar PWM: {}%", clamped);
+        Self::send_command(&self.transport, &Gd32Command::LidarPWM(pwm_percent))?;
+        log::debug!("GD32: Sent CMD=0x71 (LidarPWM={})", clamped);
+        Ok(())
     }
 
     /// Set vacuum blower speed (0-100%)

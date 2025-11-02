@@ -59,18 +59,36 @@ fn calculate_checksum(cmd_id: u8, payload: &[u8]) -> Option<[u8; 2]> {
 pub enum CommandId {
     /// Initialize/wake-up sequence
     Initialize = 0x08,
+    /// Initialization sync (AuxCtrl uses this as first command)
+    InitSync = 0x0C,
     /// Wake/enable motors
     Wake = 0x06,
+    /// System setup/configuration
+    SystemSetup = 0x07,
+    /// Calibration/sensor configuration
+    CalibrationConfig = 0x0D,
+    /// Motor control type configuration
+    MotorType = 0x65,
     /// Heartbeat/keep-alive
     Heartbeat = 0x66,
     /// Motor speed control
     MotorSpeed = 0x67,
     /// Blower speed control
     BlowerSpeed = 0x68,
+    /// Side brush speed
+    SideBrushSpeed = 0x69,
+    /// Rolling brush speed
+    RollingBrushSpeed = 0x6A,
+    /// Brush control
+    BrushControl = 0x6B,
+    /// Lidar PWM speed control (0-100%)
+    LidarPWM = 0x71,
     /// Button LED state
     ButtonLedState = 0x8D,
     /// Lidar power control
     LidarPower = 0x97,
+    /// Lidar preparation command (sent before power on)
+    LidarPrep = 0xA2,
     /// Status data response
     StatusData = 0x15,
 }
@@ -83,8 +101,16 @@ pub enum Gd32Command {
         /// Initialization payload (96 bytes)
         payload: [u8; 96],
     },
+    /// Initialization sync (first command sent by AuxCtrl)
+    InitSync,
     /// Wake command
     Wake,
+    /// System setup/configuration
+    SystemSetup,
+    /// Calibration/sensor configuration
+    CalibrationConfig,
+    /// Motor control type configuration
+    MotorType(u8),
     /// Heartbeat with 8-byte data
     Heartbeat {
         /// Heartbeat data (8 bytes)
@@ -99,10 +125,20 @@ pub enum Gd32Command {
     },
     /// Blower speed
     BlowerSpeed(u16),
+    /// Side brush speed
+    SideBrushSpeed(u8),
+    /// Rolling brush speed
+    RollingBrushSpeed(u8),
+    /// Brush control
+    BrushControl(u8),
+    /// Lidar PWM speed control (0-100%)
+    LidarPWM(i32),
     /// Button LED state
     ButtonLedState(u8),
     /// Lidar power control
     LidarPower(bool),
+    /// Lidar preparation command (sent before power on)
+    LidarPrep,
 }
 
 impl Gd32Command {
@@ -110,12 +146,21 @@ impl Gd32Command {
     pub fn cmd_id(&self) -> u8 {
         match self {
             Gd32Command::Initialize { .. } => CommandId::Initialize as u8,
+            Gd32Command::InitSync => CommandId::InitSync as u8,
             Gd32Command::Wake => CommandId::Wake as u8,
+            Gd32Command::SystemSetup => CommandId::SystemSetup as u8,
+            Gd32Command::CalibrationConfig => CommandId::CalibrationConfig as u8,
+            Gd32Command::MotorType(_) => CommandId::MotorType as u8,
             Gd32Command::Heartbeat { .. } => CommandId::Heartbeat as u8,
             Gd32Command::MotorSpeed { .. } => CommandId::MotorSpeed as u8,
             Gd32Command::BlowerSpeed(_) => CommandId::BlowerSpeed as u8,
+            Gd32Command::SideBrushSpeed(_) => CommandId::SideBrushSpeed as u8,
+            Gd32Command::RollingBrushSpeed(_) => CommandId::RollingBrushSpeed as u8,
+            Gd32Command::BrushControl(_) => CommandId::BrushControl as u8,
+            Gd32Command::LidarPWM(_) => CommandId::LidarPWM as u8,
             Gd32Command::ButtonLedState(_) => CommandId::ButtonLedState as u8,
             Gd32Command::LidarPower(_) => CommandId::LidarPower as u8,
+            Gd32Command::LidarPrep => CommandId::LidarPrep as u8,
         }
     }
 
@@ -123,7 +168,11 @@ impl Gd32Command {
     fn build_payload(&self) -> Vec<u8> {
         match self {
             Gd32Command::Initialize { payload } => payload.to_vec(),
+            Gd32Command::InitSync => vec![0x01],
             Gd32Command::Wake => vec![0x00],
+            Gd32Command::SystemSetup => vec![0x00],
+            Gd32Command::CalibrationConfig => vec![0x00],
+            Gd32Command::MotorType(mode) => vec![*mode],
             Gd32Command::Heartbeat { data } => data.to_vec(),
             Gd32Command::MotorSpeed { left, right } => {
                 let mut payload = Vec::with_capacity(8);
@@ -132,8 +181,17 @@ impl Gd32Command {
                 payload
             }
             Gd32Command::BlowerSpeed(speed) => speed.to_le_bytes().to_vec(),
+            Gd32Command::SideBrushSpeed(speed) => vec![*speed],
+            Gd32Command::RollingBrushSpeed(speed) => vec![*speed],
+            Gd32Command::BrushControl(value) => vec![*value],
+            Gd32Command::LidarPWM(pwm_percent) => {
+                // Clamp to [0, 100] range and convert to 4-byte little-endian
+                let pwm = (*pwm_percent).clamp(0, 100);
+                (pwm as u32).to_le_bytes().to_vec()
+            }
             Gd32Command::ButtonLedState(state) => vec![*state],
             Gd32Command::LidarPower(on) => vec![if *on { 0x01 } else { 0x00 }],
+            Gd32Command::LidarPrep => vec![0x10, 0x0E, 0x00, 0x00],
         }
     }
 
@@ -454,13 +512,35 @@ mod tests {
 
     #[test]
     fn test_lidar_power_encoding() {
+        // Test power ON
         let cmd = Gd32Command::LidarPower(true);
         let packet = cmd.encode();
 
-        assert_eq!(packet[0], 0xFA);
-        assert_eq!(packet[1], 0xFB);
-        assert_eq!(packet[3], 0x97); // Lidar power CMD
-        assert_eq!(packet[4], 0x01); // ON
+        // Packet format: [0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_HIGH] [CRC_LOW]
+        // For CMD=0x97, PAYLOAD=[0x01]:
+        // data = [0x97, 0x01] (even bytes)
+        // word = 0x9701
+        // checksum = 0x9701 → [0x97, 0x01]
+        assert_eq!(packet.len(), 7); // SYNC(2) + LEN(1) + CMD(1) + PAYLOAD(1) + CRC(2)
+        assert_eq!(packet[0], 0xFA); // SYNC1
+        assert_eq!(packet[1], 0xFB); // SYNC2
+        assert_eq!(packet[2], 0x04); // LEN = CMD(1) + PAYLOAD(1) + CRC(2)
+        assert_eq!(packet[3], 0x97); // CMD (Lidar power)
+        assert_eq!(packet[4], 0x01); // PAYLOAD (ON)
+        assert_eq!(packet[5], 0x97); // CRC high byte
+        assert_eq!(packet[6], 0x01); // CRC low byte
+
+        // Test power OFF
+        let cmd = Gd32Command::LidarPower(false);
+        let packet = cmd.encode();
+
+        // For CMD=0x97, PAYLOAD=[0x00]:
+        // data = [0x97, 0x00]
+        // word = 0x9700
+        // checksum = 0x9700 → [0x97, 0x00]
+        assert_eq!(packet[4], 0x00); // PAYLOAD (OFF)
+        assert_eq!(packet[5], 0x97); // CRC high byte
+        assert_eq!(packet[6], 0x00); // CRC low byte
     }
 
     #[test]

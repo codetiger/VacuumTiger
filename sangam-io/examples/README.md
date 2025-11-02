@@ -29,7 +29,7 @@ Binary location: `target/armv7-unknown-linux-musleabihf/release/examples/test_li
 ```bash
 # Deploy and run
 cat target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario | \
-  sshpass -p "<password>" ssh root@vacuum \
+  sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum \
   "killall -9 AuxCtrl 2>/dev/null; cat > /tmp/test && chmod +x /tmp/test && /tmp/test"
 ```
 

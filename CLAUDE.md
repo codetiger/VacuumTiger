@@ -215,27 +215,27 @@ assert_eq!(mock.get_written(), expected_command_bytes);
 2. **Deploy binary** (SCP doesn't work - device lacks sftp-server):
    ```bash
    cat ../target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario | \
-     sshpass -p 'vacuum@123' ssh root@vacuum "cat > /tmp/test_lidar && chmod +x /tmp/test_lidar"
+     sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "cat > /tmp/test_lidar && chmod +x /tmp/test_lidar"
    ```
 
 3. **Disable AuxCtrl** (rename to prevent auto-restart):
    ```bash
-   sshpass -p 'vacuum@123' ssh root@vacuum "mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && killall -9 AuxCtrl"
+   sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && killall -9 AuxCtrl"
    ```
 
 4. **Run test with logging**:
    ```bash
-   sshpass -p 'vacuum@123' ssh root@vacuum "RUST_LOG=debug /tmp/test_lidar"
+   sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "RUST_LOG=debug /tmp/test_lidar"
    ```
 
 5. **CRITICAL: Restore AuxCtrl** after testing:
    ```bash
-   sshpass -p 'vacuum@123' ssh root@vacuum "mv /usr/sbin/AuxCtrl.bak /usr/sbin/AuxCtrl"
+   sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "mv /usr/sbin/AuxCtrl.bak /usr/sbin/AuxCtrl"
    ```
 
 **One-Command Test** (with auto-restore on failure):
 ```bash
-sshpass -p 'vacuum@123' ssh root@vacuum "
+sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "
   mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && \
   killall -9 AuxCtrl 2>/dev/null; \
   RUST_LOG=debug /tmp/test_lidar; \

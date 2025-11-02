@@ -21,6 +21,12 @@ VacuumTiger/
 │   ├── examples/           # Working robot control examples
 │   ├── GUIDE.md            # Deployment and development guide
 │   └── REFERENCE.md        # Technical reference
+├── protocol-mitm/          # Protocol reverse-engineering tools
+│   ├── src/                # Serial MITM logger (Rust)
+│   ├── scripts/            # Robot-side automation scripts
+│   ├── tools/              # Development machine tools
+│   ├── logs/               # Captured protocol sessions
+│   └── docs/               # MITM logging documentation
 ├── docs/                   # Protocol documentation
 │   ├── GD32_PROTOCOL.md
 │   └── HARDWARE_REFERENCE.md
@@ -116,6 +122,7 @@ See **[examples/test_lidar_scenario.rs](sangam-io/examples/test_lidar_scenario.r
 | GD32 Driver | ✅ Verified | Automatic heartbeat (20ms) |
 | Delta-2D Lidar | ✅ Verified | Full packet parsing |
 | Examples | ✅ Complete | test_lidar_scenario |
+| Protocol MITM Tools | ✅ Complete | Serial interception & logging |
 | Documentation | ✅ Complete | GUIDE.md + REFERENCE.md |
 | Additional Controllers | 📋 Planned | STM32, ESP32 |
 | Custom Firmware | 📋 Planned | GD32 firmware development |
@@ -139,6 +146,7 @@ See **[docs/HARDWARE_REFERENCE.md](docs/HARDWARE_REFERENCE.md)** for specificati
 
 - **[docs/GD32_PROTOCOL.md](docs/GD32_PROTOCOL.md)** - Complete GD32 communication spec
 - **[docs/HARDWARE_REFERENCE.md](docs/HARDWARE_REFERENCE.md)** - Component specs, pinouts, BOM
+- **[protocol-mitm/](protocol-mitm/)** - MITM tools for protocol reverse-engineering
 
 ## Contributing
 

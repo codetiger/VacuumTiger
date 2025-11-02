@@ -79,9 +79,9 @@ ssh root@vacuum "killall -9 AuxCtrl"
 ### Step 3: Deploy to Robot
 
 ```bash
-# One-line deploy (replace <password> with your robot's root password)
+# One-line deploy (replace $ROBOT_PASSWORD with your robot's root password)
 cat target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario | \
-  sshpass -p "<password>" ssh root@vacuum \
+  sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum \
   "cat > /tmp/test_lidar && chmod +x /tmp/test_lidar"
 ```
 
@@ -145,7 +145,7 @@ vim src/devices/gd32/mod.rs
 # Build, deploy, and run in one command
 cargo build --example test_lidar_scenario --release --features="std,gd32,lidar" && \
   cat target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario | \
-  sshpass -p "<password>" ssh root@vacuum \
+  sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum \
   "killall -9 AuxCtrl 2>/dev/null; cat > /tmp/test && chmod +x /tmp/test && /tmp/test"
 ```
 

@@ -26,24 +26,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut gd32 = Gd32Driver::new(gd32_transport)?;
     log::info!("✓ GD32 initialized successfully");
     log::info!("  - Heartbeat running at 20ms intervals");
+    log::info!("  - Initialization sequence completed");
     log::info!("");
 
-    // Wait a bit for stabilization
-    thread::sleep(Duration::from_millis(500));
+    // CRITICAL: Wait 1.4s after init before powering lidar (matches AuxCtrl timing)
+    log::info!("Waiting 1.4 seconds for motor controller stabilization...");
+    thread::sleep(Duration::from_millis(1400));
 
-    // Step 2: Initialize Delta-2D Lidar
-    log::info!("Step 2: Initializing Delta-2D Lidar...");
+    // Step 2: Power on Lidar motor via GD32
+    log::info!("Step 2: Powering on Lidar motor...");
+
+    // CRITICAL: Complete AuxCtrl sequence discovered via MITM capture:
+    // 1. CMD=0x65 mode=0x02 - Switch to navigation mode (enables lidar control)
+    // 2. CMD=0xA2 (LidarPrep) - preparation command
+    // 3. CMD=0x97 (LidarPower) - enable GPIO 233
+    // 4. CMD=0x71 (LidarPWM) - set motor speed
+
+    // Switch to navigation mode (CRITICAL - without this, lidar commands don't work!)
+    gd32.set_motor_mode(0x02)?;
+    log::info!("✓ GD32 switched to navigation mode (CMD=0x65 mode=0x02)");
+
+    // Send preparation command (CMD=0xA2)
+    gd32.send_lidar_prep()?;
+    log::info!("✓ Lidar prep command sent (CMD=0xA2)");
+
+    // Enable power (CMD=0x97)
+    gd32.set_lidar_power(true)?;
+    log::info!("✓ Lidar power enabled (CMD=0x97)");
+
+    // Set PWM speed (CMD=0x71)
+    gd32.set_lidar_pwm(100)?;  // Full speed (100%)
+    log::info!("✓ Lidar PWM set to 100% (CMD=0x71)");
+
+    log::info!("  - Waiting 2 seconds for motor spin-up...");
+    thread::sleep(Duration::from_secs(2));
+    log::info!("");
+
+    // Step 3: Initialize Delta-2D Lidar
+    log::info!("Step 3: Initializing Delta-2D Lidar...");
     let lidar_transport = SerialTransport::open("/dev/ttyS1", 115200)?;
     let mut lidar = Delta2DDriver::new(lidar_transport)?;
     log::info!("✓ Lidar driver initialized");
-    log::info!("");
-
-    // Step 3: Power on Lidar motor via GD32
-    log::info!("Step 3: Powering on Lidar motor...");
-    gd32.set_lidar_power(true)?;
-    log::info!("✓ Lidar motor powered on");
-    log::info!("  - Waiting 2 seconds for motor spin-up...");
-    thread::sleep(Duration::from_secs(2));
     log::info!("");
 
     // Step 4: Start Lidar scanning
@@ -114,8 +137,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 7: Power off Lidar motor
     log::info!("Step 7: Powering off Lidar motor...");
+
+    // First stop PWM (CMD=0x71)
+    gd32.set_lidar_pwm(0)?;
+    log::info!("✓ Lidar PWM set to 0% (CMD=0x71)");
+
+    // Then disable power (CMD=0x97)
     gd32.set_lidar_power(false)?;
-    log::info!("✓ Lidar motor powered off");
+    log::info!("✓ Lidar power disabled (CMD=0x97)");
     log::info!("");
 
     // Step 8: Clean exit (Drop implementations will handle cleanup)

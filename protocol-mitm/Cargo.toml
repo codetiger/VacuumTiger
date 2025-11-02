@@ -1,0 +1,11 @@
+[package]
+name = "protocol_mitm"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono = "0.4"
+libc = "0.2"
