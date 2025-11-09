@@ -65,13 +65,21 @@ impl Delta2DDriver {
         }
 
         if count % 200 == 0 {
-            log::info!("Delta2D: Bytes available on ttyS1: {} (max seen: {})", available, max_seen);
+            log::info!(
+                "Delta2D: Bytes available on ttyS1: {} (max seen: {})",
+                available,
+                max_seen
+            );
 
             // Try to read and log small amounts to see what's being received
             if available > 0 && available < 8 {
                 let mut peek_buf = vec![0u8; available.min(16)];
                 if let Ok(read) = transport.read(&mut peek_buf) {
-                    log::warn!("Delta2D: Insufficient data - Read {} bytes (for inspection): {:02X?}", read, &peek_buf[..read]);
+                    log::warn!(
+                        "Delta2D: Insufficient data - Read {} bytes (for inspection): {:02X?}",
+                        read,
+                        &peek_buf[..read]
+                    );
                 }
             }
         }
@@ -89,20 +97,30 @@ impl Delta2DDriver {
         log::debug!("Delta2D: RX header {} bytes: {:02X?}", read, header_buf);
 
         if read < 8 {
-            log::warn!("Delta2D: Header read incomplete: got {} bytes, expected 8", read);
+            log::warn!(
+                "Delta2D: Header read incomplete: got {} bytes, expected 8",
+                read
+            );
             return Ok(None);
         }
 
         let header = match protocol::PacketHeader::parse(&header_buf) {
             Ok(h) => h,
             Err(e) => {
-                log::warn!("Delta2D: Failed to parse header: {} (bytes: {:02X?})", e, header_buf);
+                log::warn!(
+                    "Delta2D: Failed to parse header: {} (bytes: {:02X?})",
+                    e,
+                    header_buf
+                );
                 return Err(e);
             }
         };
 
-        log::debug!("Delta2D: Parsed header - CMD=0x{:02X}, payload_len={}",
-                   header.command_type as u8, header.payload_length);
+        log::debug!(
+            "Delta2D: Parsed header - CMD=0x{:02X}, payload_len={}",
+            header.command_type as u8,
+            header.payload_length
+        );
 
         // CRITICAL FIX: Wait for payload + CRC to arrive
         // Python does: while ser.in_waiting < payload_length + 2: pass
@@ -113,14 +131,20 @@ impl Delta2DDriver {
         loop {
             let available = transport.available()?;
             if available >= required_bytes {
-                log::debug!("Delta2D: Payload ready - {} bytes available, {} required",
-                          available, required_bytes);
+                log::debug!(
+                    "Delta2D: Payload ready - {} bytes available, {} required",
+                    available,
+                    required_bytes
+                );
                 break;
             }
 
             if wait_start.elapsed() > wait_timeout {
-                log::warn!("Delta2D: Timeout waiting for payload - got {} bytes, needed {}",
-                          available, required_bytes);
+                log::warn!(
+                    "Delta2D: Timeout waiting for payload - got {} bytes, needed {}",
+                    available,
+                    required_bytes
+                );
                 return Ok(None);
             }
 
@@ -144,14 +168,20 @@ impl Delta2DDriver {
 
         match header.command_type {
             CommandType::Measurement => {
-                log::debug!("Delta2D: Parsing measurement packet (payload: {} bytes)", payload.len());
+                log::debug!(
+                    "Delta2D: Parsing measurement packet (payload: {} bytes)",
+                    payload.len()
+                );
                 let scan = protocol::parse_measurement(&payload)?;
                 log::info!("Delta2D: Received scan with {} points", scan.points.len());
                 Ok(Some(scan))
             }
             CommandType::Health => {
                 // Health packets don't contain scan data
-                log::info!("Delta2D: Received health packet (payload: {} bytes)", payload.len());
+                log::info!(
+                    "Delta2D: Received health packet (payload: {} bytes)",
+                    payload.len()
+                );
                 Ok(None)
             }
         }

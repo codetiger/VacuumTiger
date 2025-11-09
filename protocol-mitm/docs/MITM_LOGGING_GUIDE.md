@@ -594,7 +594,7 @@ ssh root@vacuum "echo 3 > /mnt/UDISK/mitm_run_counter"
 - [LIDAR_INITIALIZATION_SEQUENCE.md](LIDAR_INITIALIZATION_SEQUENCE.md) - Complete lidar protocol specification
 - [Protocol-MITM README](../README.md) - Project overview and quick start
 - [SangamIO Guide](../../sangam-io/GUIDE.md) - Implementation guide for the protocol library
-- [GD32 Protocol Spec](../../docs/GD32_PROTOCOL.md) - Full GD32 protocol documentation
+- GD32 Protocol Spec - See `sangam-io/src/devices/gd32/protocol.rs` in source code
 
 ## Support
 

@@ -29,7 +29,7 @@ sudo apt-get install sshpass               # Linux
 - **Robot**: 3irobotix CRL-200S or compatible
 - **Main CPU**: Allwinner A33 running Tina Linux
 - **Motor Controller**: GD32F103 on `/dev/ttyS3` @ 115200 baud
-- **Lidar**: 3iRobotix Delta-2D on `/dev/ttyS2` @ 115200 baud
+- **Lidar**: 3iRobotix Delta-2D on `/dev/ttyS1` @ 115200 baud
 
 ### Network Setup
 
@@ -60,11 +60,12 @@ Host vacuum
 cd sangam-io
 
 # Build the test example
-cargo build --example test_lidar_scenario --release \
+cargo build --example test_all_components --release \
+    --target armv7-unknown-linux-musleabihf \
     --features="std,gd32,lidar"
 ```
 
-The binary will be at `target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario` (~500KB).
+The binary will be at `target/armv7-unknown-linux-musleabihf/release/examples/test_all_components` (~500KB).
 
 ### Step 2: Stop Original Firmware
 
@@ -80,25 +81,25 @@ ssh root@vacuum "killall -9 AuxCtrl"
 
 ```bash
 # One-line deploy (replace $ROBOT_PASSWORD with your robot's root password)
-cat target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario | \
+cat target/armv7-unknown-linux-musleabihf/release/examples/test_all_components | \
   sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum \
-  "cat > /tmp/test_lidar && chmod +x /tmp/test_lidar"
+  "cat > /tmp/test && chmod +x /tmp/test"
 ```
 
 **Alternative** (if you have SSH keys set up):
 ```bash
-scp target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario \
-    root@vacuum:/tmp/test_lidar
-ssh root@vacuum "chmod +x /tmp/test_lidar"
+scp target/armv7-unknown-linux-musleabihf/release/examples/test_all_components \
+    root@vacuum:/tmp/test
+ssh root@vacuum "chmod +x /tmp/test"
 ```
 
 ### Step 4: Run the Test
 
 ```bash
-ssh root@vacuum "/tmp/test_lidar"
+ssh root@vacuum "/tmp/test"
 ```
 
-You should see the 8-step test scenario execute. Check [examples/README.md](examples/README.md#expected-output) for the full expected output.
+You should see the 15-step test scenario execute. Check [examples/README.md](examples/README.md#expected-output) for the full expected output.
 
 **What to observe**:
 - ✅ GD32 initializes within 5 seconds
@@ -111,11 +112,11 @@ You should see the 8-step test scenario execute. Check [examples/README.md](exam
 
 If successful, you'll see:
 ```
-=== SangamIO Lidar Test Scenario ===
+=== SangamIO Comprehensive Component Test ===
 Step 1: Initializing GD32 motor controller...
 ✓ GD32 initialized successfully
 ...
-=== Test scenario completed successfully ===
+=== All component tests completed successfully ===
 ```
 
 If something went wrong, see [Troubleshooting](#troubleshooting) below.
@@ -143,8 +144,9 @@ Here's the fastest edit-build-deploy cycle:
 vim src/devices/gd32/mod.rs
 
 # Build, deploy, and run in one command
-cargo build --example test_lidar_scenario --release --features="std,gd32,lidar" && \
-  cat target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario | \
+cargo build --example test_all_components --release \
+  --target armv7-unknown-linux-musleabihf --features="std,gd32,lidar" && \
+  cat target/armv7-unknown-linux-musleabihf/release/examples/test_all_components | \
   sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum \
   "killall -9 AuxCtrl 2>/dev/null; cat > /tmp/test && chmod +x /tmp/test && /tmp/test"
 ```
@@ -155,13 +157,13 @@ Control log output with `RUST_LOG`:
 
 ```bash
 # Debug logging
-ssh root@vacuum "RUST_LOG=debug /tmp/test_lidar"
+ssh root@vacuum "RUST_LOG=debug /tmp/test"
 
 # Trace logging (very verbose, includes heartbeat timing)
-ssh root@vacuum "RUST_LOG=trace /tmp/test_lidar"
+ssh root@vacuum "RUST_LOG=trace /tmp/test"
 
 # Specific module logging
-ssh root@vacuum "RUST_LOG=sangam_io::devices::gd32=trace /tmp/test_lidar"
+ssh root@vacuum "RUST_LOG=sangam_io::devices::gd32=trace /tmp/test"
 ```
 
 ### Monitor Serial Traffic
@@ -173,7 +175,7 @@ Watch what's happening on the serial ports:
 ssh root@vacuum "cat /dev/ttyS3 | hexdump -C"
 
 # Monitor Lidar communication
-ssh root@vacuum "cat /dev/ttyS2 | hexdump -C"
+ssh root@vacuum "cat /dev/ttyS1 | hexdump -C"
 ```
 
 ### Check System Status
@@ -195,7 +197,7 @@ ssh root@vacuum "dmesg -w"
 
 ```bash
 # Copy the example as a template
-cp examples/test_lidar_scenario.rs examples/my_robot.rs
+cp examples/test_all_components.rs examples/my_robot.rs
 ```
 
 Add it to `Cargo.toml`:
@@ -226,7 +228,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Power on lidar and scan
     gd32.set_lidar_power(true)?;
-    let lidar_transport = SerialTransport::open("/dev/ttyS2", 115200)?;
+    let lidar_transport = SerialTransport::open("/dev/ttyS1", 115200)?;
     let mut lidar = Delta2DDriver::new(lidar_transport)?;
     lidar.start()?;
 
@@ -276,7 +278,7 @@ ssh root@vacuum "dmesg | tail"
 **Solutions**:
 - Listen for the lidar motor spinning (you should hear it)
 - Check if the red laser is visible
-- Verify lidar serial port: `ssh root@vacuum "ls -l /dev/ttyS2"`
+- Verify lidar serial port: `ssh root@vacuum "ls -l /dev/ttyS1"`
 - Ensure lidar power command succeeded (check logs)
 
 ### Serial Port Busy
@@ -301,11 +303,11 @@ ssh root@vacuum "killall -9 <process-name>"
 **Check**:
 ```bash
 # Verify binary is ARM
-file target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario
+file target/armv7-unknown-linux-musleabihf/release/examples/test_all_components
 # Should show: ARM, EABI5, statically linked
 
 # Check on device
-ssh root@vacuum "file /tmp/test_lidar"
+ssh root@vacuum "file /tmp/test"
 ```
 
 ### Permission Denied
@@ -372,7 +374,7 @@ const TICKS_PER_REVOLUTION: f32 = 1000.0;   // Calibrate by testing
 | `ps \| grep AuxCtrl` | Check if AuxCtrl is running |
 | `dmesg \| tail` | Check kernel logs |
 | `ls -l /dev/ttyS3` | Verify GD32 serial port |
-| `ls -l /dev/ttyS2` | Verify Lidar serial port |
+| `ls -l /dev/ttyS1` | Verify Lidar serial port |
 | `reboot` | Restore original firmware |
 
 ## Next Steps

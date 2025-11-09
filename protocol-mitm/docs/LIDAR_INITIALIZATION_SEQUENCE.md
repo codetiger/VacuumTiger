@@ -269,7 +269,7 @@ gd32.set_lidar_power(false)?;    // Disable power
 
 ### Documentation
 - **MITM Logging Guide**: `protocol-mitm/docs/MITM_LOGGING_GUIDE.md`
-- **GD32 Protocol Spec**: `docs/GD32_PROTOCOL.md`
+- **GD32 Protocol Spec**: See protocol.rs source code for complete specification
 - **Project Guide**: `sangam-io/GUIDE.md`
 
 ### MITM Logs

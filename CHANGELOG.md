@@ -47,10 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration with GD32 for motor power control
 
 **Examples:**
-- `test_lidar_scenario.rs` - Complete GD32 + lidar integration test
-  - Demonstrates initialization, scanning, and clean shutdown
+- `test_all_components.rs` - Comprehensive integration test for all robot components
+  - 15-step test sequence covering GD32, lidar, motors, brushes, vacuum, and sensors
+  - Demonstrates initialization, scanning, movement, actuator control, and clean shutdown
   - Automatic heartbeat management
-  - Lidar power control and data collection
+  - Lidar power control with verified AuxCtrl initialization sequence
+  - Complete sensor data readout (battery, encoders, status flags, IR sensors)
 
 **Testing:**
 - 9 unit tests covering:

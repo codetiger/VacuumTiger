@@ -26,11 +26,11 @@ parking_lot = "0.12"  # For faster mutexes
 env_logger = "0.11"
 
 [features]
-default = ["std", "gd32"]
+default = ["std", "gd32", "lidar"]
 std = ["serialport"]
 gd32 = []
 lidar = []
 
 [[example]]
-name = "test_lidar_scenario"
+name = "test_all_components"
 required-features = ["std", "gd32", "lidar"]

@@ -23,7 +23,7 @@ impl SerialTransport {
             .parity(Parity::None)
             .stop_bits(StopBits::One)
             .flow_control(FlowControl::None)
-            .timeout(Duration::from_millis(50))
+            .timeout(Duration::from_micros(100)) // 100μs timeout for minimal blocking
             .open()?;
 
         log::info!("Opened serial port: {} at {} baud", path, baud_rate);

@@ -233,7 +233,7 @@ gd32.set_blower_speed(75)?;      // Vacuum at 75%
 
 **Scan with lidar**:
 ```rust
-let transport = SerialTransport::open("/dev/ttyS2", 115200)?;
+let transport = SerialTransport::open("/dev/ttyS1", 115200)?;
 let mut lidar = Delta2DDriver::new(transport)?;
 
 lidar.start()?;
@@ -327,7 +327,7 @@ assert_eq!(mock.get_written(), expected_command);
 | Device | Port | Baud | Protocol |
 |--------|------|------|----------|
 | GD32F103 Motor Controller | `/dev/ttyS3` | 115200 | GD32 Protocol |
-| 3iRobotix Delta-2D Lidar | `/dev/ttyS2` | 115200 | Delta-2D Protocol |
+| 3iRobotix Delta-2D Lidar | `/dev/ttyS1` | 115200 | Delta-2D Protocol |
 
 ### GD32F103 Specifications
 

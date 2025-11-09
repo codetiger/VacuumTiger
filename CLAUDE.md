@@ -23,7 +23,7 @@ cargo build --features="std,gd32,lidar"
 cargo build --release --target armv7-unknown-linux-musleabihf --features="std,gd32,lidar"
 
 # Build specific example
-cargo build --example test_lidar_scenario --release --target armv7-unknown-linux-musleabihf --features="std,gd32,lidar"
+cargo build --example test_all_components --release --target armv7-unknown-linux-musleabihf --features="std,gd32,lidar"
 
 # Run tests (host machine only)
 cargo test
@@ -61,7 +61,7 @@ cargo test -- --nocapies --test-threads=1
 ssh root@vacuum "killall -9 AuxCtrl"
 
 # Deploy binary
-scp target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario root@vacuum:/tmp/test
+scp target/armv7-unknown-linux-musleabihf/release/examples/test_all_components root@vacuum:/tmp/test
 ssh root@vacuum "chmod +x /tmp/test"
 
 # Run on robot with debug logging
@@ -104,15 +104,15 @@ Transport Layer (src/transport/) ← I/O abstraction (Serial, Mock)
 
 **GD32F103 Heartbeat**: The motor controller requires CMD=0x66 heartbeat packets every 20-50ms. If heartbeat stops, motors enter safety mode and stop. The heartbeat thread uses OS threads (not async) for real-time guarantees.
 
-**Serial Port Exclusivity**: `/dev/ttyS3` (GD32) and `/dev/ttyS2` (lidar) can only be opened by one process at a time. The original `AuxCtrl` firmware must be killed before running SangamIO code.
+**Serial Port Exclusivity**: `/dev/ttyS3` (GD32) and `/dev/ttyS1` (lidar) can only be opened by one process at a time. The original `AuxCtrl` firmware must be killed before running SangamIO code.
 
 **Initialization Sequence**: GD32 requires a specific wake-up sequence (CMD=0x08 repeated every 200ms for up to 5 seconds) before it will respond to any commands. This is not optional.
 
 ### Protocol Implementation
 
-**GD32 Protocol** (docs/GD32_PROTOCOL.md):
+**GD32 Protocol**:
 - Packet format: `[0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC]`
-- CRC algorithm: XOR of CMD_ID with itself and all payload bytes
+- CRC algorithm: 16-bit big-endian word sum checksum
 - Bidirectional: CPU sends commands, GD32 sends status packets (CMD=0x15, 96 bytes)
 - Located in: `src/devices/gd32/protocol.rs`
 
@@ -156,7 +156,7 @@ sangam-io/
 │       ├── battery.rs      # BatteryStatus
 │       └── imu.rs          # ImuData
 └── examples/
-    └── test_lidar_scenario.rs  # Complete integration example
+    └── test_all_components.rs  # Complete integration example
 ```
 
 ### Feature Flags
@@ -209,13 +209,13 @@ assert_eq!(mock.get_written(), expected_command_bytes);
 1. **Build for ARM target**:
    ```bash
    cd sangam-io
-   cargo build --release --example test_lidar_scenario --features="std,gd32,lidar"
+   cargo build --release --example test_all_components --features="std,gd32,lidar"
    ```
 
 2. **Deploy binary** (SCP doesn't work - device lacks sftp-server):
    ```bash
-   cat ../target/armv7-unknown-linux-musleabihf/release/examples/test_lidar_scenario | \
-     sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "cat > /tmp/test_lidar && chmod +x /tmp/test_lidar"
+   cat ../target/armv7-unknown-linux-musleabihf/release/examples/test_all_components | \
+     sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "cat > /tmp/test && chmod +x /tmp/test"
    ```
 
 3. **Disable AuxCtrl** (rename to prevent auto-restart):
@@ -225,7 +225,7 @@ assert_eq!(mock.get_written(), expected_command_bytes);
 
 4. **Run test with logging**:
    ```bash
-   sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "RUST_LOG=debug /tmp/test_lidar"
+   sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "RUST_LOG=debug /tmp/test"
    ```
 
 5. **CRITICAL: Restore AuxCtrl** after testing:
@@ -238,7 +238,7 @@ assert_eq!(mock.get_written(), expected_command_bytes);
 sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "
   mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && \
   killall -9 AuxCtrl 2>/dev/null; \
-  RUST_LOG=debug /tmp/test_lidar; \
+  RUST_LOG=debug /tmp/test; \
   EXIT_CODE=\$?; \
   mv /usr/sbin/AuxCtrl.bak /usr/sbin/AuxCtrl; \
   exit \$EXIT_CODE
@@ -311,11 +311,9 @@ This code controls physical hardware. Always:
 
 - **sangam-io/GUIDE.md**: Complete deployment and development guide with troubleshooting
 - **sangam-io/REFERENCE.md**: Architecture details, protocol specs, API reference
-- **docs/GD32_PROTOCOL.md**: Verified GD32F103 communication protocol specification
-- **docs/HARDWARE_REFERENCE.md**: Component specs, pinouts, BOM
 - **examples/README.md**: Example program documentation
 
-When modifying protocol implementations, always cross-reference with the protocol docs. These were reverse-engineered and verified, so deviations will break hardware communication.
+When modifying protocol implementations, refer to the verified protocol specifications in the source code comments (`src/devices/gd32/protocol.rs` and `src/devices/delta2d/protocol.rs`). These were reverse-engineered and verified, so deviations will break hardware communication.
 
 ## Version and Status
 
@@ -325,3 +323,4 @@ When modifying protocol implementations, always cross-reference with the protoco
 - **Planned**: Additional motor controllers (STM32, ESP32), more lidar models, high-level Robot API
 
 When making changes, update CHANGELOG.md following the established format (Keep a Changelog style).
+- Stopping AuxCtrl means, we need to rename the app. Killing the app is not enough as it is getting immediately restarted by the monitor app

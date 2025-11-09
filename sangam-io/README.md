@@ -112,7 +112,7 @@ See [REFERENCE.md](REFERENCE.md#architecture-overview) for detailed architecture
 cargo test --all-features
 
 # Run on hardware
-cargo run --example test_lidar_scenario --features="std,gd32,lidar"
+cargo run --example test_all_components --features="std,gd32,lidar"
 ```
 
 Mock implementations let you test without hardware. See [GUIDE.md](GUIDE.md#building-your-own-application) for development workflow.

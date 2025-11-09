@@ -57,87 +57,104 @@ fn calculate_checksum(cmd_id: u8, payload: &[u8]) -> Option<[u8; 2]> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CommandId {
-    /// Initialize/wake-up sequence
-    Initialize = 0x08,
-    /// Initialization sync (AuxCtrl uses this as first command)
-    InitSync = 0x0C,
-    /// Wake/enable motors
-    Wake = 0x06,
-    /// System setup/configuration
+    /// Put GD32 into sleep mode (STM32_SLEEP in protocol spec)
+    Sleep = 0x04,
+    /// Wakeup acknowledgment
+    WakeupAck = 0x05,
+    /// Heartbeat keep-alive command (packetHeartBeat in AuxCtrl)
+    Heartbeat = 0x06,
+    /// System setup/version query (packetRequireSystemVersion in AuxCtrl)
     SystemSetup = 0x07,
+    /// Initialize/wake-up sequence (packetSetIMUZero in AuxCtrl)
+    Initialize = 0x08,
+    /// Reset error code (packetResetErrorCode in AuxCtrl)
+    ResetErrorCode = 0x0A,
     /// Calibration/sensor configuration
     CalibrationConfig = 0x0D,
-    /// Motor control type configuration
-    MotorType = 0x65,
-    /// Heartbeat/keep-alive
-    Heartbeat = 0x66,
-    /// Motor speed control
+    /// Status data response (from GD32)
+    StatusData = 0x15,
+    /// Motor control type/mode (packetMotorControlType in AuxCtrl)
+    MotorControlType = 0x65,
+    /// Motor velocity with differential drive (packetMotorVelocity in AuxCtrl)
+    MotorVelocity = 0x66,
+    /// Motor speed - direct wheel control (packetMotorSpeed in AuxCtrl)
     MotorSpeed = 0x67,
-    /// Blower speed control
+    /// Blower speed control (packetBlowerSpeed in AuxCtrl)
     BlowerSpeed = 0x68,
-    /// Side brush speed
+    /// Side brush speed (packetSideBrushSpeed in AuxCtrl)
     SideBrushSpeed = 0x69,
-    /// Rolling brush speed
+    /// Rolling brush speed (packetRollingSpeed in AuxCtrl)
     RollingBrushSpeed = 0x6A,
-    /// Brush control
+    /// Brush control (packetBrushControl in AuxCtrl)
     BrushControl = 0x6B,
-    /// Lidar PWM speed control (0-100%)
+    /// Lidar PWM speed control 0-100% (packetLidarPWM in AuxCtrl)
     LidarPWM = 0x71,
-    /// Button LED state
+    /// Button LED state (packetButtonLEDState in AuxCtrl)
     ButtonLedState = 0x8D,
-    /// Lidar power control
+    /// Lidar power control (packetLidarPower in AuxCtrl)
     LidarPower = 0x97,
+    /// R16 power control (packetR16Power in AuxCtrl)
+    R16Power = 0x99,
+    /// Restart R16 system (packetRestartR16System in AuxCtrl)
+    RestartR16 = 0x9A,
     /// Lidar preparation command (sent before power on)
     LidarPrep = 0xA2,
-    /// Status data response
-    StatusData = 0x15,
 }
 
 /// GD32 commands
 #[derive(Debug, Clone)]
 pub enum Gd32Command {
-    /// Initialize device with 96-byte payload
+    /// Put GD32 into sleep mode (STM32_SLEEP in protocol spec)
+    Sleep,
+    /// Wakeup acknowledgment (packetWakeupAck in AuxCtrl)
+    WakeupAck,
+    /// Heartbeat keep-alive command (packetHeartBeat in AuxCtrl - CMD 0x06)
+    Heartbeat,
+    /// System setup/version query (packetRequireSystemVersion in AuxCtrl)
+    SystemSetup,
+    /// Initialize device with 96-byte payload (packetSetIMUZero in AuxCtrl)
     Initialize {
         /// Initialization payload (96 bytes)
         payload: [u8; 96],
     },
-    /// Initialization sync (first command sent by AuxCtrl)
-    InitSync,
-    /// Wake command
-    Wake,
-    /// System setup/configuration
-    SystemSetup,
+    /// Reset error code (packetResetErrorCode in AuxCtrl)
+    ResetErrorCode,
     /// Calibration/sensor configuration
     CalibrationConfig,
-    /// Motor control type configuration
-    MotorType(u8),
-    /// Heartbeat with 8-byte data
-    Heartbeat {
-        /// Heartbeat data (8 bytes)
+    /// Motor control type/mode (packetMotorControlType in AuxCtrl - CMD 0x65)
+    MotorControlType(u8),
+    /// Motor velocity - differential drive (packetMotorVelocity in AuxCtrl - CMD 0x66)
+    /// Payload: [linear_velocity, angular_velocity] as i32 with conversion factors
+    MotorVelocity {
+        /// Motor velocity data (8 bytes): [linear_vel_i32, angular_vel_i32]
         data: [u8; 8],
     },
-    /// Motor speed command
+    /// Motor speed - direct wheel control (packetMotorSpeed in AuxCtrl - CMD 0x67)
     MotorSpeed {
-        /// Left motor speed (encoder ticks)
+        /// Left motor speed (signed, encoder ticks)
         left: i32,
-        /// Right motor speed (encoder ticks)
+        /// Right motor speed (signed, encoder ticks)
         right: i32,
     },
-    /// Blower speed
+    /// Blower speed (packetBlowerSpeed in AuxCtrl)
     BlowerSpeed(u16),
-    /// Side brush speed
+    /// Side brush speed (packetSideBrushSpeed in AuxCtrl)
     SideBrushSpeed(u8),
-    /// Rolling brush speed
+    /// Rolling brush speed (packetRollingSpeed in AuxCtrl)
     RollingBrushSpeed(u8),
-    /// Brush control
+    /// Brush control (packetBrushControl in AuxCtrl)
     BrushControl(u8),
-    /// Lidar PWM speed control (0-100%)
+    /// Lidar PWM speed control 0-100% (packetLidarPWM in AuxCtrl)
     LidarPWM(i32),
-    /// Button LED state
+    /// Button LED state (packetButtonLEDState in AuxCtrl)
     ButtonLedState(u8),
-    /// Lidar power control
+    /// Lidar power control (packetLidarPower in AuxCtrl)
     LidarPower(bool),
-    /// Lidar preparation command (sent before power on)
+    /// R16 power control (packetR16Power in AuxCtrl)
+    R16Power(bool),
+    /// Restart R16 system (packetRestartR16System in AuxCtrl)
+    RestartR16,
+    /// Lidar preparation command
     LidarPrep,
 }
 
@@ -145,13 +162,15 @@ impl Gd32Command {
     /// Get command ID
     pub fn cmd_id(&self) -> u8 {
         match self {
-            Gd32Command::Initialize { .. } => CommandId::Initialize as u8,
-            Gd32Command::InitSync => CommandId::InitSync as u8,
-            Gd32Command::Wake => CommandId::Wake as u8,
+            Gd32Command::Sleep => CommandId::Sleep as u8,
+            Gd32Command::WakeupAck => CommandId::WakeupAck as u8,
+            Gd32Command::Heartbeat => CommandId::Heartbeat as u8,
             Gd32Command::SystemSetup => CommandId::SystemSetup as u8,
+            Gd32Command::Initialize { .. } => CommandId::Initialize as u8,
+            Gd32Command::ResetErrorCode => CommandId::ResetErrorCode as u8,
             Gd32Command::CalibrationConfig => CommandId::CalibrationConfig as u8,
-            Gd32Command::MotorType(_) => CommandId::MotorType as u8,
-            Gd32Command::Heartbeat { .. } => CommandId::Heartbeat as u8,
+            Gd32Command::MotorControlType(_) => CommandId::MotorControlType as u8,
+            Gd32Command::MotorVelocity { .. } => CommandId::MotorVelocity as u8,
             Gd32Command::MotorSpeed { .. } => CommandId::MotorSpeed as u8,
             Gd32Command::BlowerSpeed(_) => CommandId::BlowerSpeed as u8,
             Gd32Command::SideBrushSpeed(_) => CommandId::SideBrushSpeed as u8,
@@ -160,6 +179,8 @@ impl Gd32Command {
             Gd32Command::LidarPWM(_) => CommandId::LidarPWM as u8,
             Gd32Command::ButtonLedState(_) => CommandId::ButtonLedState as u8,
             Gd32Command::LidarPower(_) => CommandId::LidarPower as u8,
+            Gd32Command::R16Power(_) => CommandId::R16Power as u8,
+            Gd32Command::RestartR16 => CommandId::RestartR16 as u8,
             Gd32Command::LidarPrep => CommandId::LidarPrep as u8,
         }
     }
@@ -167,13 +188,15 @@ impl Gd32Command {
     /// Build payload for command
     fn build_payload(&self) -> Vec<u8> {
         match self {
-            Gd32Command::Initialize { payload } => payload.to_vec(),
-            Gd32Command::InitSync => vec![0x01],
-            Gd32Command::Wake => vec![0x00],
+            Gd32Command::Sleep => vec![],
+            Gd32Command::WakeupAck => vec![0x00],
+            Gd32Command::Heartbeat => vec![0x00],
             Gd32Command::SystemSetup => vec![0x00],
+            Gd32Command::Initialize { payload } => payload.to_vec(),
+            Gd32Command::ResetErrorCode => vec![0x00],
             Gd32Command::CalibrationConfig => vec![0x00],
-            Gd32Command::MotorType(mode) => vec![*mode],
-            Gd32Command::Heartbeat { data } => data.to_vec(),
+            Gd32Command::MotorControlType(mode) => vec![*mode],
+            Gd32Command::MotorVelocity { data } => data.to_vec(),
             Gd32Command::MotorSpeed { left, right } => {
                 let mut payload = Vec::with_capacity(8);
                 payload.extend_from_slice(&left.to_le_bytes());
@@ -191,6 +214,8 @@ impl Gd32Command {
             }
             Gd32Command::ButtonLedState(state) => vec![*state],
             Gd32Command::LidarPower(on) => vec![if *on { 0x01 } else { 0x00 }],
+            Gd32Command::R16Power(on) => vec![if *on { 0x01 } else { 0x00 }],
+            Gd32Command::RestartR16 => vec![0x00],
             Gd32Command::LidarPrep => vec![0x10, 0x0E, 0x00, 0x00],
         }
     }
@@ -238,9 +263,39 @@ impl Gd32Command {
         Gd32Command::Initialize { payload }
     }
 
-    /// Create default heartbeat command (all zeros)
-    pub fn default_heartbeat() -> Self {
-        Gd32Command::Heartbeat { data: [0; 8] }
+    /// Create default motor velocity command with zeros (CMD 0x66)
+    /// Used as keep-alive when motors are stopped
+    pub fn default_motor_velocity() -> Self {
+        Gd32Command::MotorVelocity { data: [0; 8] }
+    }
+
+    /// Create motor velocity command with wheel speeds (CMD 0x66)
+    ///
+    /// VERIFIED via hardware testing: CMD=0x66 uses differential drive format!
+    ///
+    /// Payload format: [linear_velocity (i32 LE), angular_velocity (i32 LE)]
+    /// - linear_velocity: (left + right) - forward/backward speed of robot center
+    /// - angular_velocity: (right - left) - rotation speed (positive = clockwise)
+    ///
+    /// Conversion from wheel speeds to differential drive:
+    /// - Both wheels same speed → linear only (straight line)
+    /// - Wheels opposite speeds → angular only (rotate in place)
+    /// - Mixed → curved motion
+    ///
+    /// This is the ONLY motor control command that works in mode 0x02 (navigation mode).
+    /// CMD=0x67 (MotorSpeed) causes error 0xFF in mode 0x02.
+    pub fn motor_velocity_with_speeds(left: i32, right: i32) -> Self {
+        let mut data = [0u8; 8];
+
+        // Differential drive conversion:
+        // linear = (left + right) - sum of wheel speeds
+        // angular = (right - left) - difference in wheel speeds
+        let linear_velocity = left + right;
+        let angular_velocity = right - left;
+
+        data[0..4].copy_from_slice(&linear_velocity.to_le_bytes());
+        data[4..8].copy_from_slice(&angular_velocity.to_le_bytes());
+        Gd32Command::MotorVelocity { data }
     }
 }
 
@@ -251,21 +306,187 @@ pub struct Gd32Response {
     pub cmd_id: u8,
     /// Raw payload
     pub payload: Vec<u8>,
-    /// Battery voltage (V)
+
+    // Battery Information
+    /// Battery voltage (V) - VERIFIED at bytes [82-83]
     pub battery_voltage: f32,
-    /// Battery current (A)
+    /// Battery current (A) - VERIFIED at bytes [80-81]
     pub battery_current: f32,
-    /// Battery level (0-100%)
+    /// Battery level (0-100%) - VERIFIED at byte [4]
     pub battery_level: u8,
-    /// Left encoder count
+
+    // Encoder Counts
+    /// Left encoder count - VERIFIED at bytes [8-11]
     pub encoder_left: i32,
-    /// Right encoder count
+    /// Right encoder count - VERIFIED at bytes [12-15]
     pub encoder_right: i32,
-    /// Error code
+
+    // Error and Status Flags
+    /// Error code - VERIFIED at byte [43]
     pub error_code: u8,
+    /// Status flag - byte [5]
+    pub status_flag: u8,
+    /// Charging flag (bit 0 of byte [7])
+    pub charging_flag: bool,
+    /// Battery state flag (bit 1 of byte [7])
+    pub battery_state_flag: bool,
+    /// Percent value ÷ 100 - byte [8]
+    pub percent_value: f32,
+
+    // IR Proximity Sensors (Button Detection)
+    /// IR sensor 1 (×5 scaling) - bytes [58-59]
+    pub ir_sensor_1: u16,
+    /// Point button IR (×5 scaling) - bytes [60-61]
+    pub point_button_ir: u16,
+    /// Dock button IR (×5 scaling) - bytes [62-63]
+    pub dock_button_ir: u16,
 }
 
 impl Gd32Response {
+    /// Create a Gd32Response from command ID and payload
+    /// Parses STATUS_DATA packets (CMD=0x15) to extract sensor values
+    fn from_payload(cmd_id: u8, payload: &[u8]) -> Self {
+        // Parse STATUS_DATA packet if applicable
+        if cmd_id == CommandId::StatusData as u8 && payload.len() >= 96 {
+            Self::from_status_data(cmd_id, payload)
+        } else {
+            // Non-STATUS_DATA packet or incomplete payload
+            Self {
+                cmd_id,
+                payload: payload.to_vec(),
+                battery_voltage: 0.0,
+                battery_current: 0.0,
+                battery_level: 0,
+                encoder_left: 0,
+                encoder_right: 0,
+                error_code: 0,
+                status_flag: 0,
+                charging_flag: false,
+                battery_state_flag: false,
+                percent_value: 0.0,
+                ir_sensor_1: 0,
+                point_button_ir: 0,
+                dock_button_ir: 0,
+            }
+        }
+    }
+
+    /// Parse STATUS_DATA packet (CMD=0x15) and construct Gd32Response
+    ///
+    /// VERIFIED byte offsets (from MITM analysis + hardware testing + AuxCtrl binary analysis):
+    /// - Byte [4]: Battery level (u8, 0-100%)
+    /// - Byte [5]: Status flag
+    /// - Byte [7]: Charging/battery state flags (bit-packed)
+    /// - Byte [8]: Percent value (÷100)
+    /// - Bytes [8-11]: Left encoder (i32 LE)
+    /// - Bytes [12-15]: Right encoder (i32 LE)
+    /// - Byte [43]: Error code (u8)
+    /// - Bytes [58-59]: IR sensor 1 (u16 LE, ×5 scaling)
+    /// - Bytes [60-61]: Point button IR (u16 LE, ×5 scaling)
+    /// - Bytes [62-63]: Dock button IR (u16 LE, ×5 scaling)
+    /// - Bytes [80-81]: Battery current (i16 LE, divide by 100 for Amps)
+    /// - Bytes [82-83]: Battery voltage (u16 LE, divide by 100 for Volts)
+    fn from_status_data(cmd_id: u8, payload: &[u8]) -> Self {
+        // Log raw STATUS_DATA packet for analysis (DEBUG level only)
+        if log::log_enabled!(log::Level::Debug) && payload.len() == 96 {
+            log::debug!("GD32: STATUS_DATA packet (96 bytes) - HEX DUMP:");
+            for chunk_start in (0..96).step_by(16) {
+                let chunk_end = (chunk_start + 16).min(96);
+                let hex_str: String = payload[chunk_start..chunk_end]
+                    .iter()
+                    .map(|b| format!("{:02X} ", b))
+                    .collect();
+                log::debug!("  [{:02}..{:02}]: {}", chunk_start, chunk_end - 1, hex_str);
+            }
+        }
+
+        // Battery voltage - VERIFIED at bytes [82-83]
+        let battery_voltage = if payload.len() >= 84 {
+            u16::from_le_bytes([payload[82], payload[83]]) as f32 / 100.0
+        } else {
+            0.0
+        };
+
+        // Battery current - VERIFIED at bytes [80-81]
+        let battery_current = if payload.len() >= 82 {
+            i16::from_le_bytes([payload[80], payload[81]]) as f32 / 100.0
+        } else {
+            0.0
+        };
+
+        // Battery level - VERIFIED at byte [4]
+        let battery_level = if payload.len() >= 5 { payload[4] } else { 0 };
+
+        // Left encoder - VERIFIED at bytes [8-11]
+        let encoder_left = if payload.len() >= 12 {
+            i32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]])
+        } else {
+            0
+        };
+
+        // Right encoder - VERIFIED at bytes [12-15]
+        let encoder_right = if payload.len() >= 16 {
+            i32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]])
+        } else {
+            0
+        };
+
+        // Error code - VERIFIED at byte [43]
+        let error_code = if payload.len() >= 44 { payload[43] } else { 0 };
+
+        // Status flag - byte [5]
+        let status_flag = if payload.len() >= 6 { payload[5] } else { 0 };
+
+        // Charging and battery state flags - byte [7] (bit-packed)
+        let flag_byte = if payload.len() >= 8 { payload[7] } else { 0 };
+        let charging_flag = (flag_byte & 0x01) != 0; // bit 0
+        let battery_state_flag = (flag_byte & 0x02) != 0; // bit 1
+
+        // Percent value - byte [8] ÷ 100
+        let percent_value = if payload.len() >= 9 {
+            payload[8] as f32 / 100.0
+        } else {
+            0.0
+        };
+
+        // IR sensors - bytes [58-59], [60-61], [62-63] with ×5 scaling
+        let ir_sensor_1 = if payload.len() >= 60 {
+            u16::from_le_bytes([payload[58], payload[59]]).saturating_mul(5)
+        } else {
+            0
+        };
+
+        let point_button_ir = if payload.len() >= 62 {
+            u16::from_le_bytes([payload[60], payload[61]]).saturating_mul(5)
+        } else {
+            0
+        };
+
+        let dock_button_ir = if payload.len() >= 64 {
+            u16::from_le_bytes([payload[62], payload[63]]).saturating_mul(5)
+        } else {
+            0
+        };
+
+        Self {
+            cmd_id,
+            payload: payload.to_vec(),
+            battery_voltage,
+            battery_current,
+            battery_level,
+            encoder_left,
+            encoder_right,
+            error_code,
+            status_flag,
+            charging_flag,
+            battery_state_flag,
+            percent_value,
+            ir_sensor_1,
+            point_button_ir,
+            dock_button_ir,
+        }
+    }
+
     /// Decode response from packet bytes, searching for sync bytes
     /// Returns (bytes_consumed, response) where bytes_consumed includes any garbage before the packet
     /// Tries multiple sync positions if CRC fails
@@ -368,30 +589,8 @@ impl Gd32Response {
                 continue;
             }
 
-            // Valid packet found!
-            let (
-                battery_voltage,
-                battery_current,
-                battery_level,
-                encoder_left,
-                encoder_right,
-                error_code,
-            ) = if cmd_id == CommandId::StatusData as u8 && payload.len() >= 96 {
-                Self::parse_status_packet(payload)
-            } else {
-                (0.0, 0.0, 0, 0, 0, 0)
-            };
-
-            let response = Gd32Response {
-                cmd_id,
-                payload: payload.to_vec(),
-                battery_voltage,
-                battery_current,
-                battery_level,
-                encoder_left,
-                encoder_right,
-                error_code,
-            };
+            // Valid packet found! Parse it into a response
+            let response = Self::from_payload(cmd_id, payload);
 
             // Return bytes consumed (garbage + complete packet)
             return Ok((absolute_sync_pos + packet_size, response));
@@ -407,50 +606,6 @@ impl Gd32Response {
             Ok((_bytes_consumed, response)) => Ok(response),
             Err(e) => Err(e),
         }
-    }
-
-    /// Parse status packet fields
-    /// Note: These byte offsets are placeholders and need hardware verification
-    fn parse_status_packet(payload: &[u8]) -> (f32, f32, u8, i32, i32, u8) {
-        // Battery data (offsets need verification)
-        let battery_voltage = if payload.len() >= 2 {
-            u16::from_le_bytes([payload[0], payload[1]]) as f32 / 100.0
-        } else {
-            0.0
-        };
-
-        let battery_current = if payload.len() >= 4 {
-            i16::from_le_bytes([payload[2], payload[3]]) as f32 / 100.0
-        } else {
-            0.0
-        };
-
-        let battery_level = if payload.len() >= 5 { payload[4] } else { 0 };
-
-        // Encoder data (offsets need verification)
-        let encoder_left = if payload.len() >= 12 {
-            i32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]])
-        } else {
-            0
-        };
-
-        let encoder_right = if payload.len() >= 16 {
-            i32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]])
-        } else {
-            0
-        };
-
-        // Error code (usually last byte)
-        let error_code = if payload.len() >= 96 { payload[95] } else { 0 };
-
-        (
-            battery_voltage,
-            battery_current,
-            battery_level,
-            encoder_left,
-            encoder_right,
-            error_code,
-        )
     }
 
     /// Check if this is a status packet
@@ -497,14 +652,14 @@ mod tests {
     }
 
     #[test]
-    fn test_wake_command_encoding() {
-        let cmd = Gd32Command::Wake;
+    fn test_heartbeat_command_encoding() {
+        let cmd = Gd32Command::Heartbeat;
         let packet = cmd.encode();
 
         assert_eq!(packet[0], 0xFA); // SYNC1
         assert_eq!(packet[1], 0xFB); // SYNC2
         assert_eq!(packet[2], 0x04); // Length: CMD(1) + PAYLOAD(1) + CHECKSUM(2)
-        assert_eq!(packet[3], 0x06); // CMD ID
+        assert_eq!(packet[3], 0x06); // CMD ID (Heartbeat)
         assert_eq!(packet[4], 0x00); // Payload
         assert_eq!(packet[5], 0x06); // Checksum high byte
         assert_eq!(packet[6], 0x00); // Checksum low byte

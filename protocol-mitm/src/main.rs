@@ -31,7 +31,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const REAL_PORT: &str = "/dev/ttyS3_hardware";
 const VIRTUAL_PORT: &str = "/tmp/ttyS3_tap";
-const LOG_DIR: &str = "/tmp";  // Use RAM instead of flash to avoid write latency
+const LOG_DIR: &str = "/tmp"; // Use RAM instead of flash to avoid write latency
 const RUN_COUNTER_FILE: &str = "/mnt/UDISK/mitm_run_counter";
 const GPIO_233_VALUE: &str = "/sys/class/gpio/gpio233/value";
 
@@ -89,11 +89,15 @@ fn log_packet(log: &mut File, direction: &str, data: &[u8]) -> io::Result<()> {
             0x97 => {
                 if data.len() >= 5 {
                     let power_state = data[4];
-                    writeln!(log, "       (LIDAR_POWER - GPIO 233 = {})", if power_state == 1 { "ON" } else { "OFF" })?;
+                    writeln!(
+                        log,
+                        "       (LIDAR_POWER - GPIO 233 = {})",
+                        if power_state == 1 { "ON" } else { "OFF" }
+                    )?;
                 } else {
                     writeln!(log, "       (LIDAR_POWER - Incomplete packet)")?;
                 }
-            },
+            }
             0x71 => {
                 if data.len() >= 8 {
                     let pwm = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
@@ -101,7 +105,7 @@ fn log_packet(log: &mut File, direction: &str, data: &[u8]) -> io::Result<()> {
                 } else {
                     writeln!(log, "       (LIDAR_PWM - Incomplete packet)")?;
                 }
-            },
+            }
             _ => {}
         }
     }
@@ -219,7 +223,12 @@ fn spawn_gpio_monitor(log_file: Arc<Mutex<File>>) -> std::thread::JoinHandle<()>
         {
             let ts = timestamp_micros();
             if let Ok(mut log) = log_file.lock() {
-                let _ = writeln!(log, "[{}] GPIO_233: Initial state = {}", format_timestamp(ts), last_state);
+                let _ = writeln!(
+                    log,
+                    "[{}] GPIO_233: Initial state = {}",
+                    format_timestamp(ts),
+                    last_state
+                );
                 let _ = writeln!(log);
                 let _ = log.flush();
             }
@@ -227,13 +236,14 @@ fn spawn_gpio_monitor(log_file: Arc<Mutex<File>>) -> std::thread::JoinHandle<()>
 
         while RUNNING.load(Ordering::Relaxed) {
             if let Ok(current_state) = read_gpio_233()
-                && current_state != last_state {
-                    // State changed - log it!
-                    if let Ok(mut log) = log_file.lock() {
-                        let _ = log_gpio_change(&mut log, last_state, current_state);
-                    }
-                    last_state = current_state;
+                && current_state != last_state
+            {
+                // State changed - log it!
+                if let Ok(mut log) = log_file.lock() {
+                    let _ = log_gpio_change(&mut log, last_state, current_state);
                 }
+                last_state = current_state;
+            }
 
             // Poll every 10ms (fast enough to catch all transitions)
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -276,7 +286,7 @@ fn main() -> io::Result<()> {
         OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&log_filename)?
+            .open(&log_filename)?,
     ));
 
     // Write session header
@@ -300,10 +310,7 @@ fn main() -> io::Result<()> {
 
     // Open real serial port
     println!("Opening real serial port {}...", REAL_PORT);
-    let real_serial = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(REAL_PORT)?;
+    let real_serial = OpenOptions::new().read(true).write(true).open(REAL_PORT)?;
 
     let real_fd = real_serial.as_raw_fd();
     configure_serial(real_fd)?;
@@ -315,7 +322,10 @@ fn main() -> io::Result<()> {
 
     // Configure PTY to raw mode to prevent data escaping
     configure_serial(pty_master)?;
-    println!("✓ Virtual port created and configured at: {}", pty_slave_name);
+    println!(
+        "✓ Virtual port created and configured at: {}",
+        pty_slave_name
+    );
 
     // Create symlink
     println!("Creating symlink {} -> {}", VIRTUAL_PORT, pty_slave_name);
@@ -325,9 +335,10 @@ fn main() -> io::Result<()> {
 
     println!("\nMITM proxy is running!");
     println!("AuxCtrl will connect to {} (redirected)", VIRTUAL_PORT);
-    println!("Send SIGTERM (kill {}) or Ctrl+C to stop gracefully\n", unsafe {
-        libc::getpid()
-    });
+    println!(
+        "Send SIGTERM (kill {}) or Ctrl+C to stop gracefully\n",
+        unsafe { libc::getpid() }
+    );
 
     // Statistics counters
     let mut tx_packets = 0u64;

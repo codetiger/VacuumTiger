@@ -27,9 +27,6 @@ VacuumTiger/
 │   ├── tools/              # Development machine tools
 │   ├── logs/               # Captured protocol sessions
 │   └── docs/               # MITM logging documentation
-├── docs/                   # Protocol documentation
-│   ├── GD32_PROTOCOL.md
-│   └── HARDWARE_REFERENCE.md
 └── firmware-gd32/          # Future: Custom GD32 firmware (planned)
 ```
 
@@ -69,7 +66,7 @@ let mut gd32 = Gd32Driver::new(transport)?;
 gd32.set_velocity(0.5, 0.0)?;  // Forward at 0.5 m/s
 
 // Initialize lidar
-let lidar_transport = SerialTransport::open("/dev/ttyS2", 115200)?;
+let lidar_transport = SerialTransport::open("/dev/ttyS1", 115200)?;
 let mut lidar = Delta2DDriver::new(lidar_transport)?;
 
 // Start scanning
@@ -81,7 +78,7 @@ while let Ok(Some(scan)) = lidar.get_scan() {
 }
 ```
 
-See **[examples/test_lidar_scenario.rs](sangam-io/examples/test_lidar_scenario.rs)** for complete working example.
+See **[examples/test_all_components.rs](sangam-io/examples/test_all_components.rs)** for complete working example.
 
 ## SangamIO Library
 
@@ -121,7 +118,7 @@ See **[examples/test_lidar_scenario.rs](sangam-io/examples/test_lidar_scenario.r
 | SangamIO Library | ✅ Complete | High-level API with traits |
 | GD32 Driver | ✅ Verified | Automatic heartbeat (20ms) |
 | Delta-2D Lidar | ✅ Verified | Full packet parsing |
-| Examples | ✅ Complete | test_lidar_scenario |
+| Examples | ✅ Complete | test_all_components |
 | Protocol MITM Tools | ✅ Complete | Serial interception & logging |
 | Documentation | ✅ Complete | GUIDE.md + REFERENCE.md |
 | Additional Controllers | 📋 Planned | STM32, ESP32 |
@@ -140,13 +137,9 @@ Legend: ✅ Complete | 🚧 In Progress | 📋 Planned
 - **Sensors**: IMU, wheel encoders, cliff sensors, bumpers
 - **Actuators**: Drive motors, vacuum blower, brushes
 
-See **[docs/HARDWARE_REFERENCE.md](docs/HARDWARE_REFERENCE.md)** for specifications.
+## Development Tools
 
-## Protocol Documentation
-
-- **[docs/GD32_PROTOCOL.md](docs/GD32_PROTOCOL.md)** - Complete GD32 communication spec
-- **[docs/HARDWARE_REFERENCE.md](docs/HARDWARE_REFERENCE.md)** - Component specs, pinouts, BOM
-- **[protocol-mitm/](protocol-mitm/)** - MITM tools for protocol reverse-engineering
+- **[protocol-mitm/](protocol-mitm/)** - MITM tools for protocol reverse-engineering and analysis
 
 ## Contributing
 
@@ -174,5 +167,3 @@ Licensed under Apache License 2.0. See [LICENSE](LICENSE) for details.
 
 - **[SangamIO Library](sangam-io/)** - Main library documentation
 - **[Original Research](https://github.com/codetiger/VacuumRobot)** - Protocol reverse engineering work
-- **[GD32 Protocol](docs/GD32_PROTOCOL.md)** - Communication specification
-- **[Hardware Reference](docs/HARDWARE_REFERENCE.md)** - Component specifications
