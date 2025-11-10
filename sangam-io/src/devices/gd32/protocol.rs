@@ -315,10 +315,12 @@ pub struct Gd32Response {
     /// Battery level (0-100%) - VERIFIED at byte [4]
     pub battery_level: u8,
 
-    // Encoder Counts
-    /// Left encoder count - VERIFIED at bytes [8-11]
+    // Encoder Counts (16-bit signed values)
+    /// Left encoder count - EXPERIMENTAL: bytes [80-81] as i16 (was [8-11] as i32)
+    /// Range: 55-65, Δ=7 in mode 0x01 (minimal - needs longer test)
     pub encoder_left: i32,
-    /// Right encoder count - VERIFIED at bytes [12-15]
+    /// Right encoder count - EXPERIMENTAL: bytes [82-83] as i16 (was [12-15])
+    /// Frozen in mode 0x02, Δ=66 in mode 0x01 (stronger candidate)
     pub encoder_right: i32,
 
     // Error and Status Flags
@@ -378,14 +380,17 @@ impl Gd32Response {
     /// - Byte [5]: Status flag
     /// - Byte [7]: Charging/battery state flags (bit-packed)
     /// - Byte [8]: Percent value (÷100)
-    /// - Bytes [8-11]: Left encoder (i32 LE)
-    /// - Bytes [12-15]: Right encoder (i32 LE)
+    /// - Bytes [80-81]: Left encoder (i16 LE) - EXPERIMENTAL, was misread as part of 32-bit [80-83]
+    /// - Bytes [82-83]: Right encoder (i16 LE) - EXPERIMENTAL, stronger candidate (Δ=66 vs Δ=7)
     /// - Byte [43]: Error code (u8)
     /// - Bytes [58-59]: IR sensor 1 (u16 LE, ×5 scaling)
     /// - Bytes [60-61]: Point button IR (u16 LE, ×5 scaling)
     /// - Bytes [62-63]: Dock button IR (u16 LE, ×5 scaling)
-    /// - Bytes [80-81]: Battery current (i16 LE, divide by 100 for Amps)
-    /// - Bytes [82-83]: Battery voltage (u16 LE, divide by 100 for Volts)
+    ///
+    /// DISABLED (conflicts with encoders):
+    /// - OLD: Bytes [8-11] left encoder (i32) - shows no accumulation, likely PWM/state
+    /// - OLD: Bytes [12-15] right encoder (i32) - always 0, not used
+    /// - Battery current/voltage [80-83] - TODO: find at [16-19] and [24-27]?
     fn from_status_data(cmd_id: u8, payload: &[u8]) -> Self {
         // Log raw STATUS_DATA packet for analysis (DEBUG level only)
         if log::log_enabled!(log::Level::Debug) && payload.len() == 96 {
@@ -400,33 +405,42 @@ impl Gd32Response {
             }
         }
 
-        // Battery voltage - VERIFIED at bytes [82-83]
-        let battery_voltage = if payload.len() >= 84 {
-            u16::from_le_bytes([payload[82], payload[83]]) as f32 / 100.0
-        } else {
-            0.0
-        };
+        // Battery voltage - DISABLED: bytes [82-83] conflict with encoder [80-83]
+        // TODO: Investigate alternative position at bytes [16-19]
+        let battery_voltage = 0.0;
+        // let battery_voltage = if payload.len() >= 84 {
+        //     u16::from_le_bytes([payload[82], payload[83]]) as f32 / 100.0
+        // } else {
+        //     0.0
+        // };
 
-        // Battery current - VERIFIED at bytes [80-81]
-        let battery_current = if payload.len() >= 82 {
-            i16::from_le_bytes([payload[80], payload[81]]) as f32 / 100.0
-        } else {
-            0.0
-        };
+        // Battery current - DISABLED: bytes [80-81] conflict with encoder [80-83]
+        // TODO: Investigate alternative position at bytes [24-27]
+        let battery_current = 0.0;
+        // let battery_current = if payload.len() >= 82 {
+        //     i16::from_le_bytes([payload[80], payload[81]]) as f32 / 100.0
+        // } else {
+        //     0.0
+        // };
 
         // Battery level - VERIFIED at byte [4]
         let battery_level = if payload.len() >= 5 { payload[4] } else { 0 };
 
-        // Left encoder - VERIFIED at bytes [8-11]
-        let encoder_left = if payload.len() >= 12 {
-            i32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]])
+        // Left encoder - EXPERIMENTAL: Testing bytes [80-81] as 16-bit signed (was [8-11] as 32-bit)
+        // Analysis shows bytes [80-83] were being misinterpreted as one 32-bit value
+        // Actually TWO separate 16-bit encoders: [80-81]=Left, [82-83]=Right
+        // Mode 0x01: Left shows Δ=7, Right shows Δ=66 (only active when components ON)
+        let encoder_left = if payload.len() >= 82 {
+            i16::from_le_bytes([payload[80], payload[81]]) as i32
         } else {
             0
         };
 
-        // Right encoder - VERIFIED at bytes [12-15]
-        let encoder_right = if payload.len() >= 16 {
-            i32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]])
+        // Right encoder - EXPERIMENTAL: Testing bytes [82-83] as 16-bit signed (was [12-15])
+        // Shows stronger encoder behavior than left: frozen in mode 0x02, Δ=66 in mode 0x01
+        // Only updates when components are active - needs longer test to verify
+        let encoder_right = if payload.len() >= 84 {
+            i16::from_le_bytes([payload[82], payload[83]]) as i32
         } else {
             0
         };

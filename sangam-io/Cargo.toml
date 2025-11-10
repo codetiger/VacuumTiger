@@ -12,6 +12,7 @@ categories = ["robotics", "api-bindings"]
 [dependencies]
 # Serial I/O
 serialport = { version = "4.5", optional = true }
+libc = "0.2"  # For low-level serial port configuration
 
 # Error handling
 thiserror = "2.0"

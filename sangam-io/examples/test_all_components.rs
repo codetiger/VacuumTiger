@@ -8,16 +8,16 @@
 use sangam_io::devices::{Delta2DDriver, Gd32Driver};
 use sangam_io::drivers::{LidarDriver, MotorDriver};
 use sangam_io::transport::SerialTransport;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .init();
+    // Initialize logging - respects RUST_LOG environment variable
+    env_logger::init();
 
-    log::info!("=== SangamIO Comprehensive Component Test ===");
+    log::info!("=== SangamIO Movement Test with All Components Active ===");
     log::info!("");
 
     // Step 1: Initialize GD32 motor controller
@@ -37,14 +37,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("Step 2: Powering on Lidar motor...");
 
     // CRITICAL: Complete AuxCtrl sequence discovered via MITM capture:
-    // 1. CMD=0x65 mode=0x02 - Switch to navigation mode (enables lidar control)
+    // 1. CMD=0x65 mode=0x01 - Switch to direct motor control mode
     // 2. CMD=0xA2 (LidarPrep) - preparation command
     // 3. CMD=0x97 (LidarPower) - enable GPIO 233
     // 4. CMD=0x71 (LidarPWM) - set motor speed
 
-    // Switch to navigation mode (CRITICAL - without this, lidar commands don't work!)
-    gd32.set_motor_mode(0x02)?;
-    log::info!("✓ GD32 switched to navigation mode (CMD=0x65 mode=0x02)");
+    // Switch to mode 0x01 (direct motor control)
+    gd32.set_motor_mode(0x01)?;
+    log::info!("✓ GD32 switched to mode 0x01 (direct motor control)");
 
     // Send preparation command (CMD=0xA2)
     gd32.send_lidar_prep()?;
@@ -75,237 +75,184 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("✓ Lidar scanning started");
     log::info!("");
 
-    // Step 5: Read and log Lidar data for 5 seconds
-    log::info!("Step 5: Reading Lidar data for 5 seconds...");
-    let scan_start = Instant::now();
-    let scan_duration = Duration::from_secs(5);
-    let mut scan_count = 0;
-    let mut total_points = 0;
+    // Step 5: Start Lidar logging thread (runs in background)
+    log::info!("Step 5: Starting Lidar logging thread...");
+    let lidar_shutdown = Arc::new(AtomicBool::new(false));
+    let lidar_shutdown_clone = Arc::clone(&lidar_shutdown);
 
-    while scan_start.elapsed() < scan_duration {
-        match lidar.get_scan() {
-            Ok(Some(scan)) => {
-                scan_count += 1;
-                total_points += scan.points.len();
+    let lidar_thread = thread::spawn(move || {
+        let mut scan_count = 0u32;
+        log::info!("Lidar thread: Started continuous scanning (logging every 200 scans)");
 
-                log::info!(
-                    "Scan #{}: {} points, timestamp: {:?}ms",
-                    scan_count,
-                    scan.points.len(),
-                    scan.timestamp_ms
-                );
-
-                // Log first few points as samples
-                if scan_count == 1 {
-                    log::info!("  Sample points:");
-                    for (i, point) in scan.points.iter().take(5).enumerate() {
-                        log::info!(
-                            "    Point {}: angle={:.2}°, distance={:.3}m, quality={}",
-                            i + 1,
-                            point.angle.to_degrees(),
-                            point.distance,
-                            point.quality
-                        );
+        while !lidar_shutdown_clone.load(Ordering::Relaxed) {
+            match lidar.get_scan() {
+                Ok(Some(scan)) => {
+                    scan_count += 1;
+                    // Only log every 200 scans to reduce output spam
+                    if scan_count % 200 == 0 {
+                        log::info!("Lidar: Scan #{}: {} points", scan_count, scan.points.len());
                     }
                 }
-            }
-            Ok(None) => {
-                // No scan data available, wait a bit
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(e) => {
-                log::warn!("Error reading scan: {}", e);
-                thread::sleep(Duration::from_millis(10));
+                Ok(None) => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => {
+                    log::warn!("Lidar thread: Error reading scan: {}", e);
+                    thread::sleep(Duration::from_millis(10));
+                }
             }
         }
-    }
 
-    log::info!("");
-    log::info!("✓ Scan complete:");
-    log::info!("  - Total scans received: {}", scan_count);
-    log::info!("  - Total points: {}", total_points);
-    if scan_count > 0 {
-        log::info!("  - Average points per scan: {}", total_points / scan_count);
-    }
+        log::info!("Lidar thread: Shutting down (total scans: {})", scan_count);
+    });
+    log::info!("✓ Lidar logging thread started");
     log::info!("");
 
-    // Step 6: Stop Lidar scanning (keep motor running for now)
-    log::info!("Step 6: Stopping Lidar scan...");
-    lidar.stop()?;
-    log::info!("✓ Lidar scanning stopped");
+    // Step 6: Using mode 0x01 (Direct Control)
+    log::info!("Step 6: Using mode 0x01 (direct motor control)...");
+    log::info!("✓ Mode 0x01 active (CMD=0x67 MotorSpeed)");
+    log::info!("  Note: Mode 0x01 was set for encoder testing");
+    thread::sleep(Duration::from_millis(500));
     log::info!("");
 
-    // TESTING: Stay in mode 0x02 (navigation mode) for entire sequence
-    // This matches AuxCtrl behavior which stays in mode 0x02 throughout cleaning
-    // AuxCtrl uses CMD=0x66 (MotorVelocity) in mode 0x02, we're testing CMD=0x67 (MotorSpeed)
-    log::info!("TESTING: Staying in mode 0x02 (navigation mode) for all components");
-    log::info!("✓ GD32 remaining in navigation mode (CMD=0x65 mode=0x02)");
+    // Step 7: Turn ON all components
+    log::info!("Step 7: Activating all components...");
+
+    log::info!("  - Turning ON vacuum (100%)");
+    gd32.set_vacuum(100)?;
+
+    log::info!("  - Turning ON main brush (100%)");
+    gd32.set_main_brush(100)?;
+
+    log::info!("  - Turning ON side brush (100%)");
+    gd32.set_side_brush(100)?;
+
+    log::info!("✓ All components active");
+    thread::sleep(Duration::from_millis(500));
     log::info!("");
 
-    // Step 7: Test forward movement (short distance)
-    log::info!("Step 7: Testing forward movement (6 inches)...");
-    log::info!("  - Both wheels forward at 2000 ticks (slow speed)");
-    log::info!("  - Duration: 1 second");
+    // Step 8: Movement Tests
+    log::info!("========================================");
+    log::info!("Step 8: Running Movement Tests");
+    log::info!("========================================");
+    log::info!("");
 
+    // Test 1: Move forward at 500 speed
+    log::info!("Test 1: Move forward at 500 speed for 2 seconds");
     let (start_left, start_right) = gd32.get_encoder_counts();
     log::info!(
-        "  - Starting encoders: left={}, right={}",
+        "  Starting encoders: left={}, right={}",
         start_left,
         start_right
     );
 
-    // Move forward slowly - both wheels same direction
-    gd32.set_raw_motor_speeds(2000, 2000)?;
-    thread::sleep(Duration::from_secs(1));
+    gd32.set_raw_motor_speeds(500, 500)?;
+    thread::sleep(Duration::from_secs(2));
     gd32.set_raw_motor_speeds(0, 0)?;
 
     let (end_left, end_right) = gd32.get_encoder_counts();
+    log::info!("  Ending encoders: left={}, right={}", end_left, end_right);
     log::info!(
-        "  - Ending encoders: left={}, right={}",
-        end_left,
-        end_right
-    );
-    log::info!(
-        "  - Delta: left={}, right={}",
+        "  Delta: left={}, right={}",
         end_left - start_left,
         end_right - start_right
     );
     log::info!("✓ Forward movement complete");
     log::info!("");
-
     thread::sleep(Duration::from_secs(1));
 
-    // Step 8: Test rotation - 360° clockwise (in place)
-    log::info!("Step 8: Testing rotation - 360° clockwise (in place)...");
-    log::info!("  - Left wheel forward, right wheel backward");
-    log::info!("  - Speed: 3000 ticks for 3 seconds");
-    log::info!("  - BOTH wheels should rotate in opposite directions!");
-
+    // Test 2: Move backward at 1000 speed
+    log::info!("Test 2: Move backward at 1000 speed for 2 seconds");
     let (start_left, start_right) = gd32.get_encoder_counts();
     log::info!(
-        "  - Starting encoders: left={}, right={}",
+        "  Starting encoders: left={}, right={}",
         start_left,
         start_right
     );
 
-    // Clockwise rotation: left forward (+), right backward (-)
-    gd32.set_raw_motor_speeds(3000, -3000)?;
+    gd32.set_raw_motor_speeds(-500, -500)?;
+    thread::sleep(Duration::from_secs(2));
+    gd32.set_raw_motor_speeds(0, 0)?;
+
+    let (end_left, end_right) = gd32.get_encoder_counts();
+    log::info!("  Ending encoders: left={}, right={}", end_left, end_right);
+    log::info!(
+        "  Delta: left={}, right={}",
+        end_left - start_left,
+        end_right - start_right
+    );
+    log::info!("✓ Backward movement complete");
+    log::info!("");
+    thread::sleep(Duration::from_secs(1));
+
+    // Test 3: Rotate clockwise at 1000 speed
+    log::info!("Test 3: Rotate clockwise at 1000 speed for 3 seconds");
+    let (start_left, start_right) = gd32.get_encoder_counts();
+    log::info!(
+        "  Starting encoders: left={}, right={}",
+        start_left,
+        start_right
+    );
+
+    gd32.set_raw_motor_speeds(500, -500)?;
     thread::sleep(Duration::from_secs(3));
     gd32.set_raw_motor_speeds(0, 0)?;
 
     let (end_left, end_right) = gd32.get_encoder_counts();
+    log::info!("  Ending encoders: left={}, right={}", end_left, end_right);
     log::info!(
-        "  - Ending encoders: left={}, right={}",
-        end_left,
-        end_right
-    );
-    log::info!(
-        "  - Delta: left={}, right={}",
+        "  Delta: left={}, right={}",
         end_left - start_left,
         end_right - start_right
     );
-
-    // Check if both wheels moved
-    if (end_left != start_left) && (end_right != start_right) {
-        log::info!("  ✓ Both wheels rotated!");
-    } else if end_left != start_left {
-        log::warn!("  ⚠ Only LEFT wheel rotated!");
-    } else if end_right != start_right {
-        log::warn!("  ⚠ Only RIGHT wheel rotated!");
-    } else {
-        log::warn!("  ✗ No wheels rotated!");
-    }
     log::info!("✓ Clockwise rotation complete");
     log::info!("");
-
     thread::sleep(Duration::from_secs(1));
 
-    // Step 9: Test rotation - 360° anticlockwise (in place)
-    log::info!("Step 9: Testing rotation - 360° anticlockwise (in place)...");
-    log::info!("  - Left wheel backward, right wheel forward");
-    log::info!("  - Speed: 3000 ticks for 3 seconds");
-    log::info!("  - BOTH wheels should rotate in opposite directions!");
-
+    // Test 4: Rotate counter-clockwise at 1000 speed
+    log::info!("Test 4: Rotate counter-clockwise at 1000 speed for 3 seconds");
     let (start_left, start_right) = gd32.get_encoder_counts();
     log::info!(
-        "  - Starting encoders: left={}, right={}",
+        "  Starting encoders: left={}, right={}",
         start_left,
         start_right
     );
 
-    // Anticlockwise rotation: left backward (-), right forward (+)
-    gd32.set_raw_motor_speeds(-3000, 3000)?;
+    gd32.set_raw_motor_speeds(-500, 500)?;
     thread::sleep(Duration::from_secs(3));
     gd32.set_raw_motor_speeds(0, 0)?;
 
     let (end_left, end_right) = gd32.get_encoder_counts();
+    log::info!("  Ending encoders: left={}, right={}", end_left, end_right);
     log::info!(
-        "  - Ending encoders: left={}, right={}",
-        end_left,
-        end_right
-    );
-    log::info!(
-        "  - Delta: left={}, right={}",
+        "  Delta: left={}, right={}",
         end_left - start_left,
         end_right - start_right
     );
-
-    // Check if both wheels moved
-    if (end_left != start_left) && (end_right != start_right) {
-        log::info!("  ✓ Both wheels rotated!");
-    } else if end_left != start_left {
-        log::warn!("  ⚠ Only LEFT wheel rotated!");
-    } else if end_right != start_right {
-        log::warn!("  ⚠ Only RIGHT wheel rotated!");
-    } else {
-        log::warn!("  ✗ No wheels rotated!");
-    }
-    log::info!("✓ Anticlockwise rotation complete");
+    log::info!("✓ Counter-clockwise rotation complete");
     log::info!("");
 
-    thread::sleep(Duration::from_millis(500));
+    // Step 9: Turn OFF all components
+    log::info!("========================================");
+    log::info!("Step 9: Deactivating all components");
+    log::info!("========================================");
+    log::info!("");
 
-    // Step 10: Test suction motor
-    log::info!("Step 10: Testing suction motor...");
-    log::info!("  - Turning ON suction at 100% power");
-    gd32.set_vacuum(100)?;
-    thread::sleep(Duration::from_secs(2));
-
-    log::info!("  - Turning OFF suction");
+    log::info!("  - Turning OFF vacuum");
     gd32.set_vacuum(0)?;
-    log::info!("✓ Suction motor test complete");
-    log::info!("");
 
-    thread::sleep(Duration::from_millis(500));
-
-    // Step 11: Test rolling brush
-    log::info!("Step 11: Testing rolling brush...");
-    log::info!("  - Turning ON rolling brush at 100% speed");
-    gd32.set_main_brush(100)?;
-    thread::sleep(Duration::from_secs(2));
-
-    log::info!("  - Turning OFF rolling brush");
+    log::info!("  - Turning OFF main brush");
     gd32.set_main_brush(0)?;
-    log::info!("✓ Rolling brush test complete");
-    log::info!("");
-
-    thread::sleep(Duration::from_millis(500));
-
-    // Step 12: Test edge/side brush
-    log::info!("Step 12: Testing edge/side brush...");
-    log::info!("  - Turning ON side brush at 100% speed");
-    gd32.set_side_brush(100)?;
-    thread::sleep(Duration::from_secs(2));
 
     log::info!("  - Turning OFF side brush");
     gd32.set_side_brush(0)?;
-    log::info!("✓ Side brush test complete");
+
+    log::info!("✓ All components deactivated");
+    thread::sleep(Duration::from_millis(500));
     log::info!("");
 
-    thread::sleep(Duration::from_millis(500));
-
-    // Step 13: Read all sensor data
-    log::info!("Step 13: Reading all sensor data from GD32...");
+    // Step 10: Read all sensor data
+    log::info!("Step 10: Reading all sensor data from GD32...");
     log::info!("");
 
     // Battery information
@@ -380,8 +327,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("      See parse_status_packet() in src/devices/gd32/protocol.rs for details");
     log::info!("");
 
-    // Step 14: Power off Lidar motor
-    log::info!("Step 14: Powering off Lidar motor...");
+    // Step 11: Stop Lidar logging thread
+    log::info!("Step 11: Stopping Lidar logging thread...");
+    lidar_shutdown.store(true, Ordering::Relaxed);
+    lidar_thread.join().expect("Failed to join lidar thread");
+    log::info!("✓ Lidar logging thread stopped");
+    log::info!("");
+
+    // Step 12: Power off Lidar motor
+    log::info!("Step 12: Powering off Lidar motor...");
 
     // First stop PWM (CMD=0x71)
     gd32.set_lidar_pwm(0)?;
@@ -392,16 +346,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("✓ Lidar power disabled (CMD=0x97)");
     log::info!("");
 
-    // Step 15: Clean exit (Drop implementations will handle cleanup)
-    log::info!("Step 15: Clean exit...");
+    // Step 13: Clean exit (Drop implementations will handle cleanup)
+    log::info!("Step 13: Clean exit...");
     log::info!("  - GD32 heartbeat thread will stop");
     log::info!("  - Motors will stop");
     log::info!("");
 
     drop(gd32);
-    drop(lidar);
 
-    log::info!("=== All component tests completed successfully ===");
+    log::info!("=== All tests completed successfully ===");
 
     Ok(())
 }

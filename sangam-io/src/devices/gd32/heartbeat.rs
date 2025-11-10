@@ -1,16 +1,18 @@
-//! Background heartbeat thread management
+//! Background thread management for GD32 communication
 //!
-//! The GD32 requires a continuous heartbeat (CMD=0x66) every 20ms.
+//! The GD32 requires continuous heartbeat (CMD=0x66) every 20ms.
 //! Missing heartbeats will cause the device to enter error state and stop motors.
 //!
-//! This implementation matches AuxCtrl's architecture:
-//! - 2ms receive loop (matches getGDData thread)
-//! - CMD=0x66 sent every 10 cycles (10 × 2ms = 20ms)
-//! - Lost packet tracking with threshold (150 lost packets)
+//! This implementation uses a dual-thread architecture matching AuxCtrl:
+//! - READ thread: 2ms loop for receiving STATUS_DATA packets (never blocks on writes)
+//! - WRITE thread: 20ms loop for sending commands (can block without affecting reads)
+//!
+//! This separation ensures consistent 2ms read timing regardless of write latency.
 
 use crate::transport::Transport;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -20,43 +22,38 @@ use super::state::Gd32State;
 /// Receive interval - matches AuxCtrl's 2ms loop (getGDData thread)
 const RECEIVE_INTERVAL: Duration = Duration::from_millis(2);
 
-/// Heartbeat cycles: 10 × 2ms = 20ms (CMD=0x66 interval)
-const HEARTBEAT_CYCLES: u64 = 10;
+/// Write interval - CMD=0x66 heartbeat every 20ms
+const WRITE_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Lost packet threshold - matches AuxCtrl (150 lost packets = 300ms timeout)
 const LOST_PACKET_THRESHOLD: u32 = 150;
 
-/// Spawn background heartbeat thread
+/// Spawn READ thread (fast 2ms loop, never blocks on writes)
 ///
-/// The thread will:
-/// 1. Try to receive packets every 2ms (matches AuxCtrl's getGDData loop)
-/// 2. Send CMD=0x66 heartbeat every 20ms (10 cycles) with motor speed commands
-/// 3. Track lost packets and log errors if threshold exceeded
-/// 4. Update shared state with encoder and battery data
-/// 5. Run until shutdown flag is set
-///
-/// NOTE: CMD=0x06 (Wake) is NOT sent periodically (not found in AuxCtrl's main loop)
-pub fn spawn_heartbeat_thread(
+/// This thread:
+/// 1. Checks for available data every 2ms
+/// 2. Reads and processes STATUS_DATA packets
+/// 3. Updates shared state with sensor/encoder/battery data
+/// 4. Tracks lost packets for sleep detection
+/// 5. Never performs any write operations (ensures consistent timing)
+pub fn spawn_read_thread(
     transport: Arc<Mutex<Box<dyn Transport>>>,
     state: Arc<Mutex<Gd32State>>,
     shutdown: Arc<Mutex<bool>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        log::info!("GD32: Heartbeat thread started (2ms receive loop)");
-
-        let mut cycle_count = 0u64;
+        log::info!("GD32: Read thread started (2ms loop, dedicated to receiving STATUS_DATA)");
 
         loop {
             let cycle_start = Instant::now();
 
             // Check shutdown flag
             if *shutdown.lock() {
-                log::info!("GD32: Heartbeat thread shutting down");
+                log::info!("GD32: Read thread shutting down");
                 break;
             }
 
-            // ===== 1. RECEIVE PACKETS (every 2ms cycle) =====
-            // Matches AuxCtrl's getGDData thread receive loop
+            // ONLY READ - never write (ensures consistent 2ms timing)
             match read_and_process_responses(&transport, &state) {
                 Ok(_) => {
                     // Reset lost packet counter on successful receive
@@ -97,94 +94,137 @@ pub fn spawn_heartbeat_thread(
                 }
             }
 
-            // ===== 2. SEND MOTOR CONTROL via CMD=0x66 (every 10 cycles = 20ms) =====
-            // VERIFIED via MITM: CMD=0x66 payload = [left_speed (i32 LE), right_speed (i32 LE)]
-            // Mode 0x02 ONLY supports CMD=0x66 for motor control (CMD=0x67 causes error 0xFF)
-            // This matches AuxCtrl behavior which uses CMD=0x66 in mode 0x02
-            if cycle_count % HEARTBEAT_CYCLES == 0 {
-                let (target_left, target_right) = {
-                    let state = state.lock();
-                    (state.target_left, state.target_right)
-                };
+            // Maintain 2ms timing
+            let elapsed = cycle_start.elapsed();
+            if elapsed < RECEIVE_INTERVAL {
+                thread::sleep(RECEIVE_INTERVAL - elapsed);
+            } else if elapsed.as_millis() > 3 {
+                log::warn!("GD32: Read cycle overrun: {:?} (target: 2ms)", elapsed);
+            }
+        }
 
-                // CMD=0x66: MotorVelocity with actual wheel speeds
-                // Payload: [left_speed (i32 LE), right_speed (i32 LE)]
-                let velocity_cmd =
-                    Gd32Command::motor_velocity_with_speeds(target_left, target_right);
-                let velocity_packet = velocity_cmd.encode();
+        log::info!("GD32: Read thread stopped");
+    })
+}
 
-                // Send CMD=0x66 with motor speeds
-                {
-                    let mut transport = transport.lock();
+/// Spawn WRITE thread (20ms loop, handles all command transmission)
+///
+/// This thread:
+/// 1. Sends CMD=0x66 (motor control) every 20ms
+/// 2. Sends CMD=0x06 (heartbeat) every 200ms
+/// 3. Sends CMD=0x08 (wake) when in sleep mode
+/// 4. Processes ad-hoc commands from the command queue
+/// 5. Can block on writes without affecting read timing
+pub fn spawn_write_thread(
+    transport: Arc<Mutex<Box<dyn Transport>>>,
+    state: Arc<Mutex<Gd32State>>,
+    cmd_rx: Receiver<Gd32Command>,
+    shutdown: Arc<Mutex<bool>>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        log::info!("GD32: Write thread started (20ms loop, handles all command transmission)");
 
-                    // Log TX periodically
-                    if cycle_count == 0 || cycle_count % 500 == 0 {
-                        log::debug!(
-                            "GD32: TX CMD=0x66 (cycle #{}) L={}, R={}",
-                            cycle_count / HEARTBEAT_CYCLES,
-                            target_left,
-                            target_right
-                        );
-                    }
+        let mut cycle_count = 0u64;
 
-                    // Send CMD=0x66 (MotorVelocity - motor control in mode 0x02)
-                    if let Err(e) = transport.write(&velocity_packet) {
-                        log::error!("GD32: MotorVelocity send error: {}", e);
-                    } else {
-                        let mut state = state.lock();
-                        state.total_tx_packets += 1;
-                    }
-                }
+        loop {
+            let cycle_start = Instant::now();
+
+            // Check shutdown flag
+            if *shutdown.lock() {
+                log::info!("GD32: Write thread shutting down");
+                break;
             }
 
-            // ===== 3. SEND HEARTBEAT COMMAND (every 100 cycles = 200ms) =====
+            // ===== 1. PROCESS QUEUED COMMANDS (ad-hoc from main thread) =====
+            // Drain all pending commands from the queue
+            while let Ok(cmd) = cmd_rx.try_recv() {
+                send_command(&transport, &state, &cmd);
+            }
+
+            // ===== 2. SEND MOTOR CONTROL (every 20ms) =====
+            // Choose command based on motor mode:
+            // - Mode 0x01: CMD=0x67 (MotorSpeed) - direct wheel control
+            // - Mode 0x02: CMD=0x66 (MotorVelocity) - differential drive
+            let (target_left, target_right, motor_mode) = {
+                let state = state.lock();
+                (state.target_left, state.target_right, state.motor_mode)
+            };
+
+            let motor_cmd = if motor_mode == 0x01 {
+                // Mode 0x01: Direct motor control (CMD=0x67)
+                Gd32Command::MotorSpeed {
+                    left: target_left,
+                    right: target_right,
+                }
+            } else {
+                // Mode 0x02: Velocity control (CMD=0x66)
+                Gd32Command::motor_velocity_with_speeds(target_left, target_right)
+            };
+
+            // Log TX periodically (every 1 second = 50 cycles)
+            if cycle_count % 50 == 0 {
+                log::debug!(
+                    "GD32: TX CMD=0x{:02X} mode=0x{:02X} (cycle #{}) L={}, R={}",
+                    motor_cmd.cmd_id(),
+                    motor_mode,
+                    cycle_count,
+                    target_left,
+                    target_right
+                );
+            }
+
+            send_command(&transport, &state, &motor_cmd);
+
+            // ===== 3. SEND HEARTBEAT COMMAND (every 10 cycles = 200ms) =====
             // Keeps GD32 from entering sleep mode
-            // Pattern observed from AuxCtrl: CMD=0x06 (Heartbeat) sent periodically
-            if cycle_count % (HEARTBEAT_CYCLES * 10) == 0 && cycle_count > 0 {
+            if cycle_count % 10 == 0 && cycle_count > 0 {
                 let heartbeat_cmd = Gd32Command::Heartbeat;
-                let packet = heartbeat_cmd.encode();
-
-                let mut transport = transport.lock();
-                if let Err(e) = transport.write(&packet) {
-                    log::error!("GD32: Heartbeat command send error: {}", e);
-                } else {
-                    log::debug!("GD32: Sent CMD=0x06 (Heartbeat) to prevent sleep mode");
-                }
+                send_command(&transport, &state, &heartbeat_cmd);
+                log::debug!("GD32: Sent CMD=0x06 (Heartbeat) to prevent sleep mode");
             }
 
-            // ===== 4. WAKE SEQUENCE FROM SLEEP (every 250 cycles = 500ms) =====
+            // ===== 4. WAKE SEQUENCE FROM SLEEP (every 25 cycles = 500ms) =====
             // When GD32 enters sleep mode (no response for 300ms), send Initialize sequence
-            // This matches AuxCtrl's behavior: sleep recovery uses CMD=0x08
-            if cycle_count % (HEARTBEAT_CYCLES * 25) == 0 && cycle_count > 0 {
+            if cycle_count % 25 == 0 && cycle_count > 0 {
                 let is_sleeping = state.lock().sleep_mode;
                 if is_sleeping {
                     let init_cmd = Gd32Command::default_initialize();
-                    let packet = init_cmd.encode();
-
-                    let mut transport = transport.lock();
-                    if let Err(e) = transport.write(&packet) {
-                        log::error!("GD32: Sleep recovery CMD=0x08 send error: {}", e);
-                    } else {
-                        log::warn!(
-                            "GD32: Sending CMD=0x08 (Initialize) to recover from sleep mode"
-                        );
-                    }
+                    send_command(&transport, &state, &init_cmd);
+                    log::warn!("GD32: Sending CMD=0x08 (Initialize) to recover from sleep mode");
                 }
             }
 
             cycle_count += 1;
 
-            // ===== 5. MAINTAIN 2ms TIMING =====
+            // ===== 5. MAINTAIN 20ms TIMING =====
             let elapsed = cycle_start.elapsed();
-            if elapsed < RECEIVE_INTERVAL {
-                thread::sleep(RECEIVE_INTERVAL - elapsed);
-            } else if elapsed.as_millis() > 3 {
-                log::warn!("GD32: Cycle overrun: {:?} (target: 2ms)", elapsed);
+            if elapsed < WRITE_INTERVAL {
+                thread::sleep(WRITE_INTERVAL - elapsed);
+            } else if elapsed.as_millis() > 25 {
+                log::warn!("GD32: Write cycle overrun: {:?} (target: 20ms)", elapsed);
             }
         }
 
-        log::info!("GD32: Heartbeat thread stopped");
+        log::info!("GD32: Write thread stopped");
     })
+}
+
+/// Send a command to GD32 (helper function for write thread)
+fn send_command(
+    transport: &Arc<Mutex<Box<dyn Transport>>>,
+    state: &Arc<Mutex<Gd32State>>,
+    cmd: &Gd32Command,
+) {
+    let packet = cmd.encode();
+    let mut transport = transport.lock();
+
+    if let Err(e) = transport.write(&packet) {
+        log::error!("GD32: Write error for CMD=0x{:02X}: {}", cmd.cmd_id(), e);
+    } else {
+        let mut state = state.lock();
+        state.total_tx_packets += 1;
+    }
+    // Note: No flush() - let kernel handle transmission asynchronously
 }
 
 /// Read and process any available response packets
@@ -237,6 +277,30 @@ fn read_and_process_responses(
             }
 
             if response.is_status_packet() {
+                // Log complete STATUS_DATA packet at debug level
+                if log::log_enabled!(log::Level::Debug) {
+                    let packet_num = {
+                        let state = state.lock();
+                        state.total_rx_packets
+                    };
+
+                    // Format: packet_num | enc_L | enc_R | error | complete hex payload
+                    let hex_dump: Vec<String> = response
+                        .payload
+                        .iter()
+                        .map(|b| format!("{:02X}", b))
+                        .collect();
+
+                    log::debug!(
+                        "STATUS_DATA | pkt={:06} | enc_L={:08} enc_R={:08} err=0x{:02X} | RAW: {}",
+                        packet_num,
+                        response.encoder_left,
+                        response.encoder_right,
+                        response.error_code,
+                        hex_dump.join(" ")
+                    );
+                }
+
                 // Update shared state
                 let mut state = state.lock();
                 state.battery_voltage = response.battery_voltage;

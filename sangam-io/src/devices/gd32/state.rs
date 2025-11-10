@@ -7,6 +7,8 @@ use std::time::Instant;
 /// Shared between main thread and heartbeat thread
 #[derive(Debug, Clone)]
 pub struct Gd32State {
+    /// Current motor control mode (0x01 = direct, 0x02 = velocity)
+    pub motor_mode: u8,
     /// Target left motor speed (ticks per cycle)
     pub target_left: i32,
     /// Target right motor speed (ticks per cycle)
@@ -63,6 +65,7 @@ pub struct Gd32State {
 impl Default for Gd32State {
     fn default() -> Self {
         Self {
+            motor_mode: 0x02, // Default to velocity mode
             target_left: 0,
             target_right: 0,
             battery_voltage: 0.0,

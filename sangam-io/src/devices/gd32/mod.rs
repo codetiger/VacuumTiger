@@ -20,14 +20,22 @@ use state::Gd32State;
 /// GD32F103 motor controller driver
 ///
 /// Handles initialization, heartbeat management, and communication with GD32 MCU.
+///
+/// Uses a dual-thread architecture:
+/// - READ thread: Fast 2ms loop for receiving STATUS_DATA (never blocks on writes)
+/// - WRITE thread: 20ms loop for sending commands (can block without affecting reads)
 pub struct Gd32Driver {
-    /// Transport layer for serial I/O
+    /// Transport layer for serial I/O (shared between threads)
     transport: Arc<Mutex<Box<dyn Transport>>>,
-    /// Shared state between main thread and heartbeat thread
+    /// Shared state between threads
     state: Arc<Mutex<Gd32State>>,
-    /// Heartbeat thread handle
-    heartbeat_thread: Option<thread::JoinHandle<()>>,
-    /// Shutdown flag for heartbeat thread
+    /// READ thread handle (2ms loop)
+    read_thread: Option<thread::JoinHandle<()>>,
+    /// WRITE thread handle (20ms loop)
+    write_thread: Option<thread::JoinHandle<()>>,
+    /// Command queue sender (for ad-hoc commands to write thread)
+    command_tx: std::sync::mpsc::Sender<Gd32Command>,
+    /// Shutdown flag for both threads
     shutdown: Arc<Mutex<bool>>,
 }
 
@@ -117,12 +125,25 @@ impl Gd32Driver {
         thread::sleep(Duration::from_millis(1));
         Self::send_command(&transport, &Gd32Command::BrushControl(0x64))?; // Value from MITM log
 
-        // Phase 5: Start heartbeat thread (T+289ms)
+        // Phase 5: Start dual-thread architecture (T+289ms)
         thread::sleep(Duration::from_millis(9));
-        log::info!("GD32: Starting heartbeat thread (CMD=0x66)");
-        let heartbeat_thread = Some(heartbeat::spawn_heartbeat_thread(
+        log::info!("GD32: Starting dual-thread architecture (READ: 2ms, WRITE: 20ms)");
+
+        // Create command queue for ad-hoc commands
+        let (command_tx, command_rx) = std::sync::mpsc::channel();
+
+        // Spawn READ thread (fast 2ms loop, never blocks on writes)
+        let read_thread = Some(heartbeat::spawn_read_thread(
             Arc::clone(&transport),
             Arc::clone(&state),
+            Arc::clone(&shutdown),
+        ));
+
+        // Spawn WRITE thread (20ms loop, handles all command transmission)
+        let write_thread = Some(heartbeat::spawn_write_thread(
+            Arc::clone(&transport),
+            Arc::clone(&state),
+            command_rx,
             Arc::clone(&shutdown),
         ));
 
@@ -136,7 +157,9 @@ impl Gd32Driver {
         Ok(Gd32Driver {
             transport,
             state,
-            heartbeat_thread,
+            read_thread,
+            write_thread,
+            command_tx,
             shutdown,
         })
     }
@@ -161,8 +184,8 @@ impl Gd32Driver {
         while start.elapsed() < timeout {
             // Check if we've received status data from heartbeat thread
             let current_state = state.lock();
-            if current_state.battery_voltage > 0.0 {
-                // Battery voltage populated means we got CMD=0x15
+            if current_state.total_rx_packets > 0 {
+                // Received at least one STATUS_DATA packet
                 drop(current_state);
                 log::info!(
                     "GD32: Device responded after {} wake attempts",
@@ -199,7 +222,7 @@ impl Gd32Driver {
         )))
     }
 
-    /// Send a command to the GD32
+    /// Send a command to the GD32 (for initialization only, before threads start)
     fn send_command(transport: &Arc<Mutex<Box<dyn Transport>>>, cmd: &Gd32Command) -> Result<()> {
         let packet = cmd.encode();
         log::debug!(
@@ -212,6 +235,16 @@ impl Gd32Driver {
         transport.write(&packet)?;
         transport.flush()?; // Required for initialization timing
         Ok(())
+    }
+
+    /// Queue a command to the write thread
+    fn queue_command(&self, cmd: Gd32Command) -> Result<()> {
+        self.command_tx.send(cmd).map_err(|_| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "Write thread disconnected",
+            ))
+        })
     }
 
     /// Set motor control mode via CMD=0x65
@@ -229,8 +262,15 @@ impl Gd32Driver {
     /// This driver now uses the same approach: mode 0x02 + CMD=0x66 for unified control.
     pub fn set_motor_mode(&mut self, mode: u8) -> Result<()> {
         log::info!("GD32: Setting motor control mode: 0x{:02X}", mode);
-        Self::send_command(&self.transport, &Gd32Command::MotorControlType(mode))?;
-        log::debug!("GD32: Sent CMD=0x65 (MotorControlType=0x{:02X})", mode);
+
+        // Update state so write thread knows which command to use
+        {
+            let mut state = self.state.lock();
+            state.motor_mode = mode;
+        }
+
+        self.queue_command(Gd32Command::MotorControlType(mode))?;
+        log::debug!("GD32: Queued CMD=0x65 (MotorControlType=0x{:02X})", mode);
         Ok(())
     }
 
@@ -240,8 +280,8 @@ impl Gd32Driver {
     /// Discovered via MITM capture of AuxCtrl cleaning session.
     pub fn send_lidar_prep(&mut self) -> Result<()> {
         log::info!("GD32: Sending lidar preparation command");
-        Self::send_command(&self.transport, &Gd32Command::LidarPrep)?;
-        log::debug!("GD32: Sent CMD=0xA2 (LidarPrep)");
+        self.queue_command(Gd32Command::LidarPrep)?;
+        log::debug!("GD32: Queued CMD=0xA2 (LidarPrep)");
         Ok(())
     }
 
@@ -252,8 +292,8 @@ impl Gd32Driver {
     /// NOTE: Must send CMD=0xA2 (LidarPrep) before this command!
     pub fn set_lidar_power(&mut self, enable: bool) -> Result<()> {
         log::info!("GD32: Setting lidar power: {}", enable);
-        Self::send_command(&self.transport, &Gd32Command::LidarPower(enable))?;
-        log::debug!("GD32: Sent CMD=0x97 (LidarPower={})", enable);
+        self.queue_command(Gd32Command::LidarPower(enable))?;
+        log::debug!("GD32: Queued CMD=0x97 (LidarPower={})", enable);
         Ok(())
     }
 
@@ -267,22 +307,22 @@ impl Gd32Driver {
     pub fn set_lidar_pwm(&mut self, pwm_percent: i32) -> Result<()> {
         let clamped = pwm_percent.clamp(0, 100);
         log::info!("GD32: Setting lidar PWM: {}%", clamped);
-        Self::send_command(&self.transport, &Gd32Command::LidarPWM(pwm_percent))?;
-        log::debug!("GD32: Sent CMD=0x71 (LidarPWM={})", clamped);
+        self.queue_command(Gd32Command::LidarPWM(pwm_percent))?;
+        log::debug!("GD32: Queued CMD=0x71 (LidarPWM={})", clamped);
         Ok(())
     }
 
     /// Set vacuum blower speed (0-100%)
     pub fn set_blower_speed(&mut self, speed: u8) -> Result<()> {
         let speed_value = (speed as u16) * 100; // Scale to device range
-        Self::send_command(&self.transport, &Gd32Command::BlowerSpeed(speed_value))
+        self.queue_command(Gd32Command::BlowerSpeed(speed_value))
     }
 
     /// Reset GD32 error codes (CMD=0x0A)
     /// Clears any accumulated error flags in the motor controller
     pub fn reset_error_code(&mut self) -> Result<()> {
-        Self::send_command(&self.transport, &Gd32Command::ResetErrorCode)?;
-        log::debug!("GD32: Sent CMD=0x0A (ResetErrorCode)");
+        self.queue_command(Gd32Command::ResetErrorCode)?;
+        log::debug!("GD32: Queued CMD=0x0A (ResetErrorCode)");
         Ok(())
     }
 
@@ -290,8 +330,8 @@ impl Gd32Driver {
     /// WARNING: Device may require hardware wake (GPIO) or button press to recover
     pub fn sleep(&mut self) -> Result<()> {
         log::warn!("GD32: Putting device into sleep mode (CMD=0x04)");
-        Self::send_command(&self.transport, &Gd32Command::Sleep)?;
-        log::debug!("GD32: Sent CMD=0x04 (Sleep)");
+        self.queue_command(Gd32Command::Sleep)?;
+        log::debug!("GD32: Queued CMD=0x04 (Sleep)");
         Ok(())
     }
 
@@ -299,24 +339,24 @@ impl Gd32Driver {
     /// Used to acknowledge wakeup signal or attempt software wake
     pub fn wakeup_ack(&mut self) -> Result<()> {
         log::info!("GD32: Sending wakeup acknowledgment (CMD=0x05)");
-        Self::send_command(&self.transport, &Gd32Command::WakeupAck)?;
-        log::debug!("GD32: Sent CMD=0x05 (WakeupAck)");
+        self.queue_command(Gd32Command::WakeupAck)?;
+        log::debug!("GD32: Queued CMD=0x05 (WakeupAck)");
         Ok(())
     }
 
     /// Control R16 module power (CMD=0x99)
     /// The R16 module handles certain sensor or control functions
     pub fn set_r16_power(&mut self, enable: bool) -> Result<()> {
-        Self::send_command(&self.transport, &Gd32Command::R16Power(enable))?;
-        log::debug!("GD32: Sent CMD=0x99 (R16Power={})", enable);
+        self.queue_command(Gd32Command::R16Power(enable))?;
+        log::debug!("GD32: Queued CMD=0x99 (R16Power={})", enable);
         Ok(())
     }
 
     /// Restart R16 module (CMD=0x9A)
     /// Performs a soft reset of the R16 subsystem
     pub fn restart_r16(&mut self) -> Result<()> {
-        Self::send_command(&self.transport, &Gd32Command::RestartR16)?;
-        log::debug!("GD32: Sent CMD=0x9A (RestartR16)");
+        self.queue_command(Gd32Command::RestartR16)?;
+        log::debug!("GD32: Queued CMD=0x9A (RestartR16)");
         Ok(())
     }
 
@@ -501,16 +541,16 @@ impl MotorDriver for Gd32Driver {
     fn set_side_brush(&mut self, speed: u8) -> Result<()> {
         let clamped = speed.min(100);
         log::info!("GD32: Setting side brush speed: {}%", clamped);
-        Self::send_command(&self.transport, &Gd32Command::SideBrushSpeed(clamped))?;
-        log::debug!("GD32: Sent CMD=0x69 (SideBrushSpeed={})", clamped);
+        self.queue_command(Gd32Command::SideBrushSpeed(clamped))?;
+        log::debug!("GD32: Queued CMD=0x69 (SideBrushSpeed={})", clamped);
         Ok(())
     }
 
     fn set_main_brush(&mut self, speed: u8) -> Result<()> {
         let clamped = speed.min(100);
         log::info!("GD32: Setting main/rolling brush speed: {}%", clamped);
-        Self::send_command(&self.transport, &Gd32Command::RollingBrushSpeed(clamped))?;
-        log::debug!("GD32: Sent CMD=0x6A (RollingBrushSpeed={})", clamped);
+        self.queue_command(Gd32Command::RollingBrushSpeed(clamped))?;
+        log::debug!("GD32: Queued CMD=0x6A (RollingBrushSpeed={})", clamped);
         Ok(())
     }
 }
@@ -519,15 +559,22 @@ impl Drop for Gd32Driver {
     fn drop(&mut self) {
         log::info!("GD32: Shutting down driver");
 
-        // Signal shutdown to heartbeat thread
+        // Signal shutdown to both threads
         *self.shutdown.lock() = true;
 
-        // Wait for heartbeat thread to exit
-        if let Some(handle) = self.heartbeat_thread.take() {
+        // Wait for READ thread to exit
+        if let Some(handle) = self.read_thread.take() {
+            log::debug!("GD32: Waiting for READ thread to exit");
             let _ = handle.join();
         }
 
-        // Send stop command
+        // Wait for WRITE thread to exit
+        if let Some(handle) = self.write_thread.take() {
+            log::debug!("GD32: Waiting for WRITE thread to exit");
+            let _ = handle.join();
+        }
+
+        // Send stop command directly (threads are stopped, so use transport directly)
         let _ = Self::send_command(
             &self.transport,
             &Gd32Command::MotorSpeed { left: 0, right: 0 },

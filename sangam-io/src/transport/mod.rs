@@ -18,8 +18,18 @@ pub trait Transport: Send {
     /// Write data from buffer, returns number of bytes written
     fn write(&mut self, data: &[u8]) -> Result<usize>;
 
-    /// Flush any pending writes
+    /// Flush any pending writes (blocking until complete)
     fn flush(&mut self) -> Result<()>;
+
+    /// Try to flush pending writes without blocking (best-effort)
+    ///
+    /// This is a hint to the transport layer that writes should be sent,
+    /// but unlike flush(), this does not block. The implementation may
+    /// choose to do nothing if flushing would block.
+    fn try_flush(&mut self) -> Result<()> {
+        // Default: no-op (fire and forget)
+        Ok(())
+    }
 
     /// Check if data is available to read
     fn available(&mut self) -> Result<usize> {
