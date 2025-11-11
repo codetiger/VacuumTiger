@@ -1,39 +1,49 @@
 # SangamIO
 
-**High-level robot API for robotic vacuum cleaners running on embedded Linux**
+**Hardware abstraction library for robotic vacuum cleaners on embedded Linux**
 
-SangamIO provides a clean, type-safe Rust API for controlling vacuum robots. Instead of dealing with low-level serial protocols and device management, you write simple robot code.
+SangamIO provides a unified, type-safe Rust API for controlling vacuum robots. It abstracts motor control, odometry tracking, lidar scanning, and sensor monitoring into a single ergonomic interface.
 
 ## Quick Example
 
 ```rust
-use sangam_io::devices::Gd32Driver;
-use sangam_io::drivers::MotorDriver;
-use sangam_io::transport::SerialTransport;
+use sangam_io::SangamIO;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let transport = SerialTransport::open("/dev/ttyS3", 115200)?;
-    let mut robot = Gd32Driver::new(transport)?;
+    // Initialize hardware (CRL-200S configuration)
+    let mut sangam = SangamIO::crl200s("/dev/ttyS3", "/dev/ttyS1")?;
 
-    robot.set_velocity(0.5, 0.0)?;  // Forward at 0.5 m/s
-    robot.set_lidar_power(true)?;    // Power on lidar
+    // Set velocity (forward at 0.5 m/s, no rotation)
+    sangam.set_velocity(0.5, 0.0)?;
 
-    let odom = robot.get_odometry()?;
-    println!("Position: ({:.2}, {:.2})", odom.x, odom.y);
+    // Move forward 1 meter
+    sangam.move_forward(1.0)?;
+
+    // Get odometry delta for SLAM
+    let delta = sangam.get_odometry_delta()?;
+    println!("Δx: {:.3}m, Δy: {:.3}m, Δθ: {:.3}°",
+        delta.delta_x, delta.delta_y, delta.delta_theta.to_degrees());
+
+    // Get lidar scan
+    if let Some(scan) = sangam.get_scan()? {
+        println!("Scanned {} points", scan.points.len());
+    }
 
     Ok(())
 }
 ```
 
-SangamIO handles initialization sequences, background heartbeat threads, state synchronization, and error recovery automatically.
+SangamIO handles initialization, background threads, heartbeat management, and state synchronization automatically.
 
 ## Features
 
-- **Clean Architecture**: Layered design (Transport → Traits → Devices)
-- **Automatic Management**: Background heartbeat, initialization, cleanup
+- **Unified API**: Single `SangamIO` struct abstracts all hardware components
+- **Motion Control**: Velocity and position-based commands with safety constraints
+- **Odometry Tracking**: Delta updates for SLAM integration (Δx, Δy, Δθ)
+- **Automatic Management**: Background threads, heartbeat, initialization, cleanup
 - **Type Safety**: Velocities in m/s, angles in radians, compile-time checks
-- **Hardware Abstraction**: Swap devices easily, test with mocks
-- **Production Ready**: 9/9 tests passing, runs on Allwinner A33
+- **Sensor Monitoring**: Battery, buttons, IR sensors, telemetry freshness
+- **Production Ready**: Runs on Allwinner A33, CRL-200S hardware verified
 
 ## Supported Hardware
 
@@ -62,7 +72,7 @@ rustup target add armv7-unknown-linux-musleabihf
 
 ```toml
 [dependencies]
-sangam-io = { version = "0.1", features = ["gd32", "lidar"] }
+sangam-io = "0.1"
 ```
 
 ### 3. Deploy and Run
@@ -80,42 +90,55 @@ See **[GUIDE.md](GUIDE.md)** for complete step-by-step instructions on building,
 **Version**: 0.1.0 (Initial Release)
 
 **What's working**:
-- Complete GD32 driver with automatic heartbeat (20ms)
-- Delta-2D lidar driver with packet parsing
-- Transport abstraction (serial + mock)
-- Device driver traits for extensibility
-- Full test coverage (9/9 tests passing)
+- SangamIO unified hardware abstraction layer
+- Motion control system with safety constraints
+- Odometry tracking for SLAM integration
+- GD32F103 motor controller driver (automatic heartbeat)
+- Delta-2D lidar driver with scanning support
+- Sensor monitoring (battery, buttons, IR sensors)
+- Complete CRL-200S hardware integration
 
 **Next steps**:
-- Additional motor controllers and lidars
-- High-level Robot API layer
-- Hardware calibration validation
-- Performance optimization
+- Additional robot hardware support (STM32, other lidars)
+- Advanced motion planning and path following
+- ROS/ROS2 bridge for ecosystem integration
+- Performance optimization and tuning
 
 See [REFERENCE.md](REFERENCE.md#project-status) for detailed roadmap.
 
 ## Architecture
 
 ```
-Application → Device Drivers → Driver Traits → Transport
-              (Gd32Driver)     (MotorDriver)    (Serial/Mock)
+Application Code
+       ↓
+  SangamIO (Unified API)
+       ↓
+Motion Control + Odometry + Sensors
+       ↓
+Device Drivers (GD32, Delta2D)
+       ↓
+Transport Layer (Serial)
 ```
 
-Three clean layers provide hardware abstraction and testability. Device implementations are swappable, protocols are isolated, and applications stay hardware-agnostic.
+Layered architecture provides hardware abstraction for SLAM and navigation. The `SangamIO` API hides low-level details while exposing motion control, odometry deltas, and sensor data.
 
 See [REFERENCE.md](REFERENCE.md#architecture-overview) for detailed architecture documentation.
 
 ## Testing
 
 ```bash
-# Run unit tests
-cargo test --all-features
+# Build for development
+cargo build
 
-# Run on hardware
-cargo run --example test_all_components --features="std,gd32,lidar"
+# Build for ARM target (production)
+cargo build --release --target armv7-unknown-linux-musleabihf
+
+# Run hardware demo on robot
+cargo build --example quick_demo --release --target armv7-unknown-linux-musleabihf
+# Deploy and run (see GUIDE.md for deployment instructions)
 ```
 
-Mock implementations let you test without hardware. See [GUIDE.md](GUIDE.md#building-your-own-application) for development workflow.
+See [GUIDE.md](GUIDE.md) for complete deployment workflow and troubleshooting.
 
 ## License
 

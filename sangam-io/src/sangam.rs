@@ -355,7 +355,10 @@ impl SangamIO {
         }
 
         // Wait for lidar motor to stabilize
-        log::info!("SangamIO: Waiting for lidar motor stabilization ({:?})", self.config.lidar_stabilization_delay);
+        log::info!(
+            "SangamIO: Waiting for lidar motor stabilization ({:?})",
+            self.config.lidar_stabilization_delay
+        );
         thread::sleep(self.config.lidar_stabilization_delay);
 
         // Start lidar scanning with callback
@@ -595,7 +598,7 @@ impl SangamIO {
         if let Some(gd32) = (&**driver as &dyn Any).downcast_ref::<Gd32Driver>() {
             let (rx, tx, _lost) = gd32.get_packet_stats();
             let success_rate = if tx > 0 {
-                rx as f32 / (tx as f32 * 2.0)  // GD32 sends ~2x as many packets as we do
+                rx as f32 / (tx as f32 * 2.0) // GD32 sends ~2x as many packets as we do
             } else {
                 0.0
             };

@@ -4,38 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VacuumTiger is an open-source firmware project for robotic vacuum cleaners based on the CRL-200S hardware platform. The project provides type-safe Rust APIs for interfacing with the GD32F103 motor controller and 3iRobotix Delta-2D lidar.
+VacuumTiger is an open-source firmware project for robotic vacuum cleaners based on the CRL-200S hardware platform. The project provides a unified hardware abstraction layer (SangamIO) for robot control, odometry tracking, and sensor monitoring, designed for SLAM and autonomous navigation.
 
 **Target Platform**: Embedded Linux (ARM) - specifically Allwinner A33 running Tina Linux
 **Primary Language**: Rust (edition 2024)
 **Cross-compilation Target**: `armv7-unknown-linux-musleabihf`
+**Main API**: `SangamIO` - unified hardware abstraction with motion control and odometry
 
 ## Build Commands
 
 ### Development Builds
 
 ```bash
-# Build library with all features
+# Build library
 cd sangam-io
-cargo build --features="std,gd32,lidar"
+cargo build
 
 # Build for ARM target (production)
-cargo build --release --target armv7-unknown-linux-musleabihf --features="std,gd32,lidar"
+cargo build --release --target armv7-unknown-linux-musleabihf
 
 # Build specific example
-cargo build --example test_all_components --release --target armv7-unknown-linux-musleabihf --features="std,gd32,lidar"
+cargo build --example quick_demo --release --target armv7-unknown-linux-musleabihf
 
 # Run tests (host machine only)
 cargo test
 
 # Check code without building
-cargo check --features="std,gd32,lidar"
+cargo check
 
 # Format code
 cargo fmt
 
 # Lint code
-cargo clippy --features="std,gd32,lidar"
+cargo clippy
 
 # Generate documentation
 cargo doc --open
@@ -70,35 +71,55 @@ ssh root@vacuum "RUST_LOG=debug /tmp/test"
 
 ## Architecture
 
-### Three-Layer Design
+### Layered Architecture
 
-The codebase follows a strict layered architecture that must be preserved:
+The codebase follows a layered architecture with a unified API:
 
 ```
-Application Code (examples/)
+Application Code (examples/, external)
        ↓
-Device Drivers (src/devices/)  ← Concrete implementations (Gd32Driver, Delta2DDriver)
+SangamIO (Unified HAL - src/sangam.rs)
+  • Motion control with safety constraints
+  • Odometry tracking for SLAM
+  • Sensor monitoring
+  • Lidar integration
        ↓
-Driver Traits (src/drivers/)   ← Abstract interfaces (MotorDriver, LidarDriver)
+Device Drivers (src/devices/)
+  • Gd32Driver (GD32F103 motor controller)
+  • Delta2DDriver (3iRobotix lidar)
        ↓
-Transport Layer (src/transport/) ← I/O abstraction (Serial, Mock)
+Transport Layer (src/transport/)
+  • SerialTransport (Linux /dev/tty*)
 ```
 
-**Critical Rule**: Higher layers depend on lower layers only through traits, never concrete types. This enables testing with mocks and adding new hardware without changing application code.
+**Critical Design**: `SangamIO` provides the public API. Internal drivers use traits for flexibility, but the public API is a concrete struct for simplicity.
 
 ### Key Design Patterns
 
-1. **Automatic Resource Management**: The GD32 driver spawns a background OS thread (not async) that sends heartbeat packets every 20ms. This thread starts automatically on `Gd32Driver::new()` and stops on `Drop`. Missing a heartbeat stops the motors for safety.
+1. **Unified API**: `SangamIO` is the single entry point. Initialize once, access all hardware:
+   ```rust
+   let sangam = SangamIO::crl200s("/dev/ttyS3", "/dev/ttyS1")?;
+   sangam.set_velocity(0.3, 0.0)?;  // Motion control
+   let delta = sangam.get_odometry_delta()?;  // Odometry
+   ```
 
-2. **Thread-Safe State Sharing**: `Arc<Mutex<State>>` pattern using `parking_lot::Mutex` for lower overhead. The main thread and heartbeat thread coordinate through shared state.
+2. **Automatic Resource Management**: Background threads manage heartbeat (20ms) and control loops (50Hz). Threads start on initialization and stop on `Drop`. Missing a heartbeat stops motors for safety.
 
-3. **Type-Safe Units**: All physical quantities use proper units:
+3. **Configuration-Driven**: Physical parameters in `SangamConfig`:
+   - Wheel geometry (base, radius, encoder ticks)
+   - Motion constraints (max velocity, acceleration)
+   - Control loop timing
+
+4. **Thread-Safe State Sharing**: `Arc<Mutex<State>>` pattern using `parking_lot::Mutex`. Multiple threads coordinate safely.
+
+5. **Type-Safe Units**: All physical quantities use proper units:
    - Velocities: m/s (meters per second)
    - Angles: radians
+   - Odometry deltas: Δx, Δy (meters), Δθ (radians)
    - Distances: meters
    - Battery: 0-100%
 
-   Never use raw integers for motor speeds or angles. Always convert through proper unit calculations.
+   Never use raw integers for physical quantities. Always use proper unit conversions.
 
 ### Critical Hardware Constraints
 
@@ -126,78 +147,94 @@ Transport Layer (src/transport/) ← I/O abstraction (Serial, Mock)
 ```
 sangam-io/
 ├── src/
-│   ├── lib.rs              # Public API surface, re-exports
+│   ├── lib.rs              # Public API surface - exports SangamIO
 │   ├── error.rs            # Error types (never use unwrap/panic)
+│   ├── sangam.rs           # SangamIO - unified hardware abstraction
+│   ├── config.rs           # SangamConfig - robot parameters
+│   ├── odometry.rs         # Odometry tracking (delta computation)
+│   ├── motion/             # Motion control subsystem
+│   │   ├── mod.rs
+│   │   ├── commands.rs     # Motion commands (velocity, position)
+│   │   ├── constraints.rs  # Safety limits and acceleration
+│   │   └── controller.rs   # Motion controller (50Hz loop)
 │   ├── transport/          # I/O abstraction layer
-│   │   ├── mod.rs          # Transport trait definition
-│   │   ├── serial.rs       # SerialTransport (requires 'std' feature)
-│   │   └── mock.rs         # MockTransport for testing
-│   ├── drivers/            # Hardware-agnostic traits
+│   │   ├── mod.rs
+│   │   └── serial.rs       # SerialTransport
+│   ├── drivers/            # Hardware-agnostic traits (internal)
 │   │   ├── mod.rs
 │   │   ├── motor.rs        # MotorDriver trait
-│   │   ├── lidar.rs        # LidarDriver trait
-│   │   ├── battery.rs      # BatteryDriver trait (planned)
-│   │   └── imu.rs          # ImuDriver trait (planned)
+│   │   └── lidar.rs        # LidarDriver trait
 │   ├── devices/            # Concrete hardware implementations
 │   │   ├── gd32/           # GD32F103 motor controller
-│   │   │   ├── mod.rs      # Public API, Gd32Driver struct
+│   │   │   ├── mod.rs      # Gd32Driver struct
 │   │   │   ├── protocol.rs # Packet encoding/decoding
-│   │   │   ├── heartbeat.rs # Background thread loop
+│   │   │   ├── heartbeat.rs # Background thread (20ms)
 │   │   │   └── state.rs    # Shared state structures
-│   │   ├── delta2d/        # 3iRobotix Delta-2D lidar
-│   │   │   ├── mod.rs      # Delta2DDriver
-│   │   │   └── protocol.rs # Packet parsing
-│   │   └── mock/           # Mock drivers for testing
-│   │       ├── motor.rs
-│   │       └── lidar.rs
+│   │   └── delta2d/        # 3iRobotix Delta-2D lidar
+│   │       ├── mod.rs      # Delta2DDriver
+│   │       └── protocol.rs # Packet parsing
 │   └── types/              # Common data structures
-│       ├── motion.rs       # Velocity, Odometry, Pose2D
-│       ├── scan.rs         # LidarPoint, LidarScan
-│       ├── battery.rs      # BatteryStatus
-│       └── imu.rs          # ImuData
+│       └── scan.rs         # LidarPoint, LidarScan, Pose2D, etc.
 └── examples/
-    └── test_all_components.rs  # Complete integration example
+    └── quick_demo.rs       # 20-second hardware test
 ```
 
-### Feature Flags
+### Configuration System
 
-The library uses cargo features for modular compilation:
+Physical parameters and motion constraints are configured via `SangamConfig`:
 
-- `std`: Enables standard library (SerialTransport, threading)
-- `gd32`: Includes GD32 driver code
-- `lidar`: Includes Delta-2D lidar driver code
-- `default = ["std", "gd32"]`
+```rust
+// src/config.rs
+impl SangamConfig {
+    pub fn crl200s_defaults() -> Self {
+        Self {
+            wheel_base: 0.235,                // meters
+            wheel_radius: 0.0325,             // meters
+            ticks_per_revolution: 1560.0,     // encoder ticks
+            max_linear_velocity: 0.5,         // m/s
+            max_angular_velocity: 2.0,        // rad/s
+            linear_acceleration: 0.3,         // m/s²
+            // ... other parameters
+        }
+    }
+}
+```
 
-When adding new devices, create a corresponding feature flag.
+When adding new robot platforms, create a new configuration method.
 
 ## Development Workflow
 
-### Adding a New Motor Controller
+### Adding a New Robot Platform
 
-1. Create module: `src/devices/yourcontroller/mod.rs`
-2. Define protocol: `src/devices/yourcontroller/protocol.rs`
-3. Implement `MotorDriver` trait in `mod.rs`
-4. Add feature flag to `Cargo.toml`: `yourcontroller = []`
-5. Export in `src/devices/mod.rs`: `#[cfg(feature = "yourcontroller")] pub mod yourcontroller;`
-6. Write unit tests using `MockTransport`
-7. Add example program in `examples/`
+1. **Implement Device Driver**: Create `src/devices/yourdevice/mod.rs` implementing `MotorDriver` or `LidarDriver` trait
+2. **Define Protocol**: Add `protocol.rs` with packet encoding/decoding
+3. **Create Configuration**: Add `SangamConfig::your_robot_defaults()` with physical parameters
+4. **Add Constructor**: Add `SangamIO::your_robot()` constructor
+5. **Export Module**: Add to `src/devices/mod.rs`
+6. **Add Example**: Create test program in `examples/`
 
-### Adding a New Lidar
+### API Usage Pattern
 
-Follow the same pattern as motor controllers, implementing the `LidarDriver` trait.
-
-### Testing Without Hardware
-
-Use `MockTransport` to simulate serial I/O:
+Always use the `SangamIO` API, not device drivers directly:
 
 ```rust
-let mut mock = MockTransport::new();
-mock.inject_read(&expected_response_bytes);
+use sangam_io::SangamIO;
 
-let driver = MyDriver::new(Box::new(mock))?;
-driver.send_command()?;
+// Initialize
+let mut sangam = SangamIO::crl200s("/dev/ttyS3", "/dev/ttyS1")?;
 
-assert_eq!(mock.get_written(), expected_command_bytes);
+// Motion control
+sangam.set_velocity(0.3, 0.0)?;
+sangam.move_forward(1.0)?;
+
+// Odometry for SLAM
+let delta = sangam.get_odometry_delta()?;
+
+// Sensors
+let battery = sangam.get_battery_level();
+
+// Lidar
+let scan = sangam.get_scan()?;
 ```
 
 ### Hardware Testing Procedure
@@ -209,13 +246,13 @@ assert_eq!(mock.get_written(), expected_command_bytes);
 1. **Build for ARM target**:
    ```bash
    cd sangam-io
-   cargo build --release --example test_all_components --features="std,gd32,lidar"
+   cargo build --release --example quick_demo --target armv7-unknown-linux-musleabihf
    ```
 
 2. **Deploy binary** (SCP doesn't work - device lacks sftp-server):
    ```bash
-   cat ../target/armv7-unknown-linux-musleabihf/release/examples/test_all_components | \
-     sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "cat > /tmp/test && chmod +x /tmp/test"
+   cat target/armv7-unknown-linux-musleabihf/release/examples/quick_demo | \
+     sshpass -p "vacuum@123" ssh root@vacuum "cat > /tmp/test && chmod +x /tmp/test"
    ```
 
 3. **Disable AuxCtrl** (rename to prevent auto-restart):
@@ -305,7 +342,7 @@ This code controls physical hardware. Always:
 
 5. **Blocking I/O**: Serial operations have timeouts. Don't assume immediate response.
 
-6. **Feature Flags**: When building, always specify features: `--features="std,gd32,lidar"` or builds will fail.
+6. **Public API**: Always use `SangamIO`, not device drivers directly. The drivers are internal implementation details.
 
 ## Documentation References
 

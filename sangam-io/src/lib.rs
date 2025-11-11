@@ -34,12 +34,12 @@
 #![warn(missing_docs)]
 
 // Internal modules (not exposed in public API)
+mod config;
 mod devices;
 mod drivers;
-mod transport;
-mod config;
 mod motion;
 mod odometry;
+mod transport;
 
 // Public modules (only error and types are exposed)
 pub mod error;
@@ -50,9 +50,9 @@ mod sangam;
 
 // Public API exports - only SangamIO and essential types
 pub use error::{Error, Result};
+pub use odometry::OdometryDelta;
 pub use sangam::SangamIO;
 pub use types::{LidarPoint, LidarScan, Odometry, Pose2D};
-pub use odometry::OdometryDelta;
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

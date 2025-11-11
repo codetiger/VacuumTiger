@@ -59,13 +59,12 @@ Host vacuum
 ```bash
 cd sangam-io
 
-# Build the test example
-cargo build --example test_all_components --release \
-    --target armv7-unknown-linux-musleabihf \
-    --features="std,gd32,lidar"
+# Build the quick demo example
+cargo build --example quick_demo --release \
+    --target armv7-unknown-linux-musleabihf
 ```
 
-The binary will be at `target/armv7-unknown-linux-musleabihf/release/examples/test_all_components` (~500KB).
+The binary will be at `target/armv7-unknown-linux-musleabihf/release/examples/quick_demo` (~500KB).
 
 ### Step 2: Stop Original Firmware
 
@@ -80,43 +79,39 @@ ssh root@vacuum "killall -9 AuxCtrl"
 ### Step 3: Deploy to Robot
 
 ```bash
-# One-line deploy (replace $ROBOT_PASSWORD with your robot's root password)
-cat target/armv7-unknown-linux-musleabihf/release/examples/test_all_components | \
-  sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum \
+# One-line deploy
+cat target/armv7-unknown-linux-musleabihf/release/examples/quick_demo | \
+  sshpass -p "vacuum@123" ssh root@vacuum \
   "cat > /tmp/test && chmod +x /tmp/test"
 ```
 
-**Alternative** (if you have SSH keys set up):
-```bash
-scp target/armv7-unknown-linux-musleabihf/release/examples/test_all_components \
-    root@vacuum:/tmp/test
-ssh root@vacuum "chmod +x /tmp/test"
-```
+**Note**: The device lacks sftp-server, so we use `cat` over SSH instead of `scp`.
 
 ### Step 4: Run the Test
 
 ```bash
-ssh root@vacuum "/tmp/test"
+ssh root@vacuum "RUST_LOG=info /tmp/test"
 ```
 
-You should see the 15-step test scenario execute. Check [examples/README.md](examples/README.md#expected-output) for the full expected output.
+You should see the hardware test sequence execute (~20 seconds).
 
 **What to observe**:
 - ✅ GD32 initializes within 5 seconds
-- ✅ Lidar motor spins up (you'll hear it)
+- ✅ Lidar motor spins up (audible)
 - ✅ Lidar emits red laser light
-- ✅ Scan data appears in console
+- ✅ Robot moves forward briefly
+- ✅ Robot rotates clockwise then counter-clockwise
 - ✅ Clean shutdown with no errors
 
 ### Step 5: Verify It Worked
 
 If successful, you'll see:
 ```
-=== SangamIO Comprehensive Component Test ===
-Step 1: Initializing GD32 motor controller...
-✓ GD32 initialized successfully
+INFO  quick_demo] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INFO  quick_demo] 🤖 SangamIO Quick Hardware Demo
+INFO  quick_demo] ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ...
-=== All component tests completed successfully ===
+INFO  quick_demo] ✅ All tests completed successfully!
 ```
 
 If something went wrong, see [Troubleshooting](#troubleshooting) below.
@@ -141,14 +136,14 @@ Here's the fastest edit-build-deploy cycle:
 
 ```bash
 # Edit your code
-vim src/devices/gd32/mod.rs
+vim src/sangam.rs
 
 # Build, deploy, and run in one command
-cargo build --example test_all_components --release \
-  --target armv7-unknown-linux-musleabihf --features="std,gd32,lidar" && \
-  cat target/armv7-unknown-linux-musleabihf/release/examples/test_all_components | \
-  sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum \
-  "killall -9 AuxCtrl 2>/dev/null; cat > /tmp/test && chmod +x /tmp/test && /tmp/test"
+cargo build --example quick_demo --release \
+  --target armv7-unknown-linux-musleabihf && \
+  cat target/armv7-unknown-linux-musleabihf/release/examples/quick_demo | \
+  sshpass -p "vacuum@123" ssh root@vacuum \
+  "killall -9 AuxCtrl 2>/dev/null; cat > /tmp/test && chmod +x /tmp/test && RUST_LOG=debug /tmp/test"
 ```
 
 ### Enable Verbose Logging
@@ -197,44 +192,51 @@ ssh root@vacuum "dmesg -w"
 
 ```bash
 # Copy the example as a template
-cp examples/test_all_components.rs examples/my_robot.rs
+cp examples/quick_demo.rs examples/my_robot.rs
 ```
 
 Add it to `Cargo.toml`:
 ```toml
 [[example]]
 name = "my_robot"
-required-features = ["std", "gd32", "lidar"]
 ```
 
 ### Basic Robot Control
 
 ```rust
-use sangam_io::devices::{Gd32Driver, Delta2DDriver};
-use sangam_io::drivers::{MotorDriver, LidarDriver};
-use sangam_io::transport::SerialTransport;
+use sangam_io::SangamIO;
+use std::time::Duration;
+use std::thread;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize motor controller
-    let gd32_transport = SerialTransport::open("/dev/ttyS3", 115200)?;
-    let mut gd32 = Gd32Driver::new(gd32_transport)?;
+    // Initialize hardware (CRL-200S configuration)
+    let mut sangam = SangamIO::crl200s("/dev/ttyS3", "/dev/ttyS1")?;
 
-    // Move forward at 0.5 m/s
-    gd32.set_velocity(0.5, 0.0)?;
+    // Enable cleaning components
+    sangam.set_blower_speed(75)?;   // Vacuum at 75%
+    sangam.set_brush_speed(50)?;    // Side brush at 50%
 
-    // Get odometry
-    let odom = gd32.get_odometry()?;
-    println!("Position: ({:.2}, {:.2})", odom.x, odom.y);
+    // Move forward at 0.3 m/s for 2 seconds
+    sangam.set_velocity(0.3, 0.0)?;
+    thread::sleep(Duration::from_secs(2));
 
-    // Power on lidar and scan
-    gd32.set_lidar_power(true)?;
-    let lidar_transport = SerialTransport::open("/dev/ttyS1", 115200)?;
-    let mut lidar = Delta2DDriver::new(lidar_transport)?;
-    lidar.start()?;
+    // Get odometry delta for SLAM
+    let delta = sangam.get_odometry_delta()?;
+    println!("Traveled: Δx={:.3}m, Δy={:.3}m", delta.delta_x, delta.delta_y);
 
-    if let Ok(Some(scan)) = lidar.get_scan() {
-        println!("Got {} points", scan.points.len());
+    // Scan for obstacles
+    if let Some(scan) = sangam.get_scan()? {
+        println!("Scanned {} points", scan.points.len());
+        // Process scan data for obstacle avoidance
     }
+
+    // Check sensors
+    if let Some(battery) = sangam.get_battery_level() {
+        println!("Battery: {}%", battery);
+    }
+
+    // Stop robot
+    sangam.stop()?;
 
     Ok(())
 }
@@ -243,8 +245,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Build and Deploy
 
 ```bash
-cargo build --example my_robot --release --features="std,gd32,lidar"
-# Deploy using same method as test scenario
+cargo build --example my_robot --release --target armv7-unknown-linux-musleabihf
+# Deploy using same method as quick_demo
 ```
 
 ## Troubleshooting
@@ -336,25 +338,27 @@ ssh root@vacuum "ls /mnt/UDISK/debug_mode"
 
 ## Hardware Calibration
 
-Before production use, you'll need to calibrate these constants in `src/devices/gd32/mod.rs`:
+Before production use, you may need to calibrate physical parameters in `src/config.rs`:
 
-**Wheel geometry** (in `set_velocity()`):
+**Wheel geometry** (in `SangamConfig::crl200s_defaults()`):
 ```rust
-const WHEEL_BASE: f32 = 0.3;      // Measure your robot's wheel base (meters)
-const WHEEL_RADIUS: f32 = 0.05;   // Measure wheel radius (meters)
+wheel_base: 0.235,      // Distance between wheels (meters)
+wheel_radius: 0.0325,   // Wheel radius (meters)
+ticks_per_revolution: 1560.0,  // Encoder ticks per revolution
 ```
 
-**Encoder conversion** (in `set_wheel_velocity()` and `get_odometry()`):
+**Motion constraints**:
 ```rust
-const TICKS_PER_RADIAN: f32 = 100.0;        // Calibrate by testing
-const TICKS_PER_REVOLUTION: f32 = 1000.0;   // Calibrate by testing
+max_linear_velocity: 0.5,    // Maximum forward speed (m/s)
+max_angular_velocity: 2.0,   // Maximum rotation speed (rad/s)
+linear_acceleration: 0.3,    // Acceleration limit (m/s²)
 ```
 
 **Calibration procedure**:
-1. Command robot to move 1 meter forward
+1. Command robot to move 1 meter forward: `sangam.move_forward(1.0)?`
 2. Measure actual distance traveled
-3. Calculate correction factor
-4. Update constants and repeat until accurate
+3. Adjust `wheel_radius` or `ticks_per_revolution` accordingly
+4. Repeat until odometry is accurate within 2-3%
 
 ## Safety Notes
 

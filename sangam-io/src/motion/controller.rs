@@ -330,7 +330,13 @@ impl MotionController {
         if count < 20 {
             log::debug!(
                 "MotionController: Motor calc - new_vel=({:.3}, {:.3}), wheel_speeds=({:.3}, {:.3}), scale={:.1}, motors=({}, {})",
-                new_linear, new_angular, left_speed, right_speed, scale, left_motor, right_motor
+                new_linear,
+                new_angular,
+                left_speed,
+                right_speed,
+                scale,
+                left_motor,
+                right_motor
             );
         }
 

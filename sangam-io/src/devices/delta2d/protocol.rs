@@ -104,7 +104,8 @@ pub fn parse_measurement(payload: &[u8]) -> Result<LidarScan> {
         }
 
         let signal_quality = payload[base];
-        let distance_mm = u16::from_be_bytes([payload[base + 1], payload[base + 2]]) as f32 * LIDAR_DISTANCE_MM_PER_UNIT;
+        let distance_mm = u16::from_be_bytes([payload[base + 1], payload[base + 2]]) as f32
+            * LIDAR_DISTANCE_MM_PER_UNIT;
         let distance_m = distance_mm / 1000.0;
 
         let angle_deg = start_angle + (i as f32) * (360.0 / (16.0 * sample_count as f32));

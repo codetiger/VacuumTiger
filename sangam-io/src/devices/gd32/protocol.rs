@@ -421,7 +421,10 @@ impl Gd32Response {
         // Actually TWO separate 16-bit encoders: [80-81]=Left, [82-83]=Right
         // Mode 0x01: Left shows Δ=7, Right shows Δ=66 (only active when components ON)
         let encoder_left = if payload.len() >= OFFSET_ENCODER_LEFT + 2 {
-            i16::from_le_bytes([payload[OFFSET_ENCODER_LEFT], payload[OFFSET_ENCODER_LEFT + 1]]) as i32
+            i16::from_le_bytes([
+                payload[OFFSET_ENCODER_LEFT],
+                payload[OFFSET_ENCODER_LEFT + 1],
+            ]) as i32
         } else {
             0
         };
@@ -430,7 +433,10 @@ impl Gd32Response {
         // Shows stronger encoder behavior than left: frozen in mode 0x02, Δ=66 in mode 0x01
         // Only updates when components are active - needs longer test to verify
         let encoder_right = if payload.len() >= OFFSET_ENCODER_RIGHT + 2 {
-            i16::from_le_bytes([payload[OFFSET_ENCODER_RIGHT], payload[OFFSET_ENCODER_RIGHT + 1]]) as i32
+            i16::from_le_bytes([
+                payload[OFFSET_ENCODER_RIGHT],
+                payload[OFFSET_ENCODER_RIGHT + 1],
+            ]) as i32
         } else {
             0
         };
@@ -467,19 +473,28 @@ impl Gd32Response {
 
         // IR sensors - bytes [58-59], [60-61], [62-63] with ×5 scaling
         let ir_sensor_1 = if payload.len() >= OFFSET_IR_SENSOR_1 + 2 {
-            u16::from_le_bytes([payload[OFFSET_IR_SENSOR_1], payload[OFFSET_IR_SENSOR_1 + 1]]).saturating_mul(IR_SENSOR_SCALE)
+            u16::from_le_bytes([payload[OFFSET_IR_SENSOR_1], payload[OFFSET_IR_SENSOR_1 + 1]])
+                .saturating_mul(IR_SENSOR_SCALE)
         } else {
             0
         };
 
         let start_button_ir = if payload.len() >= OFFSET_START_BUTTON_IR + 2 {
-            u16::from_le_bytes([payload[OFFSET_START_BUTTON_IR], payload[OFFSET_START_BUTTON_IR + 1]]).saturating_mul(IR_SENSOR_SCALE)
+            u16::from_le_bytes([
+                payload[OFFSET_START_BUTTON_IR],
+                payload[OFFSET_START_BUTTON_IR + 1],
+            ])
+            .saturating_mul(IR_SENSOR_SCALE)
         } else {
             0
         };
 
         let dock_button_ir = if payload.len() >= OFFSET_DOCK_BUTTON_IR + 2 {
-            u16::from_le_bytes([payload[OFFSET_DOCK_BUTTON_IR], payload[OFFSET_DOCK_BUTTON_IR + 1]]).saturating_mul(IR_SENSOR_SCALE)
+            u16::from_le_bytes([
+                payload[OFFSET_DOCK_BUTTON_IR],
+                payload[OFFSET_DOCK_BUTTON_IR + 1],
+            ])
+            .saturating_mul(IR_SENSOR_SCALE)
         } else {
             0
         };

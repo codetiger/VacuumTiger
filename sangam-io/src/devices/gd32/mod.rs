@@ -432,7 +432,6 @@ impl Gd32Driver {
     pub fn is_telemetry_fresh(&self, max_age: Duration) -> bool {
         self.state.lock().is_telemetry_fresh(max_age)
     }
-
 }
 
 impl MotorDriver for Gd32Driver {
