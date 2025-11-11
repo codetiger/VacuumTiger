@@ -4,17 +4,18 @@ mod heartbeat;
 mod protocol;
 mod state;
 
-use crate::drivers::MotorDriver;
+use crate::drivers::motor::MotorDriver;
 use crate::error::{Error, Result};
 use crate::transport::Transport;
 use crate::types::Odometry;
 
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub use protocol::{Gd32Command, Gd32Response};
+pub use protocol::Gd32Command;
 use state::Gd32State;
 
 /// GD32F103 motor controller driver
@@ -26,6 +27,7 @@ use state::Gd32State;
 /// - WRITE thread: 20ms loop for sending commands (can block without affecting reads)
 pub struct Gd32Driver {
     /// Transport layer for serial I/O (shared between threads)
+    #[allow(dead_code)] // Kept to maintain Arc reference count
     transport: Arc<Mutex<Box<dyn Transport>>>,
     /// Shared state between threads
     state: Arc<Mutex<Gd32State>>,
@@ -34,7 +36,7 @@ pub struct Gd32Driver {
     /// WRITE thread handle (20ms loop)
     write_thread: Option<thread::JoinHandle<()>>,
     /// Command queue sender (for ad-hoc commands to write thread)
-    command_tx: std::sync::mpsc::Sender<Gd32Command>,
+    command_tx: std::sync::mpsc::SyncSender<Gd32Command>,
     /// Shutdown flag for both threads
     shutdown: Arc<Mutex<bool>>,
 }
@@ -129,8 +131,10 @@ impl Gd32Driver {
         thread::sleep(Duration::from_millis(9));
         log::info!("GD32: Starting dual-thread architecture (READ: 2ms, WRITE: 20ms)");
 
-        // Create command queue for ad-hoc commands
-        let (command_tx, command_rx) = std::sync::mpsc::channel();
+        // Create bounded command queue for ad-hoc commands (16 commands max)
+        // This provides backpressure to prevent memory exhaustion from rapid command submission
+        const COMMAND_QUEUE_SIZE: usize = 16;
+        let (command_tx, command_rx) = std::sync::mpsc::sync_channel(COMMAND_QUEUE_SIZE);
 
         // Spawn READ thread (fast 2ms loop, never blocks on writes)
         let read_thread = Some(heartbeat::spawn_read_thread(
@@ -184,7 +188,12 @@ impl Gd32Driver {
         while start.elapsed() < timeout {
             // Check if we've received status data from heartbeat thread
             let current_state = state.lock();
-            if current_state.total_rx_packets > 0 {
+            if current_state
+                .diagnostics
+                .total_rx_packets
+                .load(Ordering::Relaxed)
+                > 0
+            {
                 // Received at least one STATUS_DATA packet
                 drop(current_state);
                 log::info!(
@@ -195,7 +204,7 @@ impl Gd32Driver {
             }
 
             // If in sleep mode (detected by heartbeat thread), send additional wake commands
-            let is_sleeping = current_state.sleep_mode;
+            let is_sleeping = current_state.diagnostics.sleep_mode.load(Ordering::Relaxed);
             drop(current_state);
 
             // Send CMD=0x08 every 5 cycles (5 * 20ms = 100ms) when in sleep mode
@@ -239,12 +248,25 @@ impl Gd32Driver {
 
     /// Queue a command to the write thread
     fn queue_command(&self, cmd: Gd32Command) -> Result<()> {
-        self.command_tx.send(cmd).map_err(|_| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "Write thread disconnected",
-            ))
-        })
+        use std::sync::mpsc::TrySendError;
+
+        // Try to send without blocking
+        match self.command_tx.try_send(cmd) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                // Queue is full - provide backpressure feedback
+                Err(Error::Other(
+                    "Command queue full (16 pending commands). Please wait for commands to process.".into()
+                ))
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                // Write thread has exited
+                Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "Write thread disconnected",
+                )))
+            }
+        }
     }
 
     /// Set motor control mode via CMD=0x65
@@ -265,8 +287,9 @@ impl Gd32Driver {
 
         // Update state so write thread knows which command to use
         {
-            let mut state = self.state.lock();
-            state.motor_mode = mode;
+            let state = self.state.lock();
+            let mut cmd_state = state.command.lock();
+            cmd_state.motor_mode = mode;
         }
 
         self.queue_command(Gd32Command::MotorControlType(mode))?;
@@ -318,148 +341,98 @@ impl Gd32Driver {
         self.queue_command(Gd32Command::BlowerSpeed(speed_value))
     }
 
-    /// Reset GD32 error codes (CMD=0x0A)
-    /// Clears any accumulated error flags in the motor controller
-    pub fn reset_error_code(&mut self) -> Result<()> {
-        self.queue_command(Gd32Command::ResetErrorCode)?;
-        log::debug!("GD32: Queued CMD=0x0A (ResetErrorCode)");
-        Ok(())
-    }
-
-    /// Put GD32 into sleep mode (CMD=0x04)
-    /// WARNING: Device may require hardware wake (GPIO) or button press to recover
-    pub fn sleep(&mut self) -> Result<()> {
-        log::warn!("GD32: Putting device into sleep mode (CMD=0x04)");
-        self.queue_command(Gd32Command::Sleep)?;
-        log::debug!("GD32: Queued CMD=0x04 (Sleep)");
-        Ok(())
-    }
-
-    /// Send wakeup acknowledgment (CMD=0x05)
-    /// Used to acknowledge wakeup signal or attempt software wake
-    pub fn wakeup_ack(&mut self) -> Result<()> {
-        log::info!("GD32: Sending wakeup acknowledgment (CMD=0x05)");
-        self.queue_command(Gd32Command::WakeupAck)?;
-        log::debug!("GD32: Queued CMD=0x05 (WakeupAck)");
-        Ok(())
-    }
-
-    /// Control R16 module power (CMD=0x99)
-    /// The R16 module handles certain sensor or control functions
-    pub fn set_r16_power(&mut self, enable: bool) -> Result<()> {
-        self.queue_command(Gd32Command::R16Power(enable))?;
-        log::debug!("GD32: Queued CMD=0x99 (R16Power={})", enable);
-        Ok(())
-    }
-
-    /// Restart R16 module (CMD=0x9A)
-    /// Performs a soft reset of the R16 subsystem
-    pub fn restart_r16(&mut self) -> Result<()> {
-        self.queue_command(Gd32Command::RestartR16)?;
-        log::debug!("GD32: Queued CMD=0x9A (RestartR16)");
-        Ok(())
-    }
-
-    /// Read latest state from heartbeat thread
-    fn read_state(&self) -> Gd32State {
-        self.state.lock().clone()
-    }
-
     /// Get battery information
     ///
-    /// Returns (voltage in V, current in A, level 0-100%)
-    pub fn get_battery_info(&self) -> (f32, f32, u8) {
-        let state = self.read_state();
-        (
-            state.battery_voltage,
-            state.battery_current,
-            state.battery_level,
-        )
-    }
-
-    /// Get encoder counts
-    ///
-    /// Returns (left_ticks, right_ticks)
-    pub fn get_encoder_counts(&self) -> (i32, i32) {
-        let state = self.read_state();
-        (state.encoder_left, state.encoder_right)
+    /// Returns (voltage in V, current in A, level 0-100%) or None if no telemetry received yet
+    pub fn get_battery_info(&self) -> Option<(f32, f32, u8)> {
+        let state = self.state.lock();
+        let telemetry = state.telemetry.lock();
+        telemetry.as_ref().and_then(|t| {
+            match (t.battery_voltage, t.battery_current, t.battery_level) {
+                (Some(v), Some(c), Some(l)) => Some((v, c, l)),
+                _ => None,
+            }
+        })
     }
 
     /// Get current error code
-    pub fn get_error_code(&self) -> u8 {
-        let state = self.read_state();
-        state.error_code
+    pub fn get_error_code(&self) -> Option<u8> {
+        let state = self.state.lock();
+        let telemetry = state.telemetry.lock();
+        telemetry.as_ref().and_then(|t| t.error_code)
     }
 
     /// Get status flags
     ///
-    /// Returns (status_flag, charging_flag, battery_state_flag, percent_value)
-    pub fn get_status_flags(&self) -> (u8, bool, bool, f32) {
-        let state = self.read_state();
-        (
-            state.status_flag,
-            state.charging_flag,
-            state.battery_state_flag,
-            state.percent_value,
-        )
+    /// Returns (status_flag, charging_flag, battery_state_flag, percent_value) or None if no telemetry
+    pub fn get_status_flags(&self) -> Option<(u8, bool, bool, f32)> {
+        let state = self.state.lock();
+        let telemetry = state.telemetry.lock();
+        telemetry.as_ref().and_then(|t| {
+            match (
+                t.status_flag,
+                t.charging_flag,
+                t.battery_state_flag,
+                t.percent_value,
+            ) {
+                (Some(s), Some(c), Some(b), Some(p)) => Some((s, c, b, p)),
+                _ => None,
+            }
+        })
     }
 
     /// Get IR proximity sensor values
     ///
     /// All values use ×5 scaling. Button detection: 100-199 = pressed.
-    /// Returns (ir_sensor_1, point_button_ir, dock_button_ir)
-    pub fn get_ir_sensors(&self) -> (u16, u16, u16) {
-        let state = self.read_state();
-        (
-            state.ir_sensor_1,
-            state.point_button_ir,
-            state.dock_button_ir,
-        )
+    /// Returns (ir_sensor_1, start_button_ir, dock_button_ir) or None if no telemetry
+    pub fn get_ir_sensors(&self) -> Option<(u16, u16, u16)> {
+        let state = self.state.lock();
+        let telemetry = state.telemetry.lock();
+        telemetry.as_ref().and_then(|t| {
+            match (t.ir_sensor_1, t.start_button_ir, t.dock_button_ir) {
+                (Some(i1), Some(sb), Some(db)) => Some((i1, sb, db)),
+                _ => None,
+            }
+        })
     }
 
-    /// Check if point button is pressed (IR value 100-199)
-    pub fn is_point_button_pressed(&self) -> bool {
-        let state = self.read_state();
-        state.point_button_ir >= 100 && state.point_button_ir < 200
+    /// Check if start button is pressed (IR value 100-199)
+    pub fn is_start_button_pressed(&self) -> Option<bool> {
+        let state = self.state.lock();
+        let telemetry = state.telemetry.lock();
+        telemetry
+            .as_ref()
+            .and_then(|t| t.start_button_ir.map(|v| (100..200).contains(&v)))
     }
 
     /// Check if dock button is pressed (IR value 100-199)
-    pub fn is_dock_button_pressed(&self) -> bool {
-        let state = self.read_state();
-        state.dock_button_ir >= 100 && state.dock_button_ir < 200
+    pub fn is_dock_button_pressed(&self) -> Option<bool> {
+        let state = self.state.lock();
+        let telemetry = state.telemetry.lock();
+        telemetry
+            .as_ref()
+            .and_then(|t| t.dock_button_ir.map(|v| (100..200).contains(&v)))
     }
 
     /// Get packet statistics
     ///
     /// Returns (total_rx_packets, total_tx_packets, lost_packet_count)
     pub fn get_packet_stats(&self) -> (u64, u64, u32) {
-        let state = self.read_state();
+        let state = self.state.lock();
         (
-            state.total_rx_packets,
-            state.total_tx_packets,
-            state.lost_packet_count,
+            state.diagnostics.total_rx_packets.load(Ordering::Relaxed),
+            state.diagnostics.total_tx_packets.load(Ordering::Relaxed),
+            state.diagnostics.lost_packet_count.load(Ordering::Relaxed),
         )
     }
 
-    /// Set raw motor speeds (for testing/debugging)
+    /// Check if telemetry is fresh (not stale)
     ///
-    /// Directly sets motor speed values in encoder ticks.
-    /// Use this for testing to find correct motor speed ranges.
-    ///
-    /// # Arguments
-    /// * `left` - Left motor speed in encoder ticks
-    /// * `right` - Right motor speed in encoder ticks
-    pub fn set_raw_motor_speeds(&mut self, left: i32, right: i32) -> Result<()> {
-        log::info!(
-            "GD32: Setting raw motor speeds: left={}, right={}",
-            left,
-            right
-        );
-        let mut state = self.state.lock();
-        state.target_left = left;
-        state.target_right = right;
-        Ok(())
+    /// Returns true if telemetry is fresher than max_age, false otherwise
+    pub fn is_telemetry_fresh(&self, max_age: Duration) -> bool {
+        self.state.lock().is_telemetry_fresh(max_age)
     }
+
 }
 
 impl MotorDriver for Gd32Driver {
@@ -476,18 +449,24 @@ impl MotorDriver for Gd32Driver {
     }
 
     fn set_wheel_velocity(&mut self, left: f32, right: f32) -> Result<()> {
-        // Convert rad/s to motor units (encoder ticks per control cycle)
-        // These conversion factors need hardware calibration
-        const TICKS_PER_RADIAN: f32 = 100.0; // Placeholder value
+        // Motor speeds are already in the correct range (-2000 to 2000)
+        // from the motion controller, so just cast to i32
+        let left_ticks = left as i32;
+        let right_ticks = right as i32;
 
-        let left_ticks = (left * TICKS_PER_RADIAN) as i32;
-        let right_ticks = (right * TICKS_PER_RADIAN) as i32;
+        // Log motor speeds periodically for debugging
+        log::debug!(
+            "GD32: Setting motor speeds - left={}, right={}",
+            left_ticks,
+            right_ticks
+        );
 
         // Update target state for heartbeat thread
         {
-            let mut state = self.state.lock();
-            state.target_left = left_ticks;
-            state.target_right = right_ticks;
+            let state = self.state.lock();
+            let mut cmd_state = state.command.lock();
+            cmd_state.target_left = left_ticks;
+            cmd_state.target_right = right_ticks;
         }
 
         Ok(())
@@ -503,18 +482,30 @@ impl MotorDriver for Gd32Driver {
     }
 
     fn get_odometry(&mut self) -> Result<Odometry> {
-        let state = self.read_state();
+        // Get encoder values from telemetry
+        let state = self.state.lock();
+        let telemetry = state.telemetry.lock();
+
+        let (encoder_left, encoder_right) = match telemetry.as_ref() {
+            Some(t) => match (t.encoder_left, t.encoder_right) {
+                (Some(l), Some(r)) => (l, r),
+                _ => return Err(Error::NotInitialized),
+            },
+            None => return Err(Error::NotInitialized),
+        };
+        drop(telemetry);
+        drop(state);
 
         // Convert encoder ticks to position
         // These conversion factors need hardware calibration
         const WHEEL_RADIUS: f32 = 0.05; // meters
         const TICKS_PER_REVOLUTION: f32 = 1000.0; // Placeholder
 
-        let left_distance = (state.encoder_left as f32) / TICKS_PER_REVOLUTION
+        let left_distance = (encoder_left as f32) / TICKS_PER_REVOLUTION
             * 2.0
             * std::f32::consts::PI
             * WHEEL_RADIUS;
-        let right_distance = (state.encoder_right as f32) / TICKS_PER_REVOLUTION
+        let right_distance = (encoder_right as f32) / TICKS_PER_REVOLUTION
             * 2.0
             * std::f32::consts::PI
             * WHEEL_RADIUS;
@@ -527,14 +518,14 @@ impl MotorDriver for Gd32Driver {
             y: 0.0, // Simplified - needs proper pose tracking
             theta: 0.0,
             velocity: crate::types::Velocity::zero(), // Could be calculated from encoder changes
-            encoder_left: state.encoder_left,
-            encoder_right: state.encoder_right,
+            encoder_left,
+            encoder_right,
         })
     }
 
-    fn set_vacuum(&mut self, power: u8) -> Result<()> {
+    fn set_air_pump(&mut self, power: u8) -> Result<()> {
         let clamped = power.min(100);
-        log::info!("GD32: Setting vacuum power: {}%", clamped);
+        log::info!("GD32: Setting air pump power: {}%", clamped);
         self.set_blower_speed(clamped)
     }
 
@@ -546,9 +537,9 @@ impl MotorDriver for Gd32Driver {
         Ok(())
     }
 
-    fn set_main_brush(&mut self, speed: u8) -> Result<()> {
+    fn set_rolling_brush(&mut self, speed: u8) -> Result<()> {
         let clamped = speed.min(100);
-        log::info!("GD32: Setting main/rolling brush speed: {}%", clamped);
+        log::info!("GD32: Setting rolling brush speed: {}%", clamped);
         self.queue_command(Gd32Command::RollingBrushSpeed(clamped))?;
         log::debug!("GD32: Queued CMD=0x6A (RollingBrushSpeed={})", clamped);
         Ok(())
@@ -559,27 +550,140 @@ impl Drop for Gd32Driver {
     fn drop(&mut self) {
         log::info!("GD32: Shutting down driver");
 
-        // Signal shutdown to both threads
+        // Constants for shutdown behavior
+        const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(500);
+
+        let shutdown_start = Instant::now();
+
+        // IMPORTANT: Queue stop commands BEFORE signaling shutdown
+        // This ensures the write thread can send them before stopping
+        log::info!("GD32: Queueing stop commands for all components");
+
+        // Stop all components - use queue_command to ensure they're sent via heartbeat thread
+        if let Err(e) = self.queue_command(Gd32Command::BlowerSpeed(0)) {
+            log::warn!("GD32: Failed to queue vacuum stop: {}", e);
+        } else {
+            log::debug!("GD32: Vacuum stop command queued");
+        }
+
+        if let Err(e) = self.queue_command(Gd32Command::RollingBrushSpeed(0)) {
+            log::warn!("GD32: Failed to queue main brush stop: {}", e);
+        } else {
+            log::debug!("GD32: Main brush stop command queued");
+        }
+
+        if let Err(e) = self.queue_command(Gd32Command::SideBrushSpeed(0)) {
+            log::warn!("GD32: Failed to queue side brush stop: {}", e);
+        } else {
+            log::debug!("GD32: Side brush stop command queued");
+        }
+
+        // Stop motors based on current mode
+        let motor_mode = self.state.lock().command.lock().motor_mode;
+        let stop_cmd = match motor_mode {
+            0x01 => Gd32Command::MotorSpeed { left: 0, right: 0 },
+            0x02 => Gd32Command::motor_velocity_with_speeds(0, 0),
+            _ => Gd32Command::MotorSpeed { left: 0, right: 0 },
+        };
+
+        if let Err(e) = self.queue_command(stop_cmd) {
+            log::warn!("GD32: Failed to queue motor stop: {}", e);
+        } else {
+            log::debug!("GD32: Motor stop command queued");
+        }
+
+        // Give write thread time to send the stop commands
+        log::debug!("GD32: Waiting for stop commands to be sent");
+        thread::sleep(Duration::from_millis(100));
+
+        // Now signal shutdown to both threads
         *self.shutdown.lock() = true;
 
-        // Wait for READ thread to exit
+        // Track thread exit status
+        let mut read_thread_ok = true;
+        let mut write_thread_ok = true;
+
+        // Wait for READ thread to exit with timeout
         if let Some(handle) = self.read_thread.take() {
             log::debug!("GD32: Waiting for READ thread to exit");
-            let _ = handle.join();
+
+            // Simple timeout implementation using a busy wait
+            // Note: std::thread::JoinHandle doesn't have join_timeout in stable Rust
+            let timeout = SHUTDOWN_TIMEOUT.saturating_sub(shutdown_start.elapsed());
+            let deadline = Instant::now() + timeout;
+
+            loop {
+                if handle.is_finished() {
+                    match handle.join() {
+                        Ok(()) => {
+                            log::debug!("GD32: READ thread exited cleanly");
+                            break;
+                        }
+                        Err(panic_payload) => {
+                            log::error!("GD32: READ thread panicked: {:?}", panic_payload);
+                            read_thread_ok = false;
+                            break;
+                        }
+                    }
+                }
+
+                if Instant::now() >= deadline {
+                    log::warn!(
+                        "GD32: READ thread did not exit within timeout, may be blocked on I/O"
+                    );
+                    read_thread_ok = false;
+                    break;
+                }
+
+                thread::sleep(Duration::from_millis(10));
+            }
         }
 
-        // Wait for WRITE thread to exit
+        // Wait for WRITE thread to exit with timeout
         if let Some(handle) = self.write_thread.take() {
             log::debug!("GD32: Waiting for WRITE thread to exit");
-            let _ = handle.join();
+
+            let timeout = SHUTDOWN_TIMEOUT.saturating_sub(shutdown_start.elapsed());
+            let deadline = Instant::now() + timeout;
+
+            loop {
+                if handle.is_finished() {
+                    match handle.join() {
+                        Ok(()) => {
+                            log::debug!("GD32: WRITE thread exited cleanly");
+                            break;
+                        }
+                        Err(panic_payload) => {
+                            log::error!("GD32: WRITE thread panicked: {:?}", panic_payload);
+                            write_thread_ok = false;
+                            break;
+                        }
+                    }
+                }
+
+                if Instant::now() >= deadline {
+                    log::warn!(
+                        "GD32: WRITE thread did not exit within timeout, may be blocked on I/O"
+                    );
+                    write_thread_ok = false;
+                    break;
+                }
+
+                thread::sleep(Duration::from_millis(10));
+            }
         }
 
-        // Send stop command directly (threads are stopped, so use transport directly)
-        let _ = Self::send_command(
-            &self.transport,
-            &Gd32Command::MotorSpeed { left: 0, right: 0 },
-        );
+        // Log thread exit status
+        if !read_thread_ok || !write_thread_ok {
+            log::warn!("GD32: One or more threads did not exit cleanly");
+        } else {
+            log::debug!("GD32: All threads exited cleanly");
+        }
 
-        log::info!("GD32: Driver shutdown complete");
+        let total_shutdown_time = shutdown_start.elapsed();
+        log::info!(
+            "GD32: Driver shutdown complete (took {:?})",
+            total_shutdown_time
+        );
     }
 }

@@ -1,60 +1,58 @@
 //! # SangamIO - Where Robotic Signals Meet 🤖🌊
 //!
-//! A high-level robot API library for robotic vacuum cleaners running on embedded Linux.
+//! A hardware abstraction library for robotic vacuum cleaners running on embedded Linux.
 //!
-//! ## Features
+//! ## Overview
 //!
-//! - **High-Level Robot API**: Simple interface - `robot.move_forward()`, `robot.scan()`
-//! - **Automatic Device Management**: Background heartbeat threads, state synchronization
-//! - **Modular Architecture**: Easy to add new devices and protocols
+//! - **Unified Hardware Interface**: Single `SangamIO` struct abstracts all hardware
+//! - **Motion Control**: Velocity and position-based movement commands with constraints
+//! - **SLAM Support**: Odometry deltas and lidar integration for mapping
+//! - **Automatic Device Management**: Background threads, heartbeat, state synchronization
 //! - **Type-Safe**: Compile-time guarantees with Rust's type system
 //!
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use sangam_io::devices::Gd32Driver;
-//! use sangam_io::drivers::MotorDriver;
-//! use sangam_io::transport::SerialTransport;
+//! use sangam_io::SangamIO;
 //!
 //! # fn main() -> sangam_io::Result<()> {
-//! // Initialize GD32 motor controller
-//! let transport = SerialTransport::open("/dev/ttyS3", 115200)?;
-//! let mut motor = Gd32Driver::new(transport)?;
+//! // Initialize hardware (CRL-200S configuration)
+//! let mut sangam = SangamIO::crl200s("/dev/ttyS3", "/dev/ttyS1")?;
 //!
 //! // Set velocity (forward at 0.2 m/s, no rotation)
-//! motor.set_velocity(0.2, 0.0)?;
+//! sangam.set_velocity(0.2, 0.0)?;
 //!
-//! // Control lidar power
-//! motor.set_lidar_power(true)?;
+//! // Move forward 0.5 meters
+//! sangam.move_forward(0.5)?;
+//!
+//! // Get odometry for SLAM
+//! let delta = sangam.get_odometry_delta()?;
 //! # Ok(())
 //! # }
 //! ```
 
 #![warn(missing_docs)]
 
-pub mod devices;
-pub mod drivers;
+// Internal modules (not exposed in public API)
+mod devices;
+mod drivers;
+mod transport;
+mod config;
+mod motion;
+mod odometry;
+
+// Public modules (only error and types are exposed)
 pub mod error;
-pub mod transport;
 pub mod types;
 
-// Robot API (to be implemented)
-// pub mod robot;
-// pub mod builder;
+// SangamIO hardware abstraction
+mod sangam;
 
-/// Re-exports for convenient imports
-pub mod prelude {
-    pub use crate::drivers::{BatteryDriver, ImuDriver, LidarDriver, MotorDriver};
-    pub use crate::error::{Error, Result};
-    pub use crate::types::{
-        BatteryStatus, ImuData, LidarPoint, LidarScan, Odometry, Pose2D, Velocity,
-    };
-    // pub use crate::robot::Robot;
-    // pub use crate::builder::RobotBuilder;
-}
-
+// Public API exports - only SangamIO and essential types
 pub use error::{Error, Result};
-pub use types::*;
+pub use sangam::SangamIO;
+pub use types::{LidarPoint, LidarScan, Odometry, Pose2D};
+pub use odometry::OdometryDelta;
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

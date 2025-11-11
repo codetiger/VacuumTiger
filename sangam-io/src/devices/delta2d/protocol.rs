@@ -13,6 +13,13 @@
 use crate::error::{Error, Result};
 use crate::types::{LidarPoint, LidarScan};
 
+/// Lidar distance unit: raw value * 0.25mm
+const LIDAR_DISTANCE_MM_PER_UNIT: f32 = 0.25;
+
+/// Lidar angle unit: raw value * 0.01 degrees (reserved for future use)
+#[allow(dead_code)]
+const LIDAR_ANGLE_DEG_PER_UNIT: f32 = 0.01;
+
 /// Command types sent by the Lidar
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -97,7 +104,7 @@ pub fn parse_measurement(payload: &[u8]) -> Result<LidarScan> {
         }
 
         let signal_quality = payload[base];
-        let distance_mm = u16::from_be_bytes([payload[base + 1], payload[base + 2]]) as f32 * 0.25;
+        let distance_mm = u16::from_be_bytes([payload[base + 1], payload[base + 2]]) as f32 * LIDAR_DISTANCE_MM_PER_UNIT;
         let distance_m = distance_mm / 1000.0;
 
         let angle_deg = start_angle + (i as f32) * (360.0 / (16.0 * sample_count as f32));

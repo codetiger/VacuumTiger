@@ -2,13 +2,8 @@
 
 use crate::error::Result;
 
-#[cfg(feature = "std")]
 mod serial;
-#[cfg(feature = "std")]
 pub use serial::SerialTransport;
-
-mod mock;
-pub use mock::MockTransport;
 
 /// Transport trait for device communication
 pub trait Transport: Send {
@@ -26,6 +21,7 @@ pub trait Transport: Send {
     /// This is a hint to the transport layer that writes should be sent,
     /// but unlike flush(), this does not block. The implementation may
     /// choose to do nothing if flushing would block.
+    #[allow(dead_code)] // Part of trait API, may be used by future implementations
     fn try_flush(&mut self) -> Result<()> {
         // Default: no-op (fire and forget)
         Ok(())

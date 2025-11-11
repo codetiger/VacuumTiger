@@ -3,17 +3,21 @@
 use crate::error::Result;
 use crate::types::LidarScan;
 
-/// Lidar scanner driver trait
+/// Lidar scanner driver trait with callback-based API
 pub trait LidarDriver: Send {
-    /// Start scanning
-    fn start(&mut self) -> Result<()>;
+    /// Start the lidar scanning thread with callback
+    ///
+    /// The callback will be invoked for each scan received from the lidar.
+    fn start<F>(&mut self, callback: F) -> Result<()>
+    where
+        F: Fn(&LidarScan) + Send + 'static;
 
-    /// Get the latest scan (non-blocking)
-    fn get_scan(&mut self) -> Result<Option<LidarScan>>;
-
-    /// Stop scanning
+    /// Stop the lidar scanning thread
     fn stop(&mut self) -> Result<()>;
 
-    /// Check if lidar is scanning
-    fn is_scanning(&self) -> bool;
+    /// Check if lidar is actively scanning
+    fn is_active(&self) -> bool;
+
+    /// Get scanning statistics (scan_count, error_count)
+    fn get_stats(&self) -> (u64, u64);
 }

@@ -51,12 +51,6 @@ impl SerialTransport {
         log::debug!("Low-level serial optimizations skipped (using serialport defaults)");
         Ok(())
     }
-
-    /// Set read timeout
-    pub fn set_timeout(&mut self, timeout: Duration) -> Result<()> {
-        self.port.set_timeout(timeout)?;
-        Ok(())
-    }
 }
 
 impl Transport for SerialTransport {

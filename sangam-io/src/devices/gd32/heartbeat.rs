@@ -12,6 +12,7 @@
 use crate::transport::Transport;
 use parking_lot::Mutex;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -57,38 +58,63 @@ pub fn spawn_read_thread(
             match read_and_process_responses(&transport, &state) {
                 Ok(_) => {
                     // Reset lost packet counter on successful receive
-                    let mut state = state.lock();
-                    if state.lost_packet_count > 0 {
+                    let state_lock = state.lock();
+                    let lost_count = state_lock
+                        .diagnostics
+                        .lost_packet_count
+                        .load(Ordering::Relaxed);
+                    if lost_count > 0 {
                         log::debug!(
                             "GD32: Communication restored (was lost for {}ms)",
-                            state.lost_packet_count * 2
+                            lost_count * 2
                         );
                     }
-                    if state.sleep_mode {
+                    if state_lock.diagnostics.sleep_mode.load(Ordering::Relaxed) {
                         log::info!("GD32: Device woke up from sleep mode");
-                        state.sleep_mode = false;
+                        state_lock
+                            .diagnostics
+                            .sleep_mode
+                            .store(false, Ordering::Relaxed);
+
+                        // Update connection state
+                        *state_lock.connection_state.lock() =
+                            crate::devices::gd32::state::ConnectionState::Connected;
                     }
-                    state.lost_packet_count = 0;
-                    state.last_rx_time = Instant::now();
+                    state_lock
+                        .diagnostics
+                        .lost_packet_count
+                        .store(0, Ordering::Relaxed);
+                    *state_lock.diagnostics.last_rx_time.lock() = Instant::now();
                 }
                 Err(_) => {
                     // Increment lost packet counter
-                    let mut state = state.lock();
-                    state.lost_packet_count += 1;
+                    let state_lock = state.lock();
+                    let new_count = state_lock
+                        .diagnostics
+                        .lost_packet_count
+                        .fetch_add(1, Ordering::Relaxed)
+                        + 1;
 
                     // Check threshold (matches AuxCtrl: 150 lost = 300ms)
-                    if state.lost_packet_count == LOST_PACKET_THRESHOLD {
+                    if new_count == LOST_PACKET_THRESHOLD {
                         log::warn!(
                             "GD32: Lost packet threshold exceeded ({} lost packets = {}ms timeout) - entering sleep mode",
                             LOST_PACKET_THRESHOLD,
                             LOST_PACKET_THRESHOLD * 2
                         );
-                        state.sleep_mode = true;
-                    } else if state.lost_packet_count % 50 == 0 {
+                        state_lock
+                            .diagnostics
+                            .sleep_mode
+                            .store(true, Ordering::Relaxed);
+
+                        // Update connection state
+                        *state_lock.connection_state.lock() =
+                            crate::devices::gd32::state::ConnectionState::SleepMode;
+                    } else if new_count % 50 == 0 {
                         log::warn!(
                             "GD32: {} consecutive lost packets ({}ms)",
-                            state.lost_packet_count,
-                            state.lost_packet_count * 2
+                            new_count,
+                            new_count * 2
                         );
                     }
                 }
@@ -147,7 +173,12 @@ pub fn spawn_write_thread(
             // - Mode 0x02: CMD=0x66 (MotorVelocity) - differential drive
             let (target_left, target_right, motor_mode) = {
                 let state = state.lock();
-                (state.target_left, state.target_right, state.motor_mode)
+                let cmd_state = state.command.lock();
+                (
+                    cmd_state.target_left,
+                    cmd_state.target_right,
+                    cmd_state.motor_mode,
+                )
             };
 
             let motor_cmd = if motor_mode == 0x01 {
@@ -186,7 +217,7 @@ pub fn spawn_write_thread(
             // ===== 4. WAKE SEQUENCE FROM SLEEP (every 25 cycles = 500ms) =====
             // When GD32 enters sleep mode (no response for 300ms), send Initialize sequence
             if cycle_count % 25 == 0 && cycle_count > 0 {
-                let is_sleeping = state.lock().sleep_mode;
+                let is_sleeping = state.lock().diagnostics.sleep_mode.load(Ordering::Relaxed);
                 if is_sleeping {
                     let init_cmd = Gd32Command::default_initialize();
                     send_command(&transport, &state, &init_cmd);
@@ -221,8 +252,11 @@ fn send_command(
     if let Err(e) = transport.write(&packet) {
         log::error!("GD32: Write error for CMD=0x{:02X}: {}", cmd.cmd_id(), e);
     } else {
-        let mut state = state.lock();
-        state.total_tx_packets += 1;
+        state
+            .lock()
+            .diagnostics
+            .total_tx_packets
+            .fetch_add(1, Ordering::Relaxed);
     }
     // Note: No flush() - let kernel handle transmission asynchronously
 }
@@ -279,10 +313,11 @@ fn read_and_process_responses(
             if response.is_status_packet() {
                 // Log complete STATUS_DATA packet at debug level
                 if log::log_enabled!(log::Level::Debug) {
-                    let packet_num = {
-                        let state = state.lock();
-                        state.total_rx_packets
-                    };
+                    let packet_num = state
+                        .lock()
+                        .diagnostics
+                        .total_rx_packets
+                        .load(Ordering::Relaxed);
 
                     // Format: packet_num | enc_L | enc_R | error | complete hex payload
                     let hex_dump: Vec<String> = response
@@ -302,21 +337,25 @@ fn read_and_process_responses(
                 }
 
                 // Update shared state
-                let mut state = state.lock();
-                state.battery_voltage = response.battery_voltage;
-                state.battery_current = response.battery_current;
-                state.battery_level = response.battery_level;
-                state.encoder_left = response.encoder_left;
-                state.encoder_right = response.encoder_right;
-                state.error_code = response.error_code;
-                state.status_flag = response.status_flag;
-                state.charging_flag = response.charging_flag;
-                state.battery_state_flag = response.battery_state_flag;
-                state.percent_value = response.percent_value;
-                state.ir_sensor_1 = response.ir_sensor_1;
-                state.point_button_ir = response.point_button_ir;
-                state.dock_button_ir = response.dock_button_ir;
-                state.total_rx_packets += 1;
+                // Convert parsed response to TelemetryState
+                let telemetry = crate::devices::gd32::state::TelemetryState {
+                    battery_voltage: Some(response.battery_voltage),
+                    battery_current: Some(response.battery_current),
+                    battery_level: Some(response.battery_level),
+                    encoder_left: Some(response.encoder_left),
+                    encoder_right: Some(response.encoder_right),
+                    error_code: Some(response.error_code),
+                    status_flag: Some(response.status_flag),
+                    charging_flag: Some(response.charging_flag),
+                    battery_state_flag: Some(response.battery_state_flag),
+                    percent_value: Some(response.percent_value),
+                    ir_sensor_1: Some(response.ir_sensor_1),
+                    start_button_ir: Some(response.start_button_ir),
+                    dock_button_ir: Some(response.dock_button_ir),
+                };
+
+                // Update state using the helper method
+                state.lock().update_telemetry(telemetry);
 
                 // Reduced logging for performance (only trace level)
                 if log::log_enabled!(log::Level::Trace) {
@@ -328,7 +367,7 @@ fn read_and_process_responses(
                         response.encoder_right,
                         response.error_code,
                         response.ir_sensor_1,
-                        response.point_button_ir,
+                        response.start_button_ir,
                         response.dock_button_ir
                     );
                 }

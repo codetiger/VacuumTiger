@@ -11,7 +11,7 @@ categories = ["robotics", "api-bindings"]
 
 [dependencies]
 # Serial I/O
-serialport = { version = "4.5", optional = true }
+serialport = "4.5"
 libc = "0.2"  # For low-level serial port configuration
 
 # Error handling
@@ -26,12 +26,5 @@ parking_lot = "0.12"  # For faster mutexes
 [dev-dependencies]
 env_logger = "0.11"
 
-[features]
-default = ["std", "gd32", "lidar"]
-std = ["serialport"]
-gd32 = []
-lidar = []
-
 [[example]]
-name = "test_all_components"
-required-features = ["std", "gd32", "lidar"]
+name = "quick_demo"
