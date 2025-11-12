@@ -63,6 +63,13 @@ pub struct TelemetryState {
     pub start_button_ir: Option<u16>,
     /// Dock button IR sensor (×5 scaling, 100-199 = pressed)
     pub dock_button_ir: Option<u16>,
+
+    // Bumper Sensor
+    /// Bumper sensor (any contact detected)
+    /// true = bumper pressed, false = no contact
+    /// Note: Protocol byte position still under investigation
+    #[allow(dead_code)]
+    pub bumper_triggered: Option<bool>,
 }
 
 /// Diagnostic counters using atomics for lock-free access

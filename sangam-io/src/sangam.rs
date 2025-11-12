@@ -1,9 +1,7 @@
 //! SangamIO - Hardware abstraction layer for robotic vacuum control
 
 use crate::config::SangamConfig;
-use crate::devices::{Delta2DDriver, Gd32Driver};
-use crate::drivers::lidar::LidarDriver;
-use crate::drivers::motor::MotorDriver;
+use crate::devices::{Delta2DDriver, Gd32Driver, LidarDriver};
 use crate::error::{Error, Result};
 use crate::motion::{MotionCommand, MotionController, MotionStatus, Velocity2D};
 use crate::odometry::{OdometryDelta, OdometryTracker};
@@ -80,8 +78,8 @@ use std::time::{Duration, Instant};
 /// # }
 /// ```
 pub struct SangamIO {
-    /// Motor driver (required)
-    motor_driver: Arc<Mutex<Box<dyn MotorDriver>>>,
+    /// GD32 motor driver (required)
+    gd32_driver: Arc<Mutex<Gd32Driver>>,
 
     /// Lidar driver (optional)
     lidar_driver: Option<Arc<Mutex<Delta2DDriver>>>,
@@ -100,10 +98,6 @@ pub struct SangamIO {
 
     /// Shutdown flag
     shutdown: Arc<AtomicBool>,
-
-    /// Telemetry freshness tracking (reserved for future use)
-    #[allow(dead_code)]
-    last_telemetry: Arc<Mutex<Instant>>,
 }
 
 impl SangamIO {
@@ -134,44 +128,41 @@ impl SangamIO {
         // Use default CRL-200S configuration
         let config = SangamConfig::crl200s_defaults();
 
-        Self::new_with_drivers(Box::new(gd32), Some(lidar), config)
+        Self::new_with_drivers(gd32, Some(lidar), config)
     }
 
     /// Create SangamIO with custom drivers and configuration
     fn new_with_drivers(
-        motor_driver: Box<dyn MotorDriver>,
+        gd32_driver: Gd32Driver,
         lidar_driver: Option<Delta2DDriver>,
         config: SangamConfig,
     ) -> Result<Self> {
-        let motor_driver = Arc::new(Mutex::new(motor_driver));
+        let gd32_driver = Arc::new(Mutex::new(gd32_driver));
         let lidar_driver = lidar_driver.map(|d| Arc::new(Mutex::new(d)));
 
         let motion = Arc::new(Mutex::new(MotionController::new(config.clone())));
         let odometry = Arc::new(Mutex::new(OdometryTracker::new(config.clone())));
         let shutdown = Arc::new(AtomicBool::new(false));
-        let last_telemetry = Arc::new(Mutex::new(Instant::now()));
 
         // Start control loop thread
         let control_thread = Some(Self::start_control_loop(
             Arc::clone(&motion),
             Arc::clone(&odometry),
-            Arc::clone(&motor_driver),
+            Arc::clone(&gd32_driver),
             Arc::clone(&shutdown),
-            Arc::clone(&last_telemetry),
             config.clone(),
         ));
 
         log::info!("SangamIO: Initialization complete");
 
         Ok(Self {
-            motor_driver,
+            gd32_driver,
             lidar_driver,
             motion,
             odometry,
             config,
             control_thread,
             shutdown,
-            last_telemetry,
         })
     }
 
@@ -286,7 +277,7 @@ impl SangamIO {
 
     /// Get raw encoder counts
     pub fn get_encoder_counts(&self) -> Result<(i32, i32)> {
-        let mut driver = self.motor_driver.lock();
+        let mut driver = self.gd32_driver.lock();
         let odometry = driver.get_odometry()?;
         Ok((odometry.encoder_left, odometry.encoder_right))
     }
@@ -323,35 +314,25 @@ impl SangamIO {
             .as_ref()
             .ok_or(Error::ComponentNotAvailable("Lidar not configured"))?;
 
-        // Power on lidar via GD32 (hardware-specific implementation)
-        // NOTE: This uses downcast since MotorDriver trait doesn't expose lidar control
+        // Power on lidar via GD32
         {
-            use std::any::Any;
-            let mut driver = self.motor_driver.lock();
+            let mut gd32 = self.gd32_driver.lock();
+            log::info!("SangamIO: Executing GD32 lidar power-up sequence");
 
-            if let Some(gd32) = (&mut **driver as &mut dyn Any).downcast_mut::<Gd32Driver>() {
-                log::info!("SangamIO: Executing GD32 lidar power-up sequence");
+            // Switch to navigation mode (enables lidar GPIO control)
+            gd32.set_motor_mode(0x02)?;
+            thread::sleep(Duration::from_millis(50));
 
-                // Switch to navigation mode (enables lidar GPIO control)
-                gd32.set_motor_mode(0x02)?;
-                thread::sleep(Duration::from_millis(50));
+            // Execute verified 3-step power sequence from MITM logs
+            gd32.send_lidar_prep()?;
+            thread::sleep(Duration::from_millis(50));
 
-                // Execute verified 3-step power sequence from MITM logs
-                gd32.send_lidar_prep()?;
-                thread::sleep(Duration::from_millis(50));
+            gd32.set_lidar_power(true)?;
+            thread::sleep(Duration::from_millis(50));
 
-                gd32.set_lidar_power(true)?;
-                thread::sleep(Duration::from_millis(50));
+            gd32.set_lidar_pwm(100)?;
 
-                gd32.set_lidar_pwm(100)?;
-
-                log::info!("SangamIO: Lidar motor powered (CMD=0xA2/0x97/0x71 sequence complete)");
-            } else {
-                log::warn!("SangamIO: Motor driver is not GD32, cannot control lidar power");
-                return Err(Error::ComponentNotAvailable(
-                    "Lidar power control requires GD32 driver",
-                ));
-            }
+            log::info!("SangamIO: Lidar motor powered (CMD=0xA2/0x97/0x71 sequence complete)");
         }
 
         // Wait for lidar motor to stabilize
@@ -379,25 +360,19 @@ impl SangamIO {
         let mut lidar = lidar_arc.lock();
         lidar.stop()?;
 
-        // Power off lidar motor if using GD32 (complete shutdown sequence)
+        // Power off lidar motor via GD32
         {
-            use std::any::Any;
-            let mut driver = self.motor_driver.lock();
+            let mut gd32 = self.gd32_driver.lock();
+            log::info!("SangamIO: Powering off lidar motor");
 
-            if let Some(gd32) = (&mut **driver as &mut dyn Any).downcast_mut::<Gd32Driver>() {
-                log::info!("SangamIO: Powering off lidar motor");
+            // Step 1: Stop PWM
+            gd32.set_lidar_pwm(0)?;
+            thread::sleep(Duration::from_millis(100));
 
-                // Step 1: Stop PWM
-                gd32.set_lidar_pwm(0)?;
-                thread::sleep(Duration::from_millis(100));
+            // Step 2: Disable GPIO 233 power
+            gd32.set_lidar_power(false)?;
 
-                // Step 2: Disable GPIO 233 power
-                gd32.set_lidar_power(false)?;
-
-                log::info!("SangamIO: Lidar motor powered off (CMD=0x71/0x97 shutdown complete)");
-            } else {
-                log::warn!("SangamIO: Motor driver is not GD32, cannot control lidar power");
-            }
+            log::info!("SangamIO: Lidar motor powered off (CMD=0x71/0x97 shutdown complete)");
         }
 
         Ok(())
@@ -422,8 +397,8 @@ impl SangamIO {
     pub fn set_air_pump(&self, power: u8) -> Result<()> {
         log::debug!("SangamIO: Set air pump power to {}%", power);
 
-        let mut driver = self.motor_driver.lock();
-        driver.set_air_pump(power)
+        let mut gd32 = self.gd32_driver.lock();
+        gd32.set_air_pump(power)
     }
 
     /// Set brush speeds
@@ -434,9 +409,9 @@ impl SangamIO {
             side
         );
 
-        let mut driver = self.motor_driver.lock();
-        driver.set_rolling_brush(rolling)?;
-        driver.set_side_brush(side)
+        let mut gd32 = self.gd32_driver.lock();
+        gd32.set_rolling_brush(rolling)?;
+        gd32.set_side_brush(side)
     }
 
     // === Battery & Sensors ===
@@ -458,14 +433,8 @@ impl SangamIO {
     /// # Ok::<(), sangam_io::Error>(())
     /// ```
     pub fn get_battery_level(&self) -> Option<u8> {
-        use std::any::Any;
-        let driver = self.motor_driver.lock();
-
-        if let Some(gd32) = (&**driver as &dyn Any).downcast_ref::<Gd32Driver>() {
-            gd32.get_battery_info().map(|(_, _, level)| level)
-        } else {
-            None
-        }
+        let gd32 = self.gd32_driver.lock();
+        gd32.get_battery_info().map(|(_, _, level)| level)
     }
 
     /// Get battery voltage (Volts)
@@ -496,14 +465,8 @@ impl SangamIO {
     ///
     /// Returns `None` if telemetry data is not yet available from GD32.
     pub fn is_charging(&self) -> Option<bool> {
-        use std::any::Any;
-        let driver = self.motor_driver.lock();
-
-        if let Some(gd32) = (&**driver as &dyn Any).downcast_ref::<Gd32Driver>() {
-            gd32.get_status_flags().map(|(_, charging, _, _)| charging)
-        } else {
-            None
-        }
+        let gd32 = self.gd32_driver.lock();
+        gd32.get_status_flags().map(|(_, charging, _, _)| charging)
     }
 
     /// Check if start button is pressed
@@ -521,14 +484,8 @@ impl SangamIO {
     /// # Ok::<(), sangam_io::Error>(())
     /// ```
     pub fn is_start_button_pressed(&self) -> Option<bool> {
-        use std::any::Any;
-        let driver = self.motor_driver.lock();
-
-        if let Some(gd32) = (&**driver as &dyn Any).downcast_ref::<Gd32Driver>() {
-            gd32.is_start_button_pressed()
-        } else {
-            None
-        }
+        let gd32 = self.gd32_driver.lock();
+        gd32.is_start_button_pressed()
     }
 
     /// Check if dock button is pressed
@@ -536,14 +493,8 @@ impl SangamIO {
     /// The dock button is detected via IR sensor reading in range 100-199 (×5 scaling).
     /// Returns `None` if telemetry data is not yet available from GD32.
     pub fn is_dock_button_pressed(&self) -> Option<bool> {
-        use std::any::Any;
-        let driver = self.motor_driver.lock();
-
-        if let Some(gd32) = (&**driver as &dyn Any).downcast_ref::<Gd32Driver>() {
-            gd32.is_dock_button_pressed()
-        } else {
-            None
-        }
+        let gd32 = self.gd32_driver.lock();
+        gd32.is_dock_button_pressed()
     }
 
     /// Get IR proximity sensor readings (×5 scaling, raw values)
@@ -553,14 +504,8 @@ impl SangamIO {
     ///
     /// Returns `None` if telemetry data is not yet available from GD32.
     pub fn get_ir_sensors(&self) -> Option<(u16, u16, u16)> {
-        use std::any::Any;
-        let driver = self.motor_driver.lock();
-
-        if let Some(gd32) = (&**driver as &dyn Any).downcast_ref::<Gd32Driver>() {
-            gd32.get_ir_sensors()
-        } else {
-            None
-        }
+        let gd32 = self.gd32_driver.lock();
+        gd32.get_ir_sensors()
     }
 
     /// Get GD32 error code from status telemetry
@@ -568,14 +513,8 @@ impl SangamIO {
     /// Returns `None` if telemetry data is not yet available from GD32.
     /// Error code meanings are hardware-specific (see GD32 protocol documentation).
     pub fn get_error_code(&self) -> Option<u8> {
-        use std::any::Any;
-        let driver = self.motor_driver.lock();
-
-        if let Some(gd32) = (&**driver as &dyn Any).downcast_ref::<Gd32Driver>() {
-            gd32.get_error_code()
-        } else {
-            None
-        }
+        let gd32 = self.gd32_driver.lock();
+        gd32.get_error_code()
     }
 
     /// Get communication statistics with GD32
@@ -592,20 +531,14 @@ impl SangamIO {
     /// # Ok::<(), sangam_io::Error>(())
     /// ```
     pub fn get_connection_quality(&self) -> (u64, u64, f32) {
-        use std::any::Any;
-        let driver = self.motor_driver.lock();
-
-        if let Some(gd32) = (&**driver as &dyn Any).downcast_ref::<Gd32Driver>() {
-            let (rx, tx, _lost) = gd32.get_packet_stats();
-            let success_rate = if tx > 0 {
-                rx as f32 / (tx as f32 * 2.0) // GD32 sends ~2x as many packets as we do
-            } else {
-                0.0
-            };
-            (rx, tx, success_rate)
+        let gd32 = self.gd32_driver.lock();
+        let (rx, tx, _lost) = gd32.get_packet_stats();
+        let success_rate = if tx > 0 {
+            rx as f32 / (tx as f32 * 2.0) // GD32 sends ~2x as many packets as we do
         } else {
-            (0, 0, 0.0)
-        }
+            0.0
+        };
+        (rx, tx, success_rate)
     }
 
     /// Check if GD32 telemetry is fresh (received within last 100ms)
@@ -613,16 +546,9 @@ impl SangamIO {
     /// Returns `false` if no telemetry has been received or if data is stale.
     /// Use this to verify GD32 connection health before issuing commands.
     pub fn is_telemetry_fresh(&self) -> bool {
-        use std::any::Any;
         use std::time::Duration;
-
-        let driver = self.motor_driver.lock();
-
-        if let Some(gd32) = (&**driver as &dyn Any).downcast_ref::<Gd32Driver>() {
-            gd32.is_telemetry_fresh(Duration::from_millis(100))
-        } else {
-            false
-        }
+        let gd32 = self.gd32_driver.lock();
+        gd32.is_telemetry_fresh(Duration::from_millis(100))
     }
 
     // === Control Loop ===
@@ -631,9 +557,8 @@ impl SangamIO {
     fn start_control_loop(
         motion: Arc<Mutex<MotionController>>,
         odometry: Arc<Mutex<OdometryTracker>>,
-        motor_driver: Arc<Mutex<Box<dyn MotorDriver>>>,
+        gd32_driver: Arc<Mutex<Gd32Driver>>,
         shutdown: Arc<AtomicBool>,
-        _last_telemetry: Arc<Mutex<Instant>>,
         config: SangamConfig,
     ) -> JoinHandle<()> {
         thread::Builder::new()
@@ -672,7 +597,7 @@ impl SangamIO {
                     };
 
                     // Send to motors and update odometry
-                    if let Some(mut driver) = motor_driver.try_lock() {
+                    if let Some(mut gd32) = gd32_driver.try_lock() {
                         lock_fail_count = 0;  // Reset counter on success
 
                         // Pass motor speeds directly to driver (already in -2000 to 2000 range)
@@ -680,24 +605,14 @@ impl SangamIO {
                         let left_vel = left_speed as f32;
                         let right_vel = right_speed as f32;
 
-                        if let Err(e) = driver.set_wheel_velocity(left_vel, right_vel) {
+                        if let Err(e) = gd32.set_wheel_velocity(left_vel, right_vel) {
                             log::warn!("SangamIO: Failed to set wheel velocities: {}", e);
                         }
 
                         // Update odometry from encoder counts
-                        if let Ok(odom_data) = driver.get_odometry() {
+                        if let Ok(odom_data) = gd32.get_odometry() {
                             let mut odom = odometry.lock();
                             odom.update_encoders(odom_data.encoder_left, odom_data.encoder_right);
-                            let last_telemetry = _last_telemetry.lock();
-                            let telemetry_age = last_telemetry.elapsed();
-                            drop(last_telemetry);
-                            *_last_telemetry.lock() = Instant::now();
-
-                            // Warn if telemetry is stale
-                            if telemetry_age > Duration::from_millis(500) {
-                                log::warn!("SangamIO: Telemetry stale - {:.1}s since last update",
-                                    telemetry_age.as_secs_f32());
-                            }
                         }
 
                         // Log control loop stats periodically (throttled to 1Hz)
@@ -709,7 +624,7 @@ impl SangamIO {
                     } else {
                         lock_fail_count += 1;
                         if lock_fail_count >= 10 {
-                            log::warn!("SangamIO: Motor driver lock contention - {} consecutive failures",
+                            log::warn!("SangamIO: GD32 driver lock contention - {} consecutive failures",
                                 lock_fail_count);
                             lock_fail_count = 0;  // Reset to avoid spam
                         }

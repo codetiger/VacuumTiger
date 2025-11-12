@@ -16,10 +16,6 @@ use crate::types::{LidarPoint, LidarScan};
 /// Lidar distance unit: raw value * 0.25mm
 const LIDAR_DISTANCE_MM_PER_UNIT: f32 = 0.25;
 
-/// Lidar angle unit: raw value * 0.01 degrees (reserved for future use)
-#[allow(dead_code)]
-const LIDAR_ANGLE_DEG_PER_UNIT: f32 = 0.01;
-
 /// Command types sent by the Lidar
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -44,30 +40,20 @@ impl CommandType {
 /// Packet header received from the Lidar
 #[derive(Debug)]
 pub struct PacketHeader {
-    #[allow(dead_code)]
-    chunk_header: u8,
-    #[allow(dead_code)]
-    chunk_length: u16,
-    #[allow(dead_code)]
-    chunk_version: u8,
-    #[allow(dead_code)]
-    chunk_type: u8,
     pub command_type: CommandType,
     pub payload_length: u16,
 }
 
 impl PacketHeader {
     /// Parse header from 8-byte buffer
+    ///
+    /// Format: [chunk_header, chunk_length(2), chunk_version, chunk_type, command_type, payload_length(2)]
     pub fn parse(buf: &[u8; 8]) -> Result<Self> {
         let command_type = CommandType::from_u8(buf[5]).ok_or_else(|| {
             Error::InvalidPacket(format!("Unknown command type: 0x{:02X}", buf[5]))
         })?;
 
         Ok(PacketHeader {
-            chunk_header: buf[0],
-            chunk_length: u16::from_be_bytes([buf[1], buf[2]]),
-            chunk_version: buf[3],
-            chunk_type: buf[4],
             command_type,
             payload_length: u16::from_be_bytes([buf[6], buf[7]]),
         })

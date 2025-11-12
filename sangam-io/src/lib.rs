@@ -36,13 +36,12 @@
 // Internal modules (not exposed in public API)
 mod config;
 mod devices;
-mod drivers;
 mod motion;
 mod odometry;
-mod transport;
 
-// Public modules (only error and types are exposed)
+// Public modules
 pub mod error;
+pub mod transport; // Exposed for custom drivers and debugging tools
 pub mod types;
 
 // SangamIO hardware abstraction

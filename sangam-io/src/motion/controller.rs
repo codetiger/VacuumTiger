@@ -53,10 +53,6 @@ pub struct MotionController {
 /// Tracks progress for position-based commands
 #[derive(Debug, Clone, Default)]
 pub struct CommandProgress {
-    /// Initial distance/angle when command started (reserved for future use)
-    #[allow(dead_code)]
-    pub initial_value: f32,
-
     /// Target distance/angle to achieve
     pub target_value: f32,
 
@@ -386,20 +382,6 @@ impl MotionController {
             active_command,
             odometry_delta: None,
         }
-    }
-
-    /// Reset controller state (reserved for future use)
-    #[allow(dead_code)]
-    pub fn reset(&mut self) {
-        log::debug!("MotionController: Reset controller state");
-
-        self.current_velocity = Velocity2D::default();
-        self.target_velocity = Velocity2D::default();
-        self.active_command = None;
-        self.command_start = None;
-        self.command_progress = CommandProgress::default();
-        self.last_progress_log = None;
-        self.last_velocity_log = None;
     }
 }
 

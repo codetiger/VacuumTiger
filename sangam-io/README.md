@@ -24,26 +24,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Δx: {:.3}m, Δy: {:.3}m, Δθ: {:.3}°",
         delta.delta_x, delta.delta_y, delta.delta_theta.to_degrees());
 
-    // Get lidar scan
-    if let Some(scan) = sangam.get_scan()? {
-        println!("Scanned {} points", scan.points.len());
+    // Start lidar with callback
+    sangam.start_lidar(|scan| {
+        println!("Scanned {} points at {:.3}°",
+            scan.points.len(), scan.angle.to_degrees());
+    })?;
+
+    // Monitor sensors
+    if let Some(battery) = sangam.get_battery_level() {
+        println!("Battery: {}%", battery);
     }
 
     Ok(())
 }
 ```
 
-SangamIO handles initialization, background threads, heartbeat management, and state synchronization automatically.
+The `SangamIO` struct handles all hardware initialization, background threads, and communication automatically - you just call the methods you need.
 
 ## Features
 
-- **Unified API**: Single `SangamIO` struct abstracts all hardware components
-- **Motion Control**: Velocity and position-based commands with safety constraints
-- **Odometry Tracking**: Delta updates for SLAM integration (Δx, Δy, Δθ)
-- **Automatic Management**: Background threads, heartbeat, initialization, cleanup
-- **Type Safety**: Velocities in m/s, angles in radians, compile-time checks
-- **Sensor Monitoring**: Battery, buttons, IR sensors, telemetry freshness
-- **Production Ready**: Runs on Allwinner A33, CRL-200S hardware verified
+- 🎯 **Simple API**: One struct (`SangamIO`), intuitive methods, minimal boilerplate
+- 🤖 **Motion Control**: Velocity commands, position-based movement, rotation with safety limits
+- 📍 **SLAM-Ready**: Real-time odometry deltas (Δx, Δy, Δθ) for mapping and localization
+- 🔄 **Automatic Management**: Hardware initialization, background threads, heartbeat - all handled for you
+- 🔒 **Type Safety**: Physical units (m/s, radians), compile-time checks, no raw integers
+- 📊 **Sensor Access**: Battery, buttons, IR sensors, connection health monitoring
+- ✅ **Production Ready**: Verified on CRL-200S hardware, Allwinner A33 platform
 
 ## Supported Hardware
 
@@ -90,39 +96,71 @@ See **[GUIDE.md](GUIDE.md)** for complete step-by-step instructions on building,
 **Version**: 0.1.0 (Initial Release)
 
 **What's working**:
-- SangamIO unified hardware abstraction layer
-- Motion control system with safety constraints
-- Odometry tracking for SLAM integration
-- GD32F103 motor controller driver (automatic heartbeat)
-- Delta-2D lidar driver with scanning support
-- Sensor monitoring (battery, buttons, IR sensors)
-- Complete CRL-200S hardware integration
+- ✅ **Motion Control**: Velocity commands, position-based movement, rotation
+- ✅ **Odometry**: Real-time delta tracking for SLAM (Δx, Δy, Δθ)
+- ✅ **Lidar Scanning**: Callback-based scan processing
+- ✅ **Sensors**: Battery level, charging status, button detection
+- ✅ **Monitoring**: Telemetry freshness, connection health
+- ✅ **Hardware**: CRL-200S robot (GD32F103 + Delta-2D lidar)
 
-**Next steps**:
-- Additional robot hardware support (STM32, other lidars)
-- Advanced motion planning and path following
-- ROS/ROS2 bridge for ecosystem integration
-- Performance optimization and tuning
+**Coming soon**:
+- 🔧 Additional hardware support (STM32, RPLIDAR, YDLIDAR)
+- 🔧 Advanced motion planning and trajectory following
+- 🔧 ROS/ROS2 integration for ecosystem compatibility
 
 See [REFERENCE.md](REFERENCE.md#project-status) for detailed roadmap.
 
-## Architecture
+## Core API
 
+The `SangamIO` struct provides a unified interface for robot control:
+
+### Motion Control
+```rust
+// Velocity control (continuous motion)
+sangam.set_velocity(0.3, 0.0)?;  // 0.3 m/s forward, no rotation
+sangam.stop()?;                  // Gradual stop
+
+// Position-based movement (non-blocking)
+sangam.move_forward(1.0)?;       // Move 1 meter forward
+sangam.move_backward(0.5)?;      // Move 0.5 meters back
+sangam.rotate(1.57)?;            // Rotate 90° (π/2 radians)
 ```
-Application Code
-       ↓
-  SangamIO (Unified API)
-       ↓
-Motion Control + Odometry + Sensors
-       ↓
-Device Drivers (GD32, Delta2D)
-       ↓
-Transport Layer (Serial)
+
+### Odometry for SLAM
+```rust
+// Get odometry delta since last call
+let delta = sangam.get_odometry_delta()?;
+println!("Δx: {:.3}m, Δy: {:.3}m, Δθ: {:.3}rad",
+    delta.delta_x, delta.delta_y, delta.delta_theta);
 ```
 
-Layered architecture provides hardware abstraction for SLAM and navigation. The `SangamIO` API hides low-level details while exposing motion control, odometry deltas, and sensor data.
+### Sensors & Monitoring
+```rust
+// Battery and charging status
+if let Some(level) = sangam.get_battery_level() {
+    println!("Battery: {}%", level);
+}
+let is_charging = sangam.is_charging();
 
-See [REFERENCE.md](REFERENCE.md#architecture-overview) for detailed architecture documentation.
+// Button detection
+if sangam.is_start_button_pressed() == Some(true) {
+    println!("Start button pressed!");
+}
+
+// Connection health
+if !sangam.is_telemetry_fresh() {
+    println!("Warning: Lost communication");
+}
+```
+
+### Lidar Scanning
+```rust
+sangam.start_lidar(|scan| {
+    println!("Scanned {} points", scan.points.len());
+})?;
+```
+
+See [REFERENCE.md](REFERENCE.md) for complete API documentation.
 
 ## Testing
 

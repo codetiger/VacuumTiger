@@ -2,7 +2,7 @@
 
 mod protocol;
 
-use crate::drivers::lidar::LidarDriver;
+use super::LidarDriver;
 use crate::error::{Error, Result};
 use crate::transport::Transport;
 use crate::types::LidarScan;

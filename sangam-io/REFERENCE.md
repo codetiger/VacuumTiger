@@ -341,11 +341,13 @@ loop {
 
 ### Adding Support for New Robot Hardware
 
-To add a new robot configuration (e.g., different motor controller or lidar):
+#### For Motor Controllers:
 
-1. **Implement Device Drivers**:
+To add a new motor controller (e.g., STM32, ESP32):
+
+1. **Implement Device Driver** (no trait required):
    - Create new module in `src/devices/mydevice/`
-   - Implement `MotorDriver` or `LidarDriver` traits
+   - Implement direct methods for motor control
    - Handle protocol encoding/decoding
 
 2. **Create Configuration**:
@@ -362,44 +364,82 @@ To add a new robot configuration (e.g., different motor controller or lidar):
    }
    ```
 
-3. **Add Constructor**:
+3. **Update SangamIO to use new driver**:
+   - Modify `src/sangam.rs` to use your driver instead of `Gd32Driver`
+   - Update constructor to initialize your driver
+
+4. **Add Constructor**:
    ```rust
    impl SangamIO {
        pub fn my_robot(motor_port: &str, lidar_port: &str) -> Result<Self> {
+           let motor = MyMotorDriver::new(motor_port)?;
+           let lidar = Delta2DDriver::new(lidar_port)?;
            let config = SangamConfig::my_robot_defaults();
-           Self::new(motor_port, lidar_port, config)
+           Self::new_with_drivers(motor, Some(lidar), config)
        }
    }
    ```
 
-4. **Export in `src/devices/mod.rs`**:
+5. **Export in `src/devices/mod.rs`**:
    ```rust
    pub mod mydevice;
+   pub use mydevice::MyMotorDriver;
+   ```
+
+#### For Lidar Sensors:
+
+To add a new lidar model (e.g., YDLIDAR, Livox):
+
+1. **Implement LidarDriver Trait**:
+   - Create new module in `src/devices/mylidar/`
+   - Implement the `LidarDriver` trait
+   - Handle protocol parsing
+
+2. **Export in `src/devices/mod.rs`**:
+   ```rust
+   pub mod mylidar;
+   pub use mylidar::MyLidarDriver;
+   ```
+
+3. **Use in SangamIO**:
+   ```rust
+   let lidar = MyLidarDriver::new(lidar_port)?;
+   let sangam = SangamIO::new_with_drivers(gd32, Some(lidar), config)?;
    ```
 
 ### Example: Adding STM32 Motor Controller
 
 ```rust
 // src/devices/stm32/mod.rs
-pub struct Stm32Driver { /* ... */ }
+use crate::error::Result;
+use crate::types::Odometry;
 
-impl MotorDriver for Stm32Driver {
-    fn set_velocity(&mut self, linear: f32, angular: f32) -> Result<()> {
+pub struct Stm32Driver {
+    // Hardware state
+}
+
+impl Stm32Driver {
+    pub fn new(port: &str) -> Result<Self> {
+        // Initialize STM32 communication
+        Ok(Self { /* ... */ })
+    }
+
+    pub fn set_wheel_velocity(&mut self, left: f32, right: f32) -> Result<()> {
         // Convert to STM32 protocol
         // Send command via transport
         Ok(())
     }
-    // ... implement other methods
-}
 
-// Usage
-impl SangamIO {
-    pub fn with_stm32(motor_port: &str, lidar_port: &str) -> Result<Self> {
-        let motor = Box::new(Stm32Driver::new(motor_port)?);
-        // ... initialize with custom motor driver
+    pub fn get_odometry(&mut self) -> Result<Odometry> {
+        // Read encoder data from STM32
+        Ok(Odometry::default())
     }
+
+    // ... other methods as needed
 }
 ```
+
+**Note**: Motor controllers use direct implementation (no trait). Only lidar drivers implement the `LidarDriver` trait for swappability.
 
 ## Hardware Specifications
 
@@ -474,11 +514,17 @@ For common user-facing issues, see [GUIDE.md](GUIDE.md#troubleshooting).
 
 **Rationale**: Heartbeat is critical for GD32 operation. Users shouldn't have to remember to call it. Automatic management is safer and more ergonomic.
 
-### Why Internal Trait-Based Abstraction?
+### Why Simplified Architecture?
 
-**Decision**: Device drivers use traits internally, but hide them from public API
+**Decision**: Motor controllers use direct implementation (no trait). Only lidars use traits.
 
-**Rationale**: Traits provide flexibility for adding new hardware without exposing complexity to users. The `SangamIO` facade provides a simpler, concrete API while maintaining internal modularity.
+**Rationale**:
+- **Maximum simplicity**: Single motor controller implementation (GD32) doesn't justify trait overhead
+- **Clear code**: Direct method calls eliminate downcast anti-patterns and type complexity
+- **Preserved flexibility**: LidarDriver trait remains for genuine multi-device support (Delta2D, YDLIDAR, etc.)
+- **Easy extension**: New motor controllers can be added by modifying SangamIO (one-time change vs. ongoing complexity)
+
+The `SangamIO` facade provides a concrete API while keeping useful abstractions where they add value.
 
 ## Performance Characteristics
 

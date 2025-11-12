@@ -4,7 +4,6 @@ mod heartbeat;
 mod protocol;
 mod state;
 
-use crate::drivers::motor::MotorDriver;
 use crate::error::{Error, Result};
 use crate::transport::Transport;
 use crate::types::Odometry;
@@ -26,9 +25,6 @@ use state::Gd32State;
 /// - READ thread: Fast 2ms loop for receiving STATUS_DATA (never blocks on writes)
 /// - WRITE thread: 20ms loop for sending commands (can block without affecting reads)
 pub struct Gd32Driver {
-    /// Transport layer for serial I/O (shared between threads)
-    #[allow(dead_code)] // Kept to maintain Arc reference count
-    transport: Arc<Mutex<Box<dyn Transport>>>,
     /// Shared state between threads
     state: Arc<Mutex<Gd32State>>,
     /// READ thread handle (2ms loop)
@@ -159,7 +155,6 @@ impl Gd32Driver {
         log::info!("GD32: Initialization complete - ready for operations");
 
         Ok(Gd32Driver {
-            transport,
             state,
             read_thread,
             write_thread,
@@ -432,33 +427,14 @@ impl Gd32Driver {
     pub fn is_telemetry_fresh(&self, max_age: Duration) -> bool {
         self.state.lock().is_telemetry_fresh(max_age)
     }
-}
 
-impl MotorDriver for Gd32Driver {
-    fn set_velocity(&mut self, linear: f32, angular: f32) -> Result<()> {
-        // Convert linear and angular velocity to wheel speeds
-        // Assuming differential drive with wheel base of 0.3m and wheel radius of 0.05m
-        const WHEEL_BASE: f32 = 0.3;
-        const WHEEL_RADIUS: f32 = 0.05;
+    // === Motor Control Methods ===
 
-        let left = (linear - angular * WHEEL_BASE / 2.0) / WHEEL_RADIUS;
-        let right = (linear + angular * WHEEL_BASE / 2.0) / WHEEL_RADIUS;
-
-        self.set_wheel_velocity(left, right)
-    }
-
-    fn set_wheel_velocity(&mut self, left: f32, right: f32) -> Result<()> {
+    pub fn set_wheel_velocity(&mut self, left: f32, right: f32) -> Result<()> {
         // Motor speeds are already in the correct range (-2000 to 2000)
         // from the motion controller, so just cast to i32
         let left_ticks = left as i32;
         let right_ticks = right as i32;
-
-        // Log motor speeds periodically for debugging
-        log::debug!(
-            "GD32: Setting motor speeds - left={}, right={}",
-            left_ticks,
-            right_ticks
-        );
 
         // Update target state for heartbeat thread
         {
@@ -468,19 +444,13 @@ impl MotorDriver for Gd32Driver {
             cmd_state.target_right = right_ticks;
         }
 
+        // Note: Actual command transmission and logging happens in heartbeat WRITE thread
+        // with deduplication optimization (only sends when value changes or 100ms timeout)
+
         Ok(())
     }
 
-    fn stop(&mut self) -> Result<()> {
-        self.set_wheel_velocity(0.0, 0.0)
-    }
-
-    fn emergency_stop(&mut self) -> Result<()> {
-        // Same as normal stop for now
-        self.stop()
-    }
-
-    fn get_odometry(&mut self) -> Result<Odometry> {
+    pub fn get_odometry(&mut self) -> Result<Odometry> {
         // Get encoder values from telemetry
         let state = self.state.lock();
         let telemetry = state.telemetry.lock();
@@ -522,13 +492,13 @@ impl MotorDriver for Gd32Driver {
         })
     }
 
-    fn set_air_pump(&mut self, power: u8) -> Result<()> {
+    pub fn set_air_pump(&mut self, power: u8) -> Result<()> {
         let clamped = power.min(100);
         log::info!("GD32: Setting air pump power: {}%", clamped);
         self.set_blower_speed(clamped)
     }
 
-    fn set_side_brush(&mut self, speed: u8) -> Result<()> {
+    pub fn set_side_brush(&mut self, speed: u8) -> Result<()> {
         let clamped = speed.min(100);
         log::info!("GD32: Setting side brush speed: {}%", clamped);
         self.queue_command(Gd32Command::SideBrushSpeed(clamped))?;
@@ -536,7 +506,7 @@ impl MotorDriver for Gd32Driver {
         Ok(())
     }
 
-    fn set_rolling_brush(&mut self, speed: u8) -> Result<()> {
+    pub fn set_rolling_brush(&mut self, speed: u8) -> Result<()> {
         let clamped = speed.min(100);
         log::info!("GD32: Setting rolling brush speed: {}%", clamped);
         self.queue_command(Gd32Command::RollingBrushSpeed(clamped))?;

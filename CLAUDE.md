@@ -92,7 +92,7 @@ Transport Layer (src/transport/)
   • SerialTransport (Linux /dev/tty*)
 ```
 
-**Critical Design**: `SangamIO` provides the public API. Internal drivers use traits for flexibility, but the public API is a concrete struct for simplicity.
+**Critical Design**: `SangamIO` provides the public API as a concrete struct. Device drivers (Gd32Driver, Delta2DDriver) are directly used for maximum simplicity. Only the LidarDriver trait is retained to support future lidar models.
 
 ### Key Design Patterns
 
@@ -160,18 +160,15 @@ sangam-io/
 │   ├── transport/          # I/O abstraction layer
 │   │   ├── mod.rs
 │   │   └── serial.rs       # SerialTransport
-│   ├── drivers/            # Hardware-agnostic traits (internal)
-│   │   ├── mod.rs
-│   │   ├── motor.rs        # MotorDriver trait
-│   │   └── lidar.rs        # LidarDriver trait
-│   ├── devices/            # Concrete hardware implementations
+│   ├── devices/            # Device drivers and lidar trait
+│   │   ├── mod.rs          # LidarDriver trait definition
 │   │   ├── gd32/           # GD32F103 motor controller
-│   │   │   ├── mod.rs      # Gd32Driver struct
+│   │   │   ├── mod.rs      # Gd32Driver implementation
 │   │   │   ├── protocol.rs # Packet encoding/decoding
 │   │   │   ├── heartbeat.rs # Background thread (20ms)
 │   │   │   └── state.rs    # Shared state structures
 │   │   └── delta2d/        # 3iRobotix Delta-2D lidar
-│   │       ├── mod.rs      # Delta2DDriver
+│   │       ├── mod.rs      # Delta2DDriver (implements LidarDriver)
 │   │       └── protocol.rs # Packet parsing
 │   └── types/              # Common data structures
 │       └── scan.rs         # LidarPoint, LidarScan, Pose2D, etc.
@@ -206,12 +203,21 @@ When adding new robot platforms, create a new configuration method.
 
 ### Adding a New Robot Platform
 
-1. **Implement Device Driver**: Create `src/devices/yourdevice/mod.rs` implementing `MotorDriver` or `LidarDriver` trait
+**For Motor Controllers:**
+1. **Implement Driver**: Create `src/devices/yourdevice/mod.rs` (no trait required - direct implementation)
 2. **Define Protocol**: Add `protocol.rs` with packet encoding/decoding
-3. **Create Configuration**: Add `SangamConfig::your_robot_defaults()` with physical parameters
-4. **Add Constructor**: Add `SangamIO::your_robot()` constructor
-5. **Export Module**: Add to `src/devices/mod.rs`
-6. **Add Example**: Create test program in `examples/`
+3. **Update SangamIO**: Modify `src/sangam.rs` to use your driver instead of Gd32Driver
+4. **Create Configuration**: Add `SangamConfig::your_robot_defaults()` with physical parameters
+5. **Add Constructor**: Add `SangamIO::your_robot()` constructor
+6. **Export Module**: Add to `src/devices/mod.rs`
+7. **Add Example**: Create test program in `examples/`
+
+**For Lidar Models:**
+1. **Implement LidarDriver trait**: Create `src/devices/yourlidar/mod.rs` implementing the `LidarDriver` trait
+2. **Define Protocol**: Add `protocol.rs` with packet parsing
+3. **Export Module**: Add to `src/devices/mod.rs`
+4. **Update SangamIO constructor**: Modify to accept your lidar driver
+5. **Add Example**: Create test program in `examples/`
 
 ### API Usage Pattern
 

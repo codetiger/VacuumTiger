@@ -29,6 +29,8 @@ pub const OFFSET_FLAGS: usize = 7;
 pub const OFFSET_PERCENT: usize = 8;
 /// Error code byte offset
 pub const OFFSET_ERROR_CODE: usize = 43;
+/// Bumper sensor byte offset (bit-packed: Bit 0 = any bumper contact)
+pub const OFFSET_BUMPER: usize = 50;
 /// IR sensor 1 byte offset (2 bytes, little-endian, ×5 scaling)
 pub const OFFSET_IR_SENSOR_1: usize = 58;
 /// Start button IR sensor byte offset (2 bytes, little-endian, ×5 scaling)
@@ -328,6 +330,12 @@ pub struct Gd32Response {
     pub start_button_ir: u16,
     /// Dock button IR (×5 scaling) - bytes [62-63]
     pub dock_button_ir: u16,
+
+    // Bumper Sensor
+    /// Bumper sensor (combined signal) - byte [50]
+    /// true = any bumper contact detected (left OR right OR front)
+    /// VERIFIED: 0x00 = no contact, 0x01 = contact (2025-11-12)
+    pub bumper_triggered: bool,
 }
 
 impl Gd32Response {
@@ -355,6 +363,7 @@ impl Gd32Response {
                 ir_sensor_1: 0,
                 start_button_ir: 0,
                 dock_button_ir: 0,
+                bumper_triggered: false,
             }
         }
     }
@@ -369,6 +378,7 @@ impl Gd32Response {
     /// - Bytes [80-81]: Left encoder (i16 LE) - EXPERIMENTAL, was misread as part of 32-bit [80-83]
     /// - Bytes [82-83]: Right encoder (i16 LE) - EXPERIMENTAL, stronger candidate (Δ=66 vs Δ=7)
     /// - Byte [43]: Error code (u8)
+    /// - Byte [50]: Bumper sensor (u8, Bit 0 = any contact) - VERIFIED 2025-11-12
     /// - Bytes [58-59]: IR sensor 1 (u16 LE, ×5 scaling)
     /// - Bytes [60-61]: Point button IR (u16 LE, ×5 scaling)
     /// - Bytes [62-63]: Dock button IR (u16 LE, ×5 scaling)
@@ -378,19 +388,6 @@ impl Gd32Response {
     /// - OLD: Bytes [12-15] right encoder (i32) - always 0, not used
     /// - Battery current/voltage [80-83] - TODO: find at [16-19] and [24-27]?
     fn from_status_data(cmd_id: u8, payload: &[u8]) -> Self {
-        // Log raw STATUS_DATA packet for analysis (DEBUG level only)
-        if log::log_enabled!(log::Level::Debug) && payload.len() == 96 {
-            log::debug!("GD32: STATUS_DATA packet (96 bytes) - HEX DUMP:");
-            for chunk_start in (0..96).step_by(16) {
-                let chunk_end = (chunk_start + 16).min(96);
-                let hex_str: String = payload[chunk_start..chunk_end]
-                    .iter()
-                    .map(|b| format!("{:02X} ", b))
-                    .collect();
-                log::debug!("  [{:02}..{:02}]: {}", chunk_start, chunk_end - 1, hex_str);
-            }
-        }
-
         // Battery voltage - DISABLED: bytes [82-83] conflict with encoder [80-83]
         // TODO: Investigate alternative position at bytes [16-19]
         let battery_voltage = 0.0;
@@ -499,6 +496,15 @@ impl Gd32Response {
             0
         };
 
+        // Bumper sensor - VERIFIED at byte [50] (2025-11-12)
+        // Bit 0 = any bumper contact (left OR right OR front)
+        // Values: 0x00 = no contact, 0x01 = contact detected
+        let bumper_triggered = if payload.len() > OFFSET_BUMPER {
+            (payload[OFFSET_BUMPER] & 0x01) != 0
+        } else {
+            false
+        };
+
         Self {
             cmd_id,
             payload: payload.to_vec(),
@@ -515,6 +521,7 @@ impl Gd32Response {
             ir_sensor_1,
             start_button_ir,
             dock_button_ir,
+            bumper_triggered,
         }
     }
 
@@ -631,14 +638,6 @@ impl Gd32Response {
         Err(Error::InvalidPacket("No valid packet found".into()))
     }
 
-    /// Decode response from packet bytes (legacy method, expects packet at start)
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        match Self::decode_with_sync(data) {
-            Ok((_bytes_consumed, response)) => Ok(response),
-            Err(e) => Err(e),
-        }
-    }
-
     /// Check if this is a status packet
     pub fn is_status_packet(&self) -> bool {
         self.cmd_id == CommandId::StatusData as u8
@@ -747,33 +746,5 @@ mod tests {
             assert_eq!(payload[1], 0x08);
             assert_eq!(payload[2], 0x08);
         }
-    }
-
-    #[test]
-    fn test_response_decode() {
-        // Create a valid packet with checksum
-        let cmd_id = 0x06;
-        let payload = [0x00];
-        let checksum = calculate_checksum(cmd_id, &payload).unwrap(); // [0x06, 0x00]
-        let packet = vec![
-            0xFA,
-            0xFB,
-            0x04,
-            cmd_id,
-            payload[0],
-            checksum[0],
-            checksum[1],
-        ];
-
-        let response = Gd32Response::decode(&packet).unwrap();
-        assert_eq!(response.cmd_id, 0x06);
-    }
-
-    #[test]
-    fn test_response_decode_invalid_checksum() {
-        // Wrong checksum (should be [0x06, 0x00])
-        let packet = vec![0xFA, 0xFB, 0x04, 0x06, 0x00, 0xFF, 0xFF];
-        let result = Gd32Response::decode(&packet);
-        assert!(result.is_err());
     }
 }

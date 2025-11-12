@@ -45,6 +45,10 @@ pub fn spawn_read_thread(
     thread::spawn(move || {
         log::info!("GD32: Read thread started (2ms loop, dedicated to receiving STATUS_DATA)");
 
+        // Persistent read buffer to accumulate data across cycles
+        // STATUS_DATA packets are 103 bytes, allow 2 full packets + overhead
+        let mut read_buffer: Vec<u8> = Vec::with_capacity(256);
+
         loop {
             let cycle_start = Instant::now();
 
@@ -55,7 +59,7 @@ pub fn spawn_read_thread(
             }
 
             // ONLY READ - never write (ensures consistent 2ms timing)
-            match read_and_process_responses(&transport, &state) {
+            match read_and_process_responses(&transport, &state, &mut read_buffer) {
                 Ok(_) => {
                     // Reset lost packet counter on successful receive
                     let state_lock = state.lock();
@@ -152,6 +156,11 @@ pub fn spawn_write_thread(
 
         let mut cycle_count = 0u64;
 
+        // Track last sent motor command to avoid redundant sends
+        let mut last_motor_cmd: Option<(i32, i32, u8)> = None; // (left, right, mode)
+        let mut last_motor_send_time = Instant::now();
+        const MOTOR_SEND_TIMEOUT: Duration = Duration::from_millis(100); // Safety: send every 100ms minimum
+
         loop {
             let cycle_start = Instant::now();
 
@@ -167,7 +176,7 @@ pub fn spawn_write_thread(
                 send_command(&transport, &state, &cmd);
             }
 
-            // ===== 2. SEND MOTOR CONTROL (every 20ms) =====
+            // ===== 2. SEND MOTOR CONTROL (only when changed or timeout) =====
             // Choose command based on motor mode:
             // - Mode 0x01: CMD=0x67 (MotorSpeed) - direct wheel control
             // - Mode 0x02: CMD=0x66 (MotorVelocity) - differential drive
@@ -181,30 +190,62 @@ pub fn spawn_write_thread(
                 )
             };
 
-            let motor_cmd = if motor_mode == 0x01 {
-                // Mode 0x01: Direct motor control (CMD=0x67)
-                Gd32Command::MotorSpeed {
-                    left: target_left,
-                    right: target_right,
+            // Check if motor command changed or timeout expired
+            let current_cmd = (target_left, target_right, motor_mode);
+            let cmd_changed = last_motor_cmd != Some(current_cmd);
+            let timeout_expired = last_motor_send_time.elapsed() >= MOTOR_SEND_TIMEOUT;
+            let is_moving = target_left != 0 || target_right != 0;
+
+            // Send motor command if:
+            // 1. Command changed (including 0→non-zero or non-zero→0)
+            // 2. Timeout expired AND motors are moving (safety refresh)
+            // 3. Never send repeated zero commands (motors already stopped)
+            let should_send = cmd_changed || (timeout_expired && is_moving);
+
+            if should_send {
+                let motor_cmd = if motor_mode == 0x01 {
+                    // Mode 0x01: Direct motor control (CMD=0x67)
+                    Gd32Command::MotorSpeed {
+                        left: target_left,
+                        right: target_right,
+                    }
+                } else {
+                    // Mode 0x02: Velocity control (CMD=0x66)
+                    Gd32Command::motor_velocity_with_speeds(target_left, target_right)
+                };
+
+                // Log reason for send
+                if cmd_changed {
+                    if is_moving {
+                        log::debug!(
+                            "GD32: Motor cmd changed - TX CMD=0x{:02X} mode=0x{:02X} L={}, R={}",
+                            motor_cmd.cmd_id(),
+                            motor_mode,
+                            target_left,
+                            target_right
+                        );
+                    } else {
+                        log::debug!(
+                            "GD32: Motors stopped - TX CMD=0x{:02X} mode=0x{:02X} L=0, R=0 (final stop command)",
+                            motor_cmd.cmd_id(),
+                            motor_mode
+                        );
+                    }
+                } else if timeout_expired && cycle_count % 50 == 0 {
+                    // Log periodic safety sends for moving motors (less frequently)
+                    log::debug!(
+                        "GD32: Safety refresh (moving) - TX CMD=0x{:02X} mode=0x{:02X} L={}, R={}",
+                        motor_cmd.cmd_id(),
+                        motor_mode,
+                        target_left,
+                        target_right
+                    );
                 }
-            } else {
-                // Mode 0x02: Velocity control (CMD=0x66)
-                Gd32Command::motor_velocity_with_speeds(target_left, target_right)
-            };
 
-            // Log TX periodically (every 1 second = 50 cycles)
-            if cycle_count % 50 == 0 {
-                log::debug!(
-                    "GD32: TX CMD=0x{:02X} mode=0x{:02X} (cycle #{}) L={}, R={}",
-                    motor_cmd.cmd_id(),
-                    motor_mode,
-                    cycle_count,
-                    target_left,
-                    target_right
-                );
+                send_command(&transport, &state, &motor_cmd);
+                last_motor_cmd = Some(current_cmd);
+                last_motor_send_time = Instant::now();
             }
-
-            send_command(&transport, &state, &motor_cmd);
 
             // ===== 3. SEND HEARTBEAT COMMAND (every 10 cycles = 200ms) =====
             // Keeps GD32 from entering sleep mode
@@ -265,6 +306,7 @@ fn send_command(
 fn read_and_process_responses(
     transport: &Arc<Mutex<Box<dyn Transport>>>,
     state: &Arc<Mutex<Gd32State>>,
+    read_buffer: &mut Vec<u8>,
 ) -> crate::error::Result<()> {
     use super::protocol::Gd32Response;
 
@@ -272,41 +314,54 @@ fn read_and_process_responses(
 
     // Check if data is available
     let available = transport.available()?;
-    if available < 6 {
-        // No data available - this counts as a lost packet for sleep detection
-        return Err(crate::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "No data available",
-        )));
+    if available == 0 {
+        // No NEW data available
+        // But we might have leftover data in buffer from previous cycle
+        if read_buffer.is_empty() {
+            // No data available - this counts as a lost packet for sleep detection
+            return Err(crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "No data available",
+            )));
+        }
+        // Fall through to try decoding buffered data
+    } else {
+        // Read available bytes and append to persistent buffer
+        let to_read = available.min(256);
+        let mut temp_buffer = vec![0u8; to_read];
+        let bytes_read = transport.read(&mut temp_buffer)?;
+
+        if bytes_read == 0 {
+            // Read returned 0 bytes - count as lost packet
+            return Err(crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "Read returned 0 bytes",
+            )));
+        }
+
+        // Append new data to persistent buffer
+        read_buffer.extend_from_slice(&temp_buffer[..bytes_read]);
     }
 
-    // Read only the available bytes (don't wait for more)
-    // This prevents read() from blocking up to timeout duration
-    let buffer_size = available.min(256);
-    let mut buffer = vec![0u8; buffer_size];
-    let bytes_read = transport.read(&mut buffer)?;
+    // Try to decode response from accumulated buffer
+    match Gd32Response::decode_with_sync(read_buffer) {
+        Ok((bytes_consumed, response)) => {
+            // Remove consumed bytes from buffer
+            read_buffer.drain(0..bytes_consumed);
 
-    if bytes_read == 0 {
-        // Read returned 0 bytes - count as lost packet
-        return Err(crate::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "Read returned 0 bytes",
-        )));
-    }
+            // Prevent buffer from growing unbounded
+            if read_buffer.len() > 512 {
+                log::warn!("GD32: Read buffer exceeded 512 bytes, clearing garbage data");
+                read_buffer.clear();
+            }
 
-    // Log raw bytes received (reduced frequency to avoid slowdown)
-    // Only log occasionally to reduce overhead in hot path
-
-    // Try to decode response
-    match Gd32Response::decode(&buffer[..bytes_read]) {
-        Ok(response) => {
             // Reduced logging frequency for performance
             if log::log_enabled!(log::Level::Trace) {
                 log::trace!(
-                    "GD32: RX {} bytes, decoded CMD=0x{:02X}, payload_len={}",
-                    bytes_read,
+                    "GD32: Decoded CMD=0x{:02X}, consumed {} bytes, {} bytes remain in buffer",
                     response.cmd_id,
-                    response.payload.len()
+                    bytes_consumed,
+                    read_buffer.len()
                 );
             }
 
@@ -352,6 +407,7 @@ fn read_and_process_responses(
                     ir_sensor_1: Some(response.ir_sensor_1),
                     start_button_ir: Some(response.start_button_ir),
                     dock_button_ir: Some(response.dock_button_ir),
+                    bumper_triggered: Some(response.bumper_triggered),
                 };
 
                 // Update state using the helper method
@@ -376,9 +432,37 @@ fn read_and_process_responses(
             }
         }
         Err(e) => {
-            // Only log parse errors at debug level to reduce spam
-            if log::log_enabled!(log::Level::Debug) {
-                log::debug!("GD32: Parse error: {}", e);
+            // Incomplete packet errors are expected when accumulating data
+            // Only log if we have significant data buffered but still can't decode
+            let error_msg = format!("{}", e);
+            if error_msg.contains("Incomplete packet") {
+                // Expected - waiting for more data
+                if read_buffer.len() > 150 {
+                    log::debug!(
+                        "GD32: Incomplete packet with {} bytes buffered",
+                        read_buffer.len()
+                    );
+                }
+            } else if error_msg.contains("No sync bytes found") {
+                // Garbage data in buffer - consume it
+                if !read_buffer.is_empty() {
+                    log::debug!(
+                        "GD32: No sync bytes in {} byte buffer, clearing",
+                        read_buffer.len()
+                    );
+                    read_buffer.clear();
+                }
+            } else {
+                // Other parse errors - log at trace level
+                if log::log_enabled!(log::Level::Trace) {
+                    log::trace!("GD32: Parse error: {}", e);
+                }
+            }
+
+            // If buffer has incomplete data, don't count as a lost packet
+            // Only count as lost if we had no buffered data and no new data
+            if read_buffer.is_empty() {
+                return Err(e);
             }
         }
     }
