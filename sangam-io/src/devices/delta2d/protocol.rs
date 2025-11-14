@@ -11,7 +11,7 @@
 //! - Payload CRC (2 bytes, big-endian)
 
 use crate::error::{Error, Result};
-use crate::types::{LidarPoint, LidarScan};
+use crate::streaming::messages::{LidarPoint, LidarScan};
 
 /// Lidar distance unit: raw value * 0.25mm
 const LIDAR_DISTANCE_MM_PER_UNIT: f32 = 0.25;
@@ -98,20 +98,21 @@ pub fn parse_measurement(payload: &[u8]) -> Result<LidarScan> {
         let angle_rad = angle_deg.to_radians();
 
         points.push(LidarPoint {
-            angle: angle_rad,
-            distance: distance_m,
+            angle: angle_rad as f64,
+            distance: distance_m as f64,
             quality: signal_quality,
         });
     }
 
-    let timestamp_ms = std::time::SystemTime::now()
+    let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_millis() as u64;
+        .as_micros() as u64;
 
     Ok(LidarScan {
+        timestamp,
+        scan_number: 0, // Will be set by the driver
         points,
-        timestamp_ms: Some(timestamp_ms),
     })
 }
 
@@ -149,7 +150,7 @@ mod tests {
         let scan = parse_measurement(&payload).unwrap();
 
         assert_eq!(scan.points.len(), 1);
-        assert!(scan.timestamp_ms.is_some());
+        assert!(scan.timestamp > 0);
         assert_eq!(scan.points[0].quality, 255);
         assert!((scan.points[0].distance - 0.256).abs() < 0.001); // 256mm = 0.256m
     }

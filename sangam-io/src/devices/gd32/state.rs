@@ -25,16 +25,22 @@ pub struct CommandState {
     pub target_left: i32,
     /// Target right motor speed (ticks per cycle)
     pub target_right: i32,
+    /// Last side brush speed sent (for detecting 0→non-zero transitions)
+    pub last_side_brush: u8,
+    /// Last rolling brush speed sent (for detecting 0→non-zero transitions)
+    pub last_rolling_brush: u8,
+    /// Last air pump/blower speed sent (for detecting 0→non-zero transitions)
+    pub last_air_pump: u16,
+    /// Last lidar PWM sent (for detecting enable/disable transitions)
+    pub last_lidar_pwm: i32,
+    /// Lidar power state (for detecting power on/off transitions)
+    pub lidar_powered: bool,
 }
 
 /// Telemetry state (written by READ thread, read by main thread)
 #[derive(Debug, Clone, Default)]
 pub struct TelemetryState {
     // Battery Information (all Option<T> to distinguish "no data" from "zero")
-    /// Current battery voltage (V)
-    pub battery_voltage: Option<f32>,
-    /// Current battery current (A)
-    pub battery_current: Option<f32>,
     /// Battery charge level (0-100%)
     pub battery_level: Option<u8>,
 
@@ -48,12 +54,15 @@ pub struct TelemetryState {
     /// Error code from device
     pub error_code: Option<u8>,
     /// Status flag from device
+    #[allow(dead_code)] // Used in telemetry streaming
     pub status_flag: Option<u8>,
     /// Charging flag (indicates battery is charging)
     pub charging_flag: Option<bool>,
     /// Battery state flag
+    #[allow(dead_code)] // Used in telemetry streaming
     pub battery_state_flag: Option<bool>,
     /// Percent value ÷ 100
+    #[allow(dead_code)] // Used in telemetry streaming
     pub percent_value: Option<f32>,
 
     // IR Proximity Sensors (Button Detection)
@@ -68,7 +77,6 @@ pub struct TelemetryState {
     /// Bumper sensor (any contact detected)
     /// true = bumper pressed, false = no contact
     /// Note: Protocol byte position still under investigation
-    #[allow(dead_code)]
     pub bumper_triggered: Option<bool>,
 }
 
@@ -111,9 +119,14 @@ pub struct Gd32State {
 impl Default for CommandState {
     fn default() -> Self {
         Self {
-            motor_mode: 0x02, // Default to velocity mode
+            motor_mode: 0x00, // Start in initialization mode, switch to 0x02 after init completes
             target_left: 0,
             target_right: 0,
+            last_side_brush: 0,
+            last_rolling_brush: 0,
+            last_air_pump: 0,
+            last_lidar_pwm: 0,
+            lidar_powered: false,
         }
     }
 }
@@ -143,7 +156,10 @@ impl Default for Gd32State {
 }
 
 impl Gd32State {
+    // TODO: These methods were used by the removed getter API - keep for potential future use
+
     /// Get telemetry age if telemetry has been received
+    #[allow(dead_code)]
     pub fn telemetry_age(&self) -> Option<std::time::Duration> {
         self.telemetry_timestamp
             .lock()
@@ -152,6 +168,7 @@ impl Gd32State {
     }
 
     /// Check if telemetry is fresh (not stale)
+    #[allow(dead_code)]
     pub fn is_telemetry_fresh(&self, max_age: std::time::Duration) -> bool {
         self.telemetry_age()
             .map(|age| age <= max_age)

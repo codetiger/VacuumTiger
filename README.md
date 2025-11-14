@@ -12,15 +12,23 @@ Based on reverse engineering work from the 3irobotix CRL-200S platform.
 
 ```
 VacuumTiger/
-├── sangam-io/              # High-level robot control library
+├── sangam-io/              # Hardware abstraction daemon
 │   ├── src/
+│   │   ├── app.rs          # Main application loop
 │   │   ├── devices/        # GD32 driver, Delta-2D lidar driver
-│   │   ├── drivers/        # Device traits (MotorDriver, LidarDriver)
-│   │   ├── transport/      # I/O abstraction (serial, mock)
-│   │   └── types/          # Type-safe data structures
-│   ├── examples/           # Working robot control examples
-│   ├── GUIDE.md            # Deployment and development guide
-│   └── REFERENCE.md        # Technical reference
+│   │   ├── streaming/      # TCP streaming server
+│   │   └── types/          # Common data structures
+│   ├── examples/           # Hardware test examples
+│   ├── README.md           # Daemon overview
+│   ├── PROTOCOL.md         # TCP protocol specification
+│   ├── ARCHITECTURE.md     # Design decisions
+│   └── DEPLOYMENT.md       # Production deployment guide
+├── drishti/                # Python client for robot control & visualization
+│   ├── drishti.py          # Main client library
+│   ├── drishti_ui.py       # GUI interface
+│   ├── ui/                 # UI components
+│   ├── README.md           # Client documentation
+│   └── requirements.txt    # Python dependencies
 ├── protocol-mitm/          # Protocol reverse-engineering tools
 │   ├── src/                # Serial MITM logger (Rust)
 │   ├── scripts/            # Robot-side automation scripts
@@ -43,54 +51,64 @@ rustup target add armv7-unknown-linux-musleabihf
 
 ```bash
 cd sangam-io
-cargo build --release --target armv7-unknown-linux-musleabihf \
-  --features="std,gd32,lidar"
+cargo build --release --target armv7-unknown-linux-musleabihf
 ```
 
-**3. See full deployment guide:**
+**3. See deployment guide:**
 
-For complete instructions, see **[sangam-io/GUIDE.md](sangam-io/GUIDE.md)**
+For complete instructions, see **[sangam-io/DEPLOYMENT.md](sangam-io/DEPLOYMENT.md)**
 
 ## Example Usage
 
-```rust
-use sangam_io::devices::{Gd32Driver, Delta2DDriver};
-use sangam_io::drivers::{MotorDriver, LidarDriver};
-use sangam_io::transport::SerialTransport;
+SangamIO runs as a daemon providing TCP streaming interface on port 5000:
 
-// Initialize motor controller
-let transport = SerialTransport::open("/dev/ttyS3", 115200)?;
-let mut gd32 = Gd32Driver::new(transport)?;
+```python
+import socket
+import struct
+import msgpack
 
-// Move robot
-gd32.set_velocity(0.5, 0.0)?;  // Forward at 0.5 m/s
+# Connect to daemon
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect(('localhost', 5000))
 
-// Initialize lidar
-let lidar_transport = SerialTransport::open("/dev/ttyS1", 115200)?;
-let mut lidar = Delta2DDriver::new(lidar_transport)?;
-
-// Start scanning
-gd32.set_lidar_power(true)?;
-lidar.start()?;
-
-while let Ok(Some(scan)) = lidar.get_scan() {
-    println!("Received {} points", scan.points.len());
+# Send velocity command
+cmd = {
+    'type': 'SetVelocity',
+    'linear': 0.3,   # m/s
+    'angular': 0.0   # rad/s
 }
+payload = msgpack.packb(cmd)
+frame = b'command\x00' + payload
+sock.send(struct.pack('>I', len(frame)) + frame)
+
+# Read telemetry stream
+while True:
+    # Read frame length
+    length = struct.unpack('>I', sock.recv(4))[0]
+    frame = sock.recv(length)
+
+    # Parse topic and payload
+    null_idx = frame.index(0)
+    topic = frame[:null_idx].decode('utf-8')
+    data = msgpack.unpackb(frame[null_idx + 1:])
+
+    if topic == "telemetry":
+        print(f"Battery: {data['battery_level']}%")
 ```
 
-See **[examples/test_all_components.rs](sangam-io/examples/test_all_components.rs)** for complete working example.
+See **[sangam-io/PROTOCOL.md](sangam-io/PROTOCOL.md)** for complete protocol specification.
 
-## SangamIO Library
+## SangamIO Daemon
 
-**High-level robot API for robotic vacuum cleaners running on embedded Linux**
+**Hardware abstraction daemon for robotic vacuum cleaners with TCP streaming interface**
 
 ### Features
 
-- **Clean Architecture**: Layered design (Transport → Traits → Devices)
-- **Automatic Management**: Background heartbeat, initialization, cleanup
-- **Type Safety**: Velocities in m/s, angles in radians, compile-time checks
-- **Hardware Abstraction**: Swap devices easily, test with mocks
-- **Production Ready**: All tests passing, runs on Allwinner A33
+- **TCP Streaming**: Real-time telemetry and command interface on port 5000
+- **Lock-Free Queues**: High-performance sensor data streaming
+- **Automatic Management**: Background heartbeat (20ms), control loops (50Hz)
+- **Direct Hardware Access**: Optimized for low latency (<25ms command-to-action)
+- **Production Ready**: Binary size ~350KB, <1% CPU on Allwinner A33
 
 ### Supported Hardware
 
@@ -105,22 +123,46 @@ See **[examples/test_all_components.rs](sangam-io/examples/test_all_components.r
 
 ### Documentation
 
-- **[sangam-io/GUIDE.md](sangam-io/GUIDE.md)** - Complete deployment and development guide
-- **[sangam-io/REFERENCE.md](sangam-io/REFERENCE.md)** - Architecture, protocols, and API reference
-- **[sangam-io/examples/](sangam-io/examples/)** - Working code examples
+- **[sangam-io/README.md](sangam-io/README.md)** - Daemon overview and quick start
+- **[sangam-io/PROTOCOL.md](sangam-io/PROTOCOL.md)** - TCP message format and commands
+- **[sangam-io/DEPLOYMENT.md](sangam-io/DEPLOYMENT.md)** - Production installation guide
+- **[sangam-io/ARCHITECTURE.md](sangam-io/ARCHITECTURE.md)** - Design decisions and extensibility
+
+## Drishti Client
+
+**Python client for real-time robot monitoring and control**
+
+### Features
+
+- **Real-time Telemetry**: Subscribe to sensor data streams (battery, encoders, sensors)
+- **Lidar Visualization**: Receive and display 360° point cloud scans
+- **Robot Control**: Send motion and actuator commands via TCP
+- **Connection Monitoring**: Track communication health and latency
+- **Cross-Platform**: Pure Python, runs on Mac/Linux/Windows
+
+### Quick Start
+
+```bash
+cd drishti
+pip install -r requirements.txt
+python drishti.py --host 192.168.1.100  # Robot IP
+```
+
+See **[drishti/README.md](drishti/README.md)** for complete documentation.
 
 ## Project Status
 
-**Version**: 0.1.0 (Initial Release)
+**Version**: SangamIO v0.2.0-dev (Major cleanup release)
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| SangamIO Library | ✅ Complete | High-level API with traits |
-| GD32 Driver | ✅ Verified | Automatic heartbeat (20ms) |
-| Delta-2D Lidar | ✅ Verified | Full packet parsing |
-| Examples | ✅ Complete | test_all_components |
+| SangamIO Daemon | ✅ Complete | TCP streaming interface, ~350KB binary |
+| GD32 Driver | ✅ Verified | Automatic heartbeat (20ms), dual-thread |
+| Delta-2D Lidar | ✅ Verified | 5Hz scanning, lock-free streaming |
+| Drishti Client | ✅ Complete | Python client for monitoring & control |
+| TCP Protocol | ✅ Complete | MessagePack over TCP with string topics |
 | Protocol MITM Tools | ✅ Complete | Serial interception & logging |
-| Documentation | ✅ Complete | GUIDE.md + REFERENCE.md |
+| Documentation | ✅ Complete | Architecture + Protocol + Deployment guides |
 | Additional Controllers | 📋 Planned | STM32, ESP32 |
 | Custom Firmware | 📋 Planned | GD32 firmware development |
 | PCB Design | 📋 Planned | Custom controller board |
@@ -165,5 +207,7 @@ Licensed under Apache License 2.0. See [LICENSE](LICENSE) for details.
 
 ## Related Links
 
-- **[SangamIO Library](sangam-io/)** - Main library documentation
+- **[SangamIO Daemon](sangam-io/)** - Hardware abstraction daemon documentation
+- **[Drishti Client](drishti/)** - Python client for robot control & visualization
+- **[TCP Protocol](sangam-io/PROTOCOL.md)** - Complete protocol specification
 - **[Original Research](https://github.com/codetiger/VacuumRobot)** - Protocol reverse engineering work

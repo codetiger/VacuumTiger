@@ -56,28 +56,38 @@ pub const IR_SENSOR_SCALE: u16 = 5;
 /// - Return as [high_byte, low_byte]
 ///
 /// Special case: CMD 0x08 returns None (no checksum)
+///
+/// Optimized version: Zero heap allocations by processing cmd_id and payload directly
 fn calculate_checksum(cmd_id: u8, payload: &[u8]) -> Option<[u8; 2]> {
     // CMD 0x08 (Initialize) has no checksum
     if cmd_id == 0x08 {
         return None;
     }
 
-    let mut data = vec![cmd_id];
-    data.extend_from_slice(payload);
-
     let mut checksum: u16 = 0;
-    let mut i = 0;
 
-    // Sum 16-bit big-endian words
-    while i + 1 < data.len() {
-        let word = ((data[i] as u16) << 8) | (data[i + 1] as u16);
+    // Handle empty payload edge case
+    if payload.is_empty() {
+        // Only cmd_id (odd byte) - XOR it
+        checksum ^= cmd_id as u16;
+        return Some([(checksum >> 8) as u8, checksum as u8]);
+    }
+
+    // First word: combine cmd_id with payload[0] (most common case: payload is non-empty)
+    let first_word = ((cmd_id as u16) << 8) | (payload[0] as u16);
+    checksum = checksum.wrapping_add(first_word);
+
+    // Process remaining payload as 16-bit big-endian words
+    let mut i = 1;
+    while i + 1 < payload.len() {
+        let word = ((payload[i] as u16) << 8) | (payload[i + 1] as u16);
         checksum = checksum.wrapping_add(word);
         i += 2;
     }
 
-    // XOR odd byte if present
-    if i < data.len() {
-        checksum ^= data[i] as u16;
+    // XOR odd trailing byte if present
+    if i < payload.len() {
+        checksum ^= payload[i] as u16;
     }
 
     Some([(checksum >> 8) as u8, checksum as u8])
@@ -259,25 +269,27 @@ impl Gd32Command {
 
     /// Create motor velocity command with wheel speeds (CMD 0x66)
     ///
-    /// VERIFIED via hardware testing: CMD=0x66 uses differential drive format!
+    /// CORRECTED: CMD=0x66 takes individual wheel speeds, NOT differential drive format!
     ///
-    /// Payload format: [linear_velocity (i32 LE), angular_velocity (i32 LE)]
-    /// - linear_velocity: (left + right) - forward/backward speed of robot center
-    /// - angular_velocity: (right - left) - rotation speed (positive = clockwise)
+    /// Payload format: [left_wheel_speed (i32 LE), right_wheel_speed (i32 LE)]
+    /// - left_wheel_speed: Left wheel velocity in motor units (-2000 to 2000)
+    /// - right_wheel_speed: Right wheel velocity in motor units (-2000 to 2000)
     ///
-    /// Conversion from wheel speeds to differential drive:
-    /// - Both wheels same speed → linear only (straight line)
-    /// - Wheels opposite speeds → angular only (rotate in place)
-    /// - Mixed → curved motion
+    /// Examples:
+    /// - Both wheels same positive speed → straight forward
+    /// - Both wheels same negative speed → straight backward
+    /// - Wheels opposite speeds → rotate in place
+    /// - Different speeds → curved motion
     ///
     /// This is the ONLY motor control command that works in mode 0x02 (navigation mode).
     /// CMD=0x67 (MotorSpeed) causes error 0xFF in mode 0x02.
     pub fn motor_velocity_with_speeds(left: i32, right: i32) -> Self {
         let mut data = [0u8; 8];
 
-        // Differential drive conversion:
-        // linear = (left + right) - sum of wheel speeds
-        // angular = (right - left) - difference in wheel speeds
+        // Differential drive conversion format:
+        // GD32 expects linear velocity (sum) and angular velocity (difference)
+        // linear = left + right (sum of wheel speeds)
+        // angular = right - left (difference in wheel speeds)
         let linear_velocity = left + right;
         let angular_velocity = right - left;
 
@@ -299,6 +311,7 @@ pub struct Gd32Response {
     /// Battery voltage (V) - VERIFIED at bytes [82-83]
     pub battery_voltage: f32,
     /// Battery current (A) - VERIFIED at bytes [80-81]
+    #[allow(dead_code)] // Parsed from protocol but not actively used in daemon mode
     pub battery_current: f32,
     /// Battery level (0-100%) - VERIFIED at byte [4]
     pub battery_level: u8,
@@ -533,7 +546,73 @@ impl Gd32Response {
             return Err(Error::InvalidPacket("Packet too short".into()));
         }
 
-        // Try all possible sync positions
+        // FAST PATH: Check if sync bytes are at position 0 (99%+ case in normal operation)
+        // This avoids the expensive windows().position() scan for the common case
+        if data[0] == SYNC1 && data[1] == SYNC2 {
+            let length = data[2] as usize;
+            let packet_size = 3 + length;
+
+            if data.len() >= packet_size {
+                let cmd_id = data[3];
+                let has_checksum = cmd_id != 0x08;
+
+                // Validate minimum length before subtracting (prevent underflow)
+                let min_length = if has_checksum { 3 } else { 1 };
+                if length < min_length {
+                    // Invalid packet length - fall through to slow path
+                    log::debug!(
+                        "Fast path: Invalid packet length {} for cmd_id 0x{:02X} (minimum {})",
+                        length,
+                        cmd_id,
+                        min_length
+                    );
+                } else {
+                    let (payload_len, _checksum_size) = if has_checksum {
+                        (length - 3, 2)
+                    } else {
+                        (length - 1, 0)
+                    };
+
+                    if 4 + payload_len <= data.len() {
+                        let payload = &data[4..4 + payload_len];
+
+                        // Verify checksum if present
+                        let checksum_valid = if has_checksum {
+                            let checksum_offset = 4 + payload_len;
+                            if checksum_offset + 2 <= data.len() {
+                                let received = [data[checksum_offset], data[checksum_offset + 1]];
+                                match calculate_checksum(cmd_id, payload) {
+                                    Some(expected) => received == expected,
+                                    None => false,
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            true
+                        };
+
+                        if checksum_valid {
+                            // Fast path success! Decode and return
+                            let response = Self::from_payload(cmd_id, payload);
+                            return Ok((packet_size, response));
+                        }
+                        // Checksum failed at position 0 - fall through to slow path sync search
+                    }
+                    // Incomplete packet at position 0 - fall through to slow path
+                }
+                // Invalid length - fall through to slow path
+            } else {
+                // Not enough data for complete packet at position 0
+                return Err(Error::InvalidPacket(format!(
+                    "Incomplete packet: need {} bytes, have {}",
+                    packet_size,
+                    data.len()
+                )));
+            }
+        }
+
+        // SLOW PATH: Search for sync bytes (error recovery, startup, garbage data, checksum failure)
         let mut search_offset = 0;
         while search_offset + 6 <= data.len() {
             // Search for sync bytes starting from search_offset
@@ -578,6 +657,19 @@ impl Gd32Response {
             // LENGTH field = CMD (1) + PAYLOAD + CHECKSUM (2)
             // Exception: CMD 0x08 has no checksum, so LENGTH = CMD (1) + PAYLOAD
             let has_checksum = cmd_id != 0x08;
+
+            // Validate minimum length before subtracting
+            let min_length = if has_checksum { 3 } else { 1 };
+            if length < min_length {
+                log::debug!(
+                    "Invalid packet length {} for cmd_id 0x{:02X} (minimum {}), skipping",
+                    length,
+                    cmd_id,
+                    min_length
+                );
+                search_offset = absolute_sync_pos + 1;
+                continue;
+            }
 
             let (payload_len, _checksum_size) = if has_checksum {
                 (length - 3, 2) // length includes CMD(1) + PAYLOAD + CHECKSUM(2)

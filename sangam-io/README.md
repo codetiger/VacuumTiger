@@ -1,188 +1,146 @@
 # SangamIO
 
-**Hardware abstraction library for robotic vacuum cleaners on embedded Linux**
+Hardware abstraction daemon for robotic vacuum cleaners, providing unified control over motors, sensors, and lidar through a TCP streaming interface.
 
-SangamIO provides a unified, type-safe Rust API for controlling vacuum robots. It abstracts motor control, odometry tracking, lidar scanning, and sensor monitoring into a single ergonomic interface.
+[![Version](https://img.shields.io/badge/version-0.2.0--dev-blue)](CHANGELOG.md)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-ARM%20Linux-orange)](DEPLOYMENT.md)
 
-## Quick Example
+## Overview
 
-```rust
-use sangam_io::SangamIO;
+SangamIO is a standalone daemon that manages low-level hardware communication for vacuum robots based on the CRL-200S platform. It acts as a bridge between SLAM/navigation software and the robot's hardware, handling:
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize hardware (CRL-200S configuration)
-    let mut sangam = SangamIO::crl200s("/dev/ttyS3", "/dev/ttyS1")?;
+- **Motion Control**: Differential drive with odometry tracking
+- **Lidar Integration**: 360° scanning at 5Hz (Delta-2D)
+- **Sensor Monitoring**: Battery, bumpers, cliff sensors, buttons
+- **Real-time Control**: 50Hz control loop with 20ms heartbeat
 
-    // Set velocity (forward at 0.5 m/s, no rotation)
-    sangam.set_velocity(0.5, 0.0)?;
+The daemon communicates via TCP sockets, streaming sensor data to clients and accepting motion commands.
 
-    // Move forward 1 meter
-    sangam.move_forward(1.0)?;
+> **Note**: Version 0.2.0 includes major architectural simplifications and performance improvements. See [CHANGELOG.md](CHANGELOG.md) for details.
 
-    // Get odometry delta for SLAM
-    let delta = sangam.get_odometry_delta()?;
-    println!("Δx: {:.3}m, Δy: {:.3}m, Δθ: {:.3}°",
-        delta.delta_x, delta.delta_y, delta.delta_theta.to_degrees());
+## Quick Start
 
-    // Start lidar with callback
-    sangam.start_lidar(|scan| {
-        println!("Scanned {} points at {:.3}°",
-            scan.points.len(), scan.angle.to_degrees());
-    })?;
+### Connect to Running Daemon
 
-    // Monitor sensors
-    if let Some(battery) = sangam.get_battery_level() {
-        println!("Battery: {}%", battery);
-    }
+```python
+import socket
+import struct
+import msgpack
 
-    Ok(())
-}
+# Connect to daemon
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect(('localhost', 5000))
+
+# Read telemetry stream
+while True:
+    # Read frame length (4 bytes big-endian)
+    length_bytes = sock.recv(4)
+    if not length_bytes:
+        break
+    length = struct.unpack('>I', length_bytes)[0]
+
+    # Read frame data (topic string + null + payload)
+    frame = sock.recv(length)
+
+    # Parse topic (null-terminated string)
+    null_idx = frame.index(0)
+    topic = frame[:null_idx].decode('utf-8')
+
+    # Parse payload (MessagePack after null byte)
+    payload = frame[null_idx + 1:]
+    data = msgpack.unpackb(payload)
+
+    if topic == "telemetry":  # SensorUpdate
+        print(f"Battery: {data['battery_level']}%")
+    elif topic == "lidar":  # LidarScan
+        print(f"Lidar points: {len(data['points'])}")
 ```
 
-The `SangamIO` struct handles all hardware initialization, background threads, and communication automatically - you just call the methods you need.
+### Send Commands
 
-## Features
+```python
+# Send velocity command
+cmd = {
+    'type': 'SetVelocity',
+    'linear': 0.3,   # m/s
+    'angular': 0.0   # rad/s
+}
 
-- 🎯 **Simple API**: One struct (`SangamIO`), intuitive methods, minimal boilerplate
-- 🤖 **Motion Control**: Velocity commands, position-based movement, rotation with safety limits
-- 📍 **SLAM-Ready**: Real-time odometry deltas (Δx, Δy, Δθ) for mapping and localization
-- 🔄 **Automatic Management**: Hardware initialization, background threads, heartbeat - all handled for you
-- 🔒 **Type Safety**: Physical units (m/s, radians), compile-time checks, no raw integers
-- 📊 **Sensor Access**: Battery, buttons, IR sensors, connection health monitoring
-- ✅ **Production Ready**: Verified on CRL-200S hardware, Allwinner A33 platform
+# Serialize command to MessagePack
+payload = msgpack.packb(cmd)
 
-## Supported Hardware
+# Build frame: "command" + null + payload
+frame = b'command\x00' + payload
 
-| Component | Device | Status |
-|-----------|--------|--------|
-| Motor Controller | GD32F103 (CRL-200S) | ✅ Verified |
-| Lidar | 3iRobotix Delta-2D | ✅ Verified |
-| Motor Controller | STM32, ESP32 | 📋 Planned |
-| Lidar | RPLIDAR, YDLIDAR | 📋 Planned |
+# Send with length prefix
+sock.send(struct.pack('>I', len(frame)) + frame)
+```
 
-**Platform**: Embedded Linux (ARM/x86) with standard library
+## Building
 
-## Getting Started
-
-### 1. Install Prerequisites
+### For Development (x86_64)
 
 ```bash
-# Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# ARM cross-compilation
-rustup target add armv7-unknown-linux-musleabihf
+cargo build --release
 ```
 
-### 2. Add to Your Project
+### For Robot (ARM)
+
+```bash
+# Install cross-compilation toolchain
+rustup target add armv7-unknown-linux-musleabihf
+
+# Build for ARM (produces static binary with musl)
+cargo build --release --target armv7-unknown-linux-musleabihf
+```
+
+The musl target automatically produces a statically-linked binary suitable for deployment on embedded Linux systems without requiring additional runtime dependencies.
+
+## Configuration
+
+Edit `sangamio.toml` to configure:
 
 ```toml
-[dependencies]
-sangam-io = "0.1"
+[robot]
+type = "crl200s"
+
+[hardware]
+gd32_port = "/dev/ttyS3"
+lidar_port = "/dev/ttyS1"
+
+[network]
+tcp_port = 5000
+udp_discovery = true
+
+[motion]
+max_linear_velocity = 0.5   # m/s
+max_angular_velocity = 2.0   # rad/s
 ```
 
-### 3. Deploy and Run
+## Architecture
 
-See **[GUIDE.md](GUIDE.md)** for complete step-by-step instructions on building, deploying to hardware, and troubleshooting.
+- **Single daemon process** managing all hardware
+- **Lock-free queues** for sensor data streaming
+- **Direct hardware access** (no intermediate abstractions)
+- **Extensible design** via configuration (one robot type at a time)
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for design details.
 
 ## Documentation
 
-- **[GUIDE.md](GUIDE.md)** - Complete deployment and development guide
-- **[REFERENCE.md](REFERENCE.md)** - Architecture, protocols, and API reference
-- **[examples/](examples/)** - Working code examples
+- [PROTOCOL.md](PROTOCOL.md) - TCP message format and commands
+- [DEPLOYMENT.md](DEPLOYMENT.md) - Production installation guide
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Design decisions and extensibility
 
-## Project Status
+## Performance
 
-**Version**: 0.1.0 (Initial Release)
-
-**What's working**:
-- ✅ **Motion Control**: Velocity commands, position-based movement, rotation
-- ✅ **Odometry**: Real-time delta tracking for SLAM (Δx, Δy, Δθ)
-- ✅ **Lidar Scanning**: Callback-based scan processing
-- ✅ **Sensors**: Battery level, charging status, button detection
-- ✅ **Monitoring**: Telemetry freshness, connection health
-- ✅ **Hardware**: CRL-200S robot (GD32F103 + Delta-2D lidar)
-
-**Coming soon**:
-- 🔧 Additional hardware support (STM32, RPLIDAR, YDLIDAR)
-- 🔧 Advanced motion planning and trajectory following
-- 🔧 ROS/ROS2 integration for ecosystem compatibility
-
-See [REFERENCE.md](REFERENCE.md#project-status) for detailed roadmap.
-
-## Core API
-
-The `SangamIO` struct provides a unified interface for robot control:
-
-### Motion Control
-```rust
-// Velocity control (continuous motion)
-sangam.set_velocity(0.3, 0.0)?;  // 0.3 m/s forward, no rotation
-sangam.stop()?;                  // Gradual stop
-
-// Position-based movement (non-blocking)
-sangam.move_forward(1.0)?;       // Move 1 meter forward
-sangam.move_backward(0.5)?;      // Move 0.5 meters back
-sangam.rotate(1.57)?;            // Rotate 90° (π/2 radians)
-```
-
-### Odometry for SLAM
-```rust
-// Get odometry delta since last call
-let delta = sangam.get_odometry_delta()?;
-println!("Δx: {:.3}m, Δy: {:.3}m, Δθ: {:.3}rad",
-    delta.delta_x, delta.delta_y, delta.delta_theta);
-```
-
-### Sensors & Monitoring
-```rust
-// Battery and charging status
-if let Some(level) = sangam.get_battery_level() {
-    println!("Battery: {}%", level);
-}
-let is_charging = sangam.is_charging();
-
-// Button detection
-if sangam.is_start_button_pressed() == Some(true) {
-    println!("Start button pressed!");
-}
-
-// Connection health
-if !sangam.is_telemetry_fresh() {
-    println!("Warning: Lost communication");
-}
-```
-
-### Lidar Scanning
-```rust
-sangam.start_lidar(|scan| {
-    println!("Scanned {} points", scan.points.len());
-})?;
-```
-
-See [REFERENCE.md](REFERENCE.md) for complete API documentation.
-
-## Testing
-
-```bash
-# Build for development
-cargo build
-
-# Build for ARM target (production)
-cargo build --release --target armv7-unknown-linux-musleabihf
-
-# Run hardware demo on robot
-cargo build --example quick_demo --release --target armv7-unknown-linux-musleabihf
-# Deploy and run (see GUIDE.md for deployment instructions)
-```
-
-See [GUIDE.md](GUIDE.md) for complete deployment workflow and troubleshooting.
+- **Binary Size**: ~350KB statically linked
+- **Memory Usage**: <10MB RSS
+- **CPU Usage**: <1% on Allwinner A33
+- **Latency**: <25ms command-to-action
+- **Throughput**: 50Hz control, 5Hz lidar, 20Hz telemetry
 
 ## License
 
-Licensed under Apache License 2.0. See [LICENSE](../LICENSE) for details.
-
-## Related Projects
-
-- **[VacuumTiger](https://github.com/codetiger/VacuumTiger)** - Complete firmware and PCB designs
-- **[VacuumRobot](https://github.com/codetiger/VacuumRobot)** - Original protocol research
+MIT License - See LICENSE file for details

@@ -4,8 +4,8 @@ mod protocol;
 
 use super::LidarDriver;
 use crate::error::{Error, Result};
-use crate::transport::Transport;
-use crate::types::LidarScan;
+use crate::serial_io::SerialTransport;
+use crate::streaming::messages::LidarScan;
 
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 pub use protocol::CommandType;
 
 /// Type alias for the lidar scan callback
-type ScanCallback = Box<dyn Fn(&LidarScan) + Send>;
+type ScanCallback = Box<dyn Fn(LidarScan) + Send>;
 
 /// 3iRobotix Delta-2D Lidar driver
 ///
@@ -27,7 +27,7 @@ type ScanCallback = Box<dyn Fn(&LidarScan) + Send>;
 /// and invokes a registered callback when new scans are available.
 pub struct Delta2DDriver {
     /// Transport layer for serial I/O (shared with read thread)
-    transport: Arc<Mutex<Box<dyn Transport>>>,
+    transport: Arc<Mutex<SerialTransport>>,
 
     /// Read thread handle
     read_thread: Option<JoinHandle<()>>,
@@ -50,8 +50,8 @@ impl Delta2DDriver {
     ///
     /// Note: The lidar motor must be powered on separately via GD32 driver
     /// using set_lidar_power(true).
-    pub fn new<T: Transport + 'static>(transport: T) -> Result<Self> {
-        let transport = Arc::new(Mutex::new(Box::new(transport) as Box<dyn Transport>));
+    pub fn new(transport: SerialTransport) -> Result<Self> {
+        let transport = Arc::new(Mutex::new(transport));
 
         log::info!("Delta2D: Driver initialized, waiting for power-on");
 
@@ -82,7 +82,7 @@ impl Drop for Delta2DDriver {
 // ===== Scan Thread Functions =====
 
 /// Read exact number of bytes from transport
-fn read_exact(transport: &Arc<Mutex<Box<dyn Transport>>>, buf: &mut [u8]) -> Result<()> {
+fn read_exact(transport: &Arc<Mutex<SerialTransport>>, buf: &mut [u8]) -> Result<()> {
     let mut transport = transport.lock();
     let mut offset = 0;
 
@@ -105,7 +105,10 @@ fn read_exact(transport: &Arc<Mutex<Box<dyn Transport>>>, buf: &mut [u8]) -> Res
 /// Returns Ok(Some(scan)) if measurement data received,
 /// Ok(None) if health packet or no data available,
 /// Err(_) on read/parse error.
-fn try_read_scan(transport: &Arc<Mutex<Box<dyn Transport>>>) -> Result<Option<LidarScan>> {
+fn try_read_scan(
+    transport: &Arc<Mutex<SerialTransport>>,
+    payload_buffer: &mut Vec<u8>,
+) -> Result<Option<LidarScan>> {
     let mut transport_lock = transport.lock();
 
     // Check if enough data available for header
@@ -159,9 +162,10 @@ fn try_read_scan(transport: &Arc<Mutex<Box<dyn Transport>>>) -> Result<Option<Li
     // Release transport lock before reading payload
     drop(transport_lock);
 
-    // Read payload
-    let mut payload = vec![0u8; header.payload_length as usize];
-    read_exact(transport, &mut payload)?;
+    // Read payload using reusable buffer
+    payload_buffer.clear();
+    payload_buffer.resize(header.payload_length as usize, 0);
+    read_exact(transport, payload_buffer)?;
 
     // Read CRC (currently not validated)
     let mut crc_buf = [0u8; 2];
@@ -169,7 +173,7 @@ fn try_read_scan(transport: &Arc<Mutex<Box<dyn Transport>>>) -> Result<Option<Li
 
     match header.command_type {
         CommandType::Measurement => {
-            let scan = protocol::parse_measurement(&payload)?;
+            let scan = protocol::parse_measurement(payload_buffer)?;
             Ok(Some(scan))
         }
         CommandType::Health => {
@@ -182,7 +186,7 @@ fn try_read_scan(transport: &Arc<Mutex<Box<dyn Transport>>>) -> Result<Option<Li
 
 /// Scan thread main loop
 fn scan_thread_loop(
-    transport: Arc<Mutex<Box<dyn Transport>>>,
+    transport: Arc<Mutex<SerialTransport>>,
     callback: Arc<Mutex<Option<ScanCallback>>>,
     shutdown: Arc<AtomicBool>,
     scan_count: Arc<AtomicU64>,
@@ -196,8 +200,11 @@ fn scan_thread_loop(
     let mut min_points = u32::MAX;
     let mut max_points = 0u32;
 
+    // Reusable buffer for payload reading (avoids allocation per scan)
+    let mut payload_buffer = Vec::with_capacity(512);
+
     while !shutdown.load(Ordering::Relaxed) {
-        match try_read_scan(&transport) {
+        match try_read_scan(&transport, &mut payload_buffer) {
             Ok(Some(scan)) => {
                 let count = scan_count.fetch_add(1, Ordering::Relaxed) + 1;
                 let point_count = scan.points.len() as u32;
@@ -208,7 +215,7 @@ fn scan_thread_loop(
 
                 // Find range statistics
                 let (min_range, max_range) = if !scan.points.is_empty() {
-                    let distances: Vec<f32> = scan.points.iter().map(|p| p.distance).collect();
+                    let distances: Vec<f64> = scan.points.iter().map(|p| p.distance).collect();
                     let min = distances
                         .iter()
                         .min_by(|a, b| a.partial_cmp(b).unwrap())
@@ -288,7 +295,7 @@ fn scan_thread_loop(
                 if let Some(ref cb) = *callback_lock {
                     // Protected invocation to prevent thread termination on panic
                     if let Err(e) =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cb(&scan)))
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cb(scan)))
                     {
                         log::error!("Delta2D: Callback panicked: {:?}", e);
                     }
@@ -318,7 +325,7 @@ fn scan_thread_loop(
 impl LidarDriver for Delta2DDriver {
     fn start<F>(&mut self, callback: F) -> Result<()>
     where
-        F: Fn(&LidarScan) + Send + 'static,
+        F: Fn(LidarScan) + Send + 'static,
     {
         // Check if already running
         if self.read_thread.is_some() {
@@ -388,10 +395,6 @@ impl LidarDriver for Delta2DDriver {
         }
 
         Ok(())
-    }
-
-    fn is_active(&self) -> bool {
-        self.read_thread.is_some() && !self.shutdown.load(Ordering::Relaxed)
     }
 
     fn get_stats(&self) -> (u64, u64) {

@@ -13,7 +13,7 @@ repository = "https://github.com/codetiger/VacuumTiger"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.48", features = ["full"] }
 tokio-serial = "5.4"
 
 # Serialization
@@ -29,11 +29,11 @@ log = "0.4"
 env_logger = "0.11"
 
 # Utilities
-bytes = "1.7"
-bitflags = "2.6"
+bytes = "1.10"
+bitflags = "2.10"
 
 # Embedded/serial
-serialport = "4.5"
+serialport = "4.8"
 
 # Testing
 criterion = "0.5"
@@ -41,7 +41,6 @@ criterion = "0.5"
 [profile.release]
 debug = false # Exclude debug symbols
 strip = "symbols" # Exclude the rest of the symbols
-# opt-level = "z" # Did not use this, but it equals C++'s optimize for size (O3?)
 lto = true # Link time optimization, not sure what this does but it helps reduce the size
 codegen-units = 1 # Cargo specifies 16 parallel codegen units for release builds. This improves compile times, but prevents some optimizations.
 panic = "abort" # when Rust code encounters a situation when it must call panic!(), it unwinds the stack and produces a helpful backtrace. The unwinding code, however, does require extra binary size. rustc can be instructed to abort immediately rather than unwind, which removes the need for this extra unwinding code.

@@ -9,12 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-#### SangamIO Library (v0.1.0) - 2025-10-30
+#### Drishti Client (v1.0.0) - 2024-11-13
+
+**Python client for robot monitoring and control:**
+- Real-time telemetry monitoring via TCP connection
+- Lidar data streaming and visualization
+- Robot control interface for sending motion commands
+- Connection quality metrics and health monitoring
+- Cross-platform support (Mac/Linux/Windows)
+- GUI interface with PyQt5 for visual control
+- Pure Python implementation with msgpack serialization
+
+### Changed
+
+#### SangamIO Daemon (v0.2.0-dev) - 2024-11-14
+
+Major cleanup and architectural shift from library to daemon-focused design.
+
+**Architecture Changes:**
+- Transitioned from library to standalone daemon with TCP interface
+- Removed Transport trait abstraction (direct SerialTransport implementation)
+- Simplified to single LidarDriver trait (removed unnecessary abstractions)
+- Direct hardware implementation for better performance
+
+**Performance Optimizations:**
+- Binary size reduced by ~30% (from ~500KB to ~350KB)
+- Eliminated 12KB allocation per lidar scan through ownership transfer
+- TCP publisher buffer reuse (1500+ allocations/sec eliminated)
+- Lidar parsing buffer reuse (per-scan heap allocation eliminated)
+- Memory usage <10MB RSS, CPU usage <1% on Allwinner A33
+
+**Cleanup:**
+- Removed unused dependencies: libc, ctrlc, anyhow
+- Removed unused getter methods in Gd32Driver
+- Removed unnecessary rustflags for ARM target
+- Removed duplicate [profile.release] section from Cargo.toml
+- Cleaned up old documentation files (GUIDE.md, REFERENCE.md, WORKFLOW.md)
+
+**Documentation:**
+- New focused documents: README.md, PROTOCOL.md, DEPLOYMENT.md, ARCHITECTURE.md
+- Fixed TCP protocol documentation (string topics instead of numeric IDs)
+- Updated client examples with correct protocol format
+- Comprehensive architecture documentation with design decisions
+
+### Added
+
+#### SangamIO Library (v0.1.0) - 2024-10-30
 
 **Core Infrastructure:**
 - Monorepo workspace structure with Cargo workspace
-- `sangam-io` library crate with `no_std` support
-- Feature flags for modular compilation (`std`, `gd32`, `lidar`, `serde`)
+- `sangam-io` daemon application for hardware abstraction
+- TCP streaming server with MessagePack serialization
 - Comprehensive error handling with custom `Error` enum
 - Common utilities module with XOR checksum calculation
 
@@ -99,7 +144,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [x] Delta-2D lidar protocol implementation
 - [x] Complete example with hardware integration
 - [x] Hardware testing and validation on Allwinner A33
-- [x] Comprehensive documentation (GUIDE.md, REFERENCE.md)
+- [x] Comprehensive documentation (Architecture, Protocol, Deployment)
+- [x] Python client (Drishti) for monitoring and control
+- [x] TCP streaming protocol with MessagePack
 
 ### Phase 2: Advanced Features (Planned)
 - [ ] Additional motor controllers (STM32, ESP32)

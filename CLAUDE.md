@@ -4,366 +4,364 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VacuumTiger is an open-source firmware project for robotic vacuum cleaners based on the CRL-200S hardware platform. The project provides a unified hardware abstraction layer (SangamIO) for robot control, odometry tracking, and sensor monitoring, designed for SLAM and autonomous navigation.
+VacuumTiger is an open-source robotic vacuum firmware project for the CRL-200S hardware platform. The project consists of two main components:
 
-**Target Platform**: Embedded Linux (ARM) - specifically Allwinner A33 running Tina Linux
-**Primary Language**: Rust (edition 2024)
+1. **SangamIO**: A daemon providing hardware abstraction and real-time control via TCP streaming
+2. **Drishti**: Python visualization and control client for monitoring and commanding the robot
+
+**Target Platform**: Embedded Linux (ARM) - Allwinner A33 running Tina Linux
+**Primary Language**: Rust (edition 2024) for SangamIO, Python 3.8+ for Drishti
 **Cross-compilation Target**: `armv7-unknown-linux-musleabihf`
-**Main API**: `SangamIO` - unified hardware abstraction with motion control and odometry
+**Architecture**: Daemon-based with TCP streaming (not a library)
 
-## Build Commands
+## System Architecture
 
-### Development Builds
+### Overview
 
-```bash
-# Build library
-cd sangam-io
-cargo build
-
-# Build for ARM target (production)
-cargo build --release --target armv7-unknown-linux-musleabihf
-
-# Build specific example
-cargo build --example quick_demo --release --target armv7-unknown-linux-musleabihf
-
-# Run tests (host machine only)
-cargo test
-
-# Check code without building
-cargo check
-
-# Format code
-cargo fmt
-
-# Lint code
-cargo clippy
-
-# Generate documentation
-cargo doc --open
+```
+┌─────────────────────────────────────────────────┐
+│         Client Applications (SLAM/Drishti)      │
+└─────────────┬───────────────┬───────────────────┘
+              │ TCP 5555/5556 │
+┌─────────────▼───────────────▼───────────────────┐
+│            SangamIO Daemon (Robot)              │
+│  • Telemetry streaming @ 500Hz (sensors)        │
+│  • Lidar streaming @ 5Hz (360° scans)           │
+│  • Command processing (motion/actuators)        │
+│  • Real-time control loop (50Hz)                │
+└─────────────┬───────────────┬───────────────────┘
+              │ /dev/ttyS3    │ /dev/ttyS1
+       ┌──────▼─────────┐  ┌──▼────────────┐
+       │ GD32F103 MCU   │  │ Delta-2D Lidar │
+       │ (Motor Control)│  │ (360° Scanning)│
+       └────────────────┘  └────────────────┘
 ```
 
-### Testing a Single Test
+### Key Design Principles
+
+1. **Daemon, Not Library**: SangamIO runs as a standalone service, not imported as a library
+2. **Concrete Over Abstract**: Direct implementations instead of trait objects (except LidarDriver)
+3. **Lock-Free Streaming**: Uses lock-free queues for sensor data flow
+4. **Real-Time Guarantees**: OS threads for heartbeat (20ms) instead of async
+5. **TCP Protocol**: MessagePack over TCP for all communication
+
+## Build and Deployment
+
+### Development (Host Machine)
 
 ```bash
-# Run specific test by name
-cargo test test_name
+# Build daemon
+cd sangam-io
+cargo build --release
 
-# Run tests in a specific module
-cargo test devices::gd32
+# Run with configuration
+cargo run --release -- --config sangamio.toml
 
-# Run with verbose output
-cargo test -- --nocapies --test-threads=1
+# Run with verbose logging
+RUST_LOG=debug cargo run --release
+```
+
+### Production (ARM Robot)
+
+```bash
+# Add ARM target
+rustup target add armv7-unknown-linux-musleabihf
+
+# Build for ARM (produces static binary with musl)
+cargo build --release --target armv7-unknown-linux-musleabihf
+
+# Strip debug symbols (reduces size ~40%)
+arm-linux-gnueabihf-strip target/armv7-unknown-linux-musleabihf/release/sangamio
 ```
 
 ### Deployment to Robot
 
+**IMPORTANT**: The robot monitor auto-restarts killed processes. Rename binaries to prevent this.
+
+**SSH Credentials**: `root@vacuum`, password: `vacuum@123`
+
+**Complete Deployment**:
+
 ```bash
-# Stop original firmware (required for exclusive serial port access)
-ssh root@vacuum "killall -9 AuxCtrl"
+# Build ARM binary
+cd sangam-io
+cargo build --release --target armv7-unknown-linux-musleabihf
 
-# Deploy binary
-scp target/armv7-unknown-linux-musleabihf/release/examples/test_all_components root@vacuum:/tmp/test
-ssh root@vacuum "chmod +x /tmp/test"
+# Deploy binary (device lacks sftp-server, use cat over SSH)
+cat target/armv7-unknown-linux-musleabihf/release/sangamio | \
+  sshpass -p "vacuum@123" ssh root@vacuum "cat > /usr/sbin/sangamio && chmod +x /usr/sbin/sangamio"
 
-# Run on robot with debug logging
-ssh root@vacuum "RUST_LOG=debug /tmp/test"
+# Deploy configuration
+sshpass -p "vacuum@123" ssh root@vacuum "cat > /etc/sangamio.toml" < sangamio.toml
+
+# Disable original firmware (rename to prevent auto-restart)
+sshpass -p "vacuum@123" ssh root@vacuum "mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && killall -9 AuxCtrl"
+
+# Run daemon
+sshpass -p "vacuum@123" ssh root@vacuum "RUST_LOG=info /usr/sbin/sangamio"
 ```
 
-## Architecture
+**CRITICAL**: Always overwrite `/usr/sbin/sangamio` directly. Do NOT write to `/tmp` folder.
 
-### Layered Architecture
+## TCP Protocol
 
-The codebase follows a layered architecture with a unified API:
+### Message Format
 
-```
-Application Code (examples/, external)
-       ↓
-SangamIO (Unified HAL - src/sangam.rs)
-  • Motion control with safety constraints
-  • Odometry tracking for SLAM
-  • Sensor monitoring
-  • Lidar integration
-       ↓
-Device Drivers (src/devices/)
-  • Gd32Driver (GD32F103 motor controller)
-  • Delta2DDriver (3iRobotix lidar)
-       ↓
-Transport Layer (src/transport/)
-  • SerialTransport (Linux /dev/tty*)
-```
-
-**Critical Design**: `SangamIO` provides the public API as a concrete struct. Device drivers (Gd32Driver, Delta2DDriver) are directly used for maximum simplicity. Only the LidarDriver trait is retained to support future lidar models.
-
-### Key Design Patterns
-
-1. **Unified API**: `SangamIO` is the single entry point. Initialize once, access all hardware:
-   ```rust
-   let sangam = SangamIO::crl200s("/dev/ttyS3", "/dev/ttyS1")?;
-   sangam.set_velocity(0.3, 0.0)?;  // Motion control
-   let delta = sangam.get_odometry_delta()?;  // Odometry
-   ```
-
-2. **Automatic Resource Management**: Background threads manage heartbeat (20ms) and control loops (50Hz). Threads start on initialization and stop on `Drop`. Missing a heartbeat stops motors for safety.
-
-3. **Configuration-Driven**: Physical parameters in `SangamConfig`:
-   - Wheel geometry (base, radius, encoder ticks)
-   - Motion constraints (max velocity, acceleration)
-   - Control loop timing
-
-4. **Thread-Safe State Sharing**: `Arc<Mutex<State>>` pattern using `parking_lot::Mutex`. Multiple threads coordinate safely.
-
-5. **Type-Safe Units**: All physical quantities use proper units:
-   - Velocities: m/s (meters per second)
-   - Angles: radians
-   - Odometry deltas: Δx, Δy (meters), Δθ (radians)
-   - Distances: meters
-   - Battery: 0-100%
-
-   Never use raw integers for physical quantities. Always use proper unit conversions.
-
-### Critical Hardware Constraints
-
-**GD32F103 Heartbeat**: The motor controller requires CMD=0x66 heartbeat packets every 20-50ms. If heartbeat stops, motors enter safety mode and stop. The heartbeat thread uses OS threads (not async) for real-time guarantees.
-
-**Serial Port Exclusivity**: `/dev/ttyS3` (GD32) and `/dev/ttyS1` (lidar) can only be opened by one process at a time. The original `AuxCtrl` firmware must be killed before running SangamIO code.
-
-**Initialization Sequence**: GD32 requires a specific wake-up sequence (CMD=0x08 repeated every 200ms for up to 5 seconds) before it will respond to any commands. This is not optional.
-
-### Protocol Implementation
-
-**GD32 Protocol**:
-- Packet format: `[0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC]`
-- CRC algorithm: 16-bit big-endian word sum checksum
-- Bidirectional: CPU sends commands, GD32 sends status packets (CMD=0x15, 96 bytes)
-- Located in: `src/devices/gd32/protocol.rs`
-
-**Delta-2D Lidar Protocol**:
-- Variable-length packets with 8-byte headers
-- Measurement data: angle (0.01° units), distance (0.25mm units)
-- Located in: `src/devices/delta2d/protocol.rs`
-
-### Module Organization
+All messages use length-prefixed framing with MessagePack payloads:
 
 ```
-sangam-io/
-├── src/
-│   ├── lib.rs              # Public API surface - exports SangamIO
-│   ├── error.rs            # Error types (never use unwrap/panic)
-│   ├── sangam.rs           # SangamIO - unified hardware abstraction
-│   ├── config.rs           # SangamConfig - robot parameters
-│   ├── odometry.rs         # Odometry tracking (delta computation)
-│   ├── motion/             # Motion control subsystem
-│   │   ├── mod.rs
-│   │   ├── commands.rs     # Motion commands (velocity, position)
-│   │   ├── constraints.rs  # Safety limits and acceleration
-│   │   └── controller.rs   # Motion controller (50Hz loop)
-│   ├── transport/          # I/O abstraction layer
-│   │   ├── mod.rs
-│   │   └── serial.rs       # SerialTransport
-│   ├── devices/            # Device drivers and lidar trait
-│   │   ├── mod.rs          # LidarDriver trait definition
-│   │   ├── gd32/           # GD32F103 motor controller
-│   │   │   ├── mod.rs      # Gd32Driver implementation
-│   │   │   ├── protocol.rs # Packet encoding/decoding
-│   │   │   ├── heartbeat.rs # Background thread (20ms)
-│   │   │   └── state.rs    # Shared state structures
-│   │   └── delta2d/        # 3iRobotix Delta-2D lidar
-│   │       ├── mod.rs      # Delta2DDriver (implements LidarDriver)
-│   │       └── protocol.rs # Packet parsing
-│   └── types/              # Common data structures
-│       └── scan.rs         # LidarPoint, LidarScan, Pose2D, etc.
-└── examples/
-    └── quick_demo.rs       # 20-second hardware test
++------------------+-------------+------+-----------------------+
+| Length (4 bytes) | Topic (str) | NULL | Payload (MessagePack) |
++------------------+-------------+------+-----------------------+
 ```
 
-### Configuration System
+### Topics
 
-Physical parameters and motion constraints are configured via `SangamConfig`:
+**Outbound (Daemon → Client)**:
+- `telemetry`: SensorUpdate @ 500Hz (battery, encoders, sensors, odometry)
+- `lidar`: LidarScan @ 5Hz (360° point cloud)
+- `quality`: ConnectionQuality @ 1Hz (GD32 link statistics)
 
-```rust
-// src/config.rs
-impl SangamConfig {
-    pub fn crl200s_defaults() -> Self {
-        Self {
-            wheel_base: 0.235,                // meters
-            wheel_radius: 0.0325,             // meters
-            ticks_per_revolution: 1560.0,     // encoder ticks
-            max_linear_velocity: 0.5,         // m/s
-            max_angular_velocity: 2.0,        // rad/s
-            linear_acceleration: 0.3,         // m/s²
-            // ... other parameters
-        }
-    }
-}
+**Inbound (Client → Daemon)**:
+- `command`: RobotCommand (SetVelocity, Stop, actuator control, etc.)
+
+### Example Python Client
+
+```python
+import socket
+import struct
+import msgpack
+
+# Connect to daemon
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect(('vacuum', 5555))  # Telemetry stream
+
+# Read messages
+while True:
+    # Read length prefix
+    length = struct.unpack('>I', sock.recv(4))[0]
+
+    # Read frame
+    frame = sock.recv(length)
+    null_idx = frame.index(0)
+    topic = frame[:null_idx].decode('utf-8')
+    data = msgpack.unpackb(frame[null_idx + 1:])
+
+    if topic == "telemetry":
+        print(f"Battery: {data['battery_level']}%")
 ```
 
-When adding new robot platforms, create a new configuration method.
+## Configuration
 
-## Development Workflow
+Edit `sangamio.toml`:
 
-### Adding a New Robot Platform
+```toml
+[hardware]
+gd32_port = "/dev/ttyS3"    # Motor controller
+lidar_port = "/dev/ttyS1"   # Delta-2D lidar
 
-**For Motor Controllers:**
-1. **Implement Driver**: Create `src/devices/yourdevice/mod.rs` (no trait required - direct implementation)
-2. **Define Protocol**: Add `protocol.rs` with packet encoding/decoding
-3. **Update SangamIO**: Modify `src/sangam.rs` to use your driver instead of Gd32Driver
-4. **Create Configuration**: Add `SangamConfig::your_robot_defaults()` with physical parameters
-5. **Add Constructor**: Add `SangamIO::your_robot()` constructor
-6. **Export Module**: Add to `src/devices/mod.rs`
-7. **Add Example**: Create test program in `examples/`
+[robot]
+max_ticks_per_sec = 3000.0  # Calibration constant
 
-**For Lidar Models:**
-1. **Implement LidarDriver trait**: Create `src/devices/yourlidar/mod.rs` implementing the `LidarDriver` trait
-2. **Define Protocol**: Add `protocol.rs` with packet parsing
-3. **Export Module**: Add to `src/devices/mod.rs`
-4. **Update SangamIO constructor**: Modify to accept your lidar driver
-5. **Add Example**: Create test program in `examples/`
+[streaming]
+tcp_pub_address = "0.0.0.0:5555"  # Telemetry output
+tcp_cmd_address = "0.0.0.0:5556"  # Command input
 
-### API Usage Pattern
-
-Always use the `SangamIO` API, not device drivers directly:
-
-```rust
-use sangam_io::SangamIO;
-
-// Initialize
-let mut sangam = SangamIO::crl200s("/dev/ttyS3", "/dev/ttyS1")?;
-
-// Motion control
-sangam.set_velocity(0.3, 0.0)?;
-sangam.move_forward(1.0)?;
-
-// Odometry for SLAM
-let delta = sangam.get_odometry_delta()?;
-
-// Sensors
-let battery = sangam.get_battery_level();
-
-// Lidar
-let scan = sangam.get_scan()?;
+[logging]
+level = "info"
+output = "stdout"
 ```
 
-### Hardware Testing Procedure
+## Module Organization
 
-**IMPORTANT**: The robot's monitoring system will auto-restart AuxCtrl if it's killed. You must rename the binary to prevent this.
+```
+VacuumTiger/
+├── sangam-io/                 # Hardware abstraction daemon
+│   ├── src/
+│   │   ├── main.rs           # Entry point, arg parsing
+│   │   ├── app.rs            # Application orchestration
+│   │   ├── config.rs         # Configuration structures
+│   │   ├── error.rs          # Error types
+│   │   ├── serial_io.rs      # Serial transport layer
+│   │   ├── devices/          # Hardware drivers
+│   │   │   ├── mod.rs        # LidarDriver trait
+│   │   │   ├── gd32/         # Motor controller
+│   │   │   │   ├── mod.rs    # Driver implementation
+│   │   │   │   ├── protocol.rs # Packet encoding
+│   │   │   │   ├── heartbeat.rs # 20ms watchdog
+│   │   │   │   └── state.rs  # Shared state
+│   │   │   └── delta2d/      # 3iRobotix lidar
+│   │   │       ├── mod.rs    # LidarDriver impl
+│   │   │       └── protocol.rs # Packet parsing
+│   │   └── streaming/        # TCP communication
+│   │       ├── mod.rs        # Message types
+│   │       ├── messages.rs   # Protocol definitions
+│   │       ├── tcp_publisher.rs # Outbound stream
+│   │       └── tcp_receiver.rs  # Command handler
+│   └── sangamio.toml         # Configuration file
+│
+└── drishti/                  # Python visualization client
+    ├── drishti.py           # Console client
+    ├── drishti_ui.py        # GUI application
+    └── ui/                  # Web interface
+```
 
-**Complete Deployment Workflow**:
+## Critical Hardware Constraints
 
-1. **Build for ARM target**:
-   ```bash
-   cd sangam-io
-   cargo build --release --example quick_demo --target armv7-unknown-linux-musleabihf
-   ```
+### GD32F103 Heartbeat
+- **Requirement**: CMD=0x66 heartbeat every 20-50ms
+- **Consequence**: Motors stop if heartbeat missed
+- **Implementation**: Dedicated OS thread, not async
+- **Recovery**: 5-second re-initialization sequence
 
-2. **Deploy binary** (SCP doesn't work - device lacks sftp-server):
-   ```bash
-   cat target/armv7-unknown-linux-musleabihf/release/examples/quick_demo | \
-     sshpass -p "vacuum@123" ssh root@vacuum "cat > /tmp/test && chmod +x /tmp/test"
-   ```
+### Serial Port Exclusivity
+- **Ports**: `/dev/ttyS3` (GD32), `/dev/ttyS1` (lidar)
+- **Issue**: Only one process can open port
+- **Solution**: Kill/rename AuxCtrl before running
 
-3. **Disable AuxCtrl** (rename to prevent auto-restart):
-   ```bash
-   sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && killall -9 AuxCtrl"
-   ```
+### Initialization Sequence
+- **GD32 Wake**: CMD=0x08 repeated for up to 5 seconds
+- **Required**: Must complete before any commands work
+- **Automatic**: Driver handles this internally
 
-4. **Run test with logging**:
-   ```bash
-   sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "RUST_LOG=debug /tmp/test"
-   ```
+## Protocol Specifications
 
-5. **CRITICAL: Restore AuxCtrl** after testing:
-   ```bash
-   sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "mv /usr/sbin/AuxCtrl.bak /usr/sbin/AuxCtrl"
-   ```
+### GD32 Protocol
+- **Format**: `[0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC]`
+- **CRC**: 16-bit big-endian word sum checksum
+- **Status**: CMD=0x15, 96 bytes @ 500Hz
+- **Location**: `src/devices/gd32/protocol.rs`
 
-**One-Command Test** (with auto-restore on failure):
+### Delta-2D Protocol
+- **Format**: Variable-length with 8-byte headers
+- **Data**: Angle (0.01° units), distance (0.25mm units)
+- **Rate**: ~5Hz complete scans
+- **Location**: `src/devices/delta2d/protocol.rs`
+
+## Performance Characteristics
+
+- **Binary Size**: ~350KB statically linked
+- **Memory Usage**: <10MB RSS
+- **CPU Usage**: <1% on Allwinner A33
+- **Latency**: <25ms command-to-action
+- **Streaming Rates**:
+  - Telemetry: 500Hz (every GD32 packet)
+  - Lidar: 5Hz (native scan rate)
+  - Commands: On-demand
+
+## Thread Model
+
+| Thread | Purpose | Timing | Priority |
+|--------|---------|--------|----------|
+| Main | Initialization | - | Normal |
+| GD32 Heartbeat | Safety watchdog | 20ms ± 2ms | High |
+| GD32 Reader | Parse status | Continuous | Normal |
+| Lidar Reader | Parse scans | Continuous | Normal |
+| TCP Publisher | Broadcast data | On-demand | Normal |
+| TCP Receiver | Handle commands | On-demand | Normal |
+
+## Safety and Error Handling
+
+- **Never use `unwrap()` or `panic!()`** in production code
+- **All errors through `sangam_io::Error` enum**
+- **Motors stop on any error condition**
+- **Heartbeat continues even if commands fail**
+- **Use `Result<T>` for fallible operations**
+
+## Testing and Debugging
+
+### Local Testing
+
 ```bash
-sshpass -p "$ROBOT_PASSWORD" ssh root@vacuum "
-  mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && \
-  killall -9 AuxCtrl 2>/dev/null; \
-  RUST_LOG=debug /tmp/test; \
-  EXIT_CODE=\$?; \
-  mv /usr/sbin/AuxCtrl.bak /usr/sbin/AuxCtrl; \
-  exit \$EXIT_CODE
-"
+# Unit tests
+cargo test
+
+# Virtual serial ports
+socat -d -d pty,raw,echo=0 pty,raw,echo=0
+
+# Run with PTY
+RUST_LOG=debug cargo run -- --config test.toml
 ```
 
-**Why These Steps**:
-- **cat over SSH**: Device lacks sftp-server, so standard `scp` fails
-- **Rename AuxCtrl**: Watchdog will restart killed process within 2-3 seconds
-- **Always restore**: Robot won't function without AuxCtrl (or will on reboot)
+### Hardware Testing
 
-### Safety Considerations
+```bash
+# Deploy and run
+./deploy.sh
 
-This code controls physical hardware. Always:
-- Test in open space away from obstacles
-- Have emergency stop accessible (physical power disconnect)
-- Start with low speeds when testing new motion code
-- Monitor battery levels (low battery causes erratic behavior)
-- Never bypass the heartbeat mechanism
-- Never use `unwrap()` or `panic!()` in production code paths
+# Monitor logs
+ssh root@vacuum "journalctl -u sangamio -f"
 
-## Important Constraints and Conventions
+# Check resources
+ssh root@vacuum "top -p $(pgrep sangamio)"
+```
 
-### Code Style
+## Drishti Visualization
 
-- Follow Rust 2024 edition idioms
-- Use `?` for error propagation, never `unwrap()` in production paths
-- All public APIs must have documentation comments
-- Use `log::debug!()`, `log::info!()`, etc. for logging (never `println!()` except in examples)
-- Prefer explicit types over type inference in public APIs
-- Use meaningful variable names (no single-letter except loop counters)
+### Console Client
 
-### Error Handling
+```bash
+cd drishti
+pip install -r requirements.txt
+python drishti.py --robot vacuum --verbose
+```
 
-- All errors go through the `sangam_io::Error` enum
-- Never panic in library code
-- Use `Result<T>` return types for fallible operations
-- Provide context in error messages (e.g., "Failed to initialize GD32: timeout after 5s")
+### GUI Application
 
-### Threading Model
+```bash
+python drishti_ui.py --robot vacuum
+```
 
-- Heartbeat thread uses OS threads (`std::thread::spawn`), not async
-- Rationale: 20ms timing requirement needs real-time guarantees
-- All shared state must be `Send + Sync`
-- Use `Arc<Mutex<T>>` for shared state between threads
-- Prefer `parking_lot::Mutex` over `std::sync::Mutex` for performance
+Features:
+- Real-time sensor visualization
+- Lidar point cloud display
+- Motion control interface
+- Actuator control sliders
+- Telemetry graphs
 
-### Performance Characteristics
+## Common Pitfalls and Solutions
 
-- Heartbeat timing: 20ms target (actual ~20.1ms with ±2ms jitter)
-- Binary size: ~500KB statically linked
-- CPU usage: <1% on Allwinner A33
-- Command latency: <25ms (one heartbeat cycle)
+1. **AuxCtrl Auto-Restart**: Must rename binary, not just kill process
+2. **Serial Port Access**: Check `/dev/ttyS3` for GD32, not `/dev/ttyS1`
+3. **No SCP Support**: Use `cat | ssh` for file transfer
+4. **Unit Confusion**: Always use meters, m/s, radians in API
+5. **Blocking I/O**: Serial has timeouts, don't assume immediate response
 
-## Common Pitfalls
+## Version History
 
-1. **Forgetting Heartbeat**: The GD32 driver manages heartbeat automatically. Don't try to send manual heartbeat commands.
-
-2. **Wrong Serial Port**: The port is `/dev/ttyS3` for GD32, not `/dev/ttyS1`. Always verify with `ls -l /dev/ttyS*`.
-
-3. **Missing Initialization**: GD32 must receive CMD=0x08 initialization sequence before any other commands work.
-
-4. **Unit Confusion**: Always use meters, m/s, and radians. Never pass raw encoder counts or PWM values to public APIs.
-
-5. **Blocking I/O**: Serial operations have timeouts. Don't assume immediate response.
-
-6. **Public API**: Always use `SangamIO`, not device drivers directly. The drivers are internal implementation details.
+- **v0.2.0-dev** (2024-11-14): Major cleanup, daemon architecture, performance optimizations
+- **v0.1.0** (2024-11-13): Initial release with basic functionality
 
 ## Documentation References
 
-- **sangam-io/GUIDE.md**: Complete deployment and development guide with troubleshooting
-- **sangam-io/REFERENCE.md**: Architecture details, protocol specs, API reference
-- **examples/README.md**: Example program documentation
+- **sangam-io/README.md**: Quick start and overview
+- **sangam-io/ARCHITECTURE.md**: Design decisions and extensibility
+- **sangam-io/PROTOCOL.md**: TCP message specifications
+- **sangam-io/DEPLOYMENT.md**: Production installation guide
+- **sangam-io/CHANGELOG.md**: Version history and changes
+- **drishti/README.md**: Python client documentation
+- **drishti/UI_README.md**: GUI application guide
 
-When modifying protocol implementations, refer to the verified protocol specifications in the source code comments (`src/devices/gd32/protocol.rs` and `src/devices/delta2d/protocol.rs`). These were reverse-engineered and verified, so deviations will break hardware communication.
+## Future Roadmap
 
-## Version and Status
+### Planned Features
+- WebSocket interface for browser monitoring
+- ROS2 bridge for ecosystem integration
+- Additional lidar models (RPLIDAR, Hokuyo)
+- Multi-robot coordination support
 
-- **Current Version**: 0.1.0 (Initial Release)
-- **Status**: Production-ready for GD32 + Delta-2D hardware
-- **Testing**: All unit tests passing, hardware verified on Allwinner A33
-- **Planned**: Additional motor controllers (STM32, ESP32), more lidar models, high-level Robot API
+### Explicitly Not Goals
+- Generic HAL for all hardware
+- Plugin system (static compilation preferred)
+- Remote/cloud operation (LAN-only)
+- AI/ML integration (keep in higher layers)
 
-When making changes, update CHANGELOG.md following the established format (Keep a Changelog style).
-- Stopping AuxCtrl means, we need to rename the app. Killing the app is not enough as it is getting immediately restarted by the monitor app
+## Development Guidelines
+
+When modifying this codebase:
+
+1. **Maintain simplicity**: Avoid unnecessary abstractions
+2. **Prioritize reliability**: Real-time constraints matter
+3. **Document changes**: Update CHANGELOG.md
+4. **Test on hardware**: Virtual tests insufficient
+5. **Preserve safety**: Never bypass heartbeat mechanism

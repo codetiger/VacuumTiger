@@ -5,8 +5,10 @@ mod protocol;
 mod state;
 
 use crate::error::{Error, Result};
-use crate::transport::Transport;
-use crate::types::Odometry;
+use crate::serial_io::SerialTransport;
+use crate::streaming::TcpPublisher;
+// Note: Odometry removed - SangamIO is pure hardware abstraction
+// use crate::types::Odometry;
 
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -35,20 +37,34 @@ pub struct Gd32Driver {
     command_tx: std::sync::mpsc::SyncSender<Gd32Command>,
     /// Shutdown flag for both threads
     shutdown: Arc<Mutex<bool>>,
+    // TODO: Publisher field removed - passed directly to threads, no need to store
+    // The publisher is passed to heartbeat threads during initialization but we don't
+    // need to keep a reference since the threads hold their own Arc references
 }
 
 impl Gd32Driver {
-    /// Create new GD32 driver and initialize device
+    // TODO: Keep this method if we need standalone driver initialization without streaming
+    // Currently unused - only new_with_publisher is used in daemon mode
+    // pub fn new(transport: SerialTransport) -> Result<Self> {
+    //     Self::new_internal(transport, None)
+    // }
+
+    /// Create new GD32 driver with streaming publisher integration
     ///
-    /// This matches AuxCtrl's initialization sequence from reverse engineering and MITM:
-    /// 0. CMD=0x08 (Initialize) retry loop - 10-30 attempts with 18ms intervals
-    /// 1. CMD=0x8D (LED), 0x07 (Version), 0x65 (Motor type), 0x71 (Telemetry)
-    /// 2. CMD=0x8D burst (4x at T+245ms)
-    /// 3. CMD=0x06 (Wake at T+253ms)
-    /// 4. Brush init: 0x69, 0x6B (at T+280ms)
-    /// 5. CMD=0x66 heartbeat starts (at T+289ms)
-    pub fn new<T: Transport + 'static>(transport: T) -> Result<Self> {
-        let transport = Arc::new(Mutex::new(Box::new(transport) as Box<dyn Transport>));
+    /// Used by the SangamIO application to enable automatic telemetry publishing.
+    pub fn new_with_publisher(
+        transport: SerialTransport,
+        publisher: Arc<TcpPublisher>,
+    ) -> Result<Self> {
+        Self::new_internal(transport, Some(publisher))
+    }
+
+    /// Internal constructor with optional streaming publisher
+    fn new_internal(
+        transport: SerialTransport,
+        publisher: Option<Arc<TcpPublisher>>,
+    ) -> Result<Self> {
+        let transport = Arc::new(Mutex::new(transport));
         let state = Arc::new(Mutex::new(Gd32State::default()));
         let shutdown = Arc::new(Mutex::new(false));
 
@@ -90,9 +106,10 @@ impl Gd32Driver {
         Self::send_command(&transport, &Gd32Command::SystemSetup)?;
         thread::sleep(Duration::from_millis(8));
 
-        // CMD=0x65 - Motor control type (mode=0)
-        log::debug!("  -> CMD=0x65 (MotorControlType=0)");
-        Self::send_command(&transport, &Gd32Command::MotorControlType(0))?;
+        // CMD=0x65 - Motor control type (mode=0x00 for initialization - switch to 0x02 later)
+        // Working commit fc8e8f6 used mode 0x00 during init, then switched to 0x02 for operation
+        log::debug!("  -> CMD=0x65 (MotorControlType=0x00)");
+        Self::send_command(&transport, &Gd32Command::MotorControlType(0x00))?;
         thread::sleep(Duration::from_millis(8));
 
         // CMD=0x71 - Lidar PWM (set to 0 initially, will be set properly when powering lidar)
@@ -116,7 +133,7 @@ impl Gd32Driver {
         log::info!("GD32: Sending heartbeat command (CMD=0x06)");
         Self::send_command(&transport, &Gd32Command::Heartbeat)?;
 
-        // Phase 4: Brush initialization (T+280ms)
+        // Phase 4: Brush initialization (T+280ms) - matches working commit b8f0d53
         thread::sleep(Duration::from_millis(27));
         log::info!("GD32: Initializing brushes");
         Self::send_command(&transport, &Gd32Command::SideBrushSpeed(0))?;
@@ -124,6 +141,7 @@ impl Gd32Driver {
         Self::send_command(&transport, &Gd32Command::BrushControl(0x64))?; // Value from MITM log
 
         // Phase 5: Start dual-thread architecture (T+289ms)
+        // Note: System stays in mode 0x00 (initialization mode) - matches working commit b8f0d53
         thread::sleep(Duration::from_millis(9));
         log::info!("GD32: Starting dual-thread architecture (READ: 2ms, WRITE: 20ms)");
 
@@ -132,11 +150,15 @@ impl Gd32Driver {
         const COMMAND_QUEUE_SIZE: usize = 16;
         let (command_tx, command_rx) = std::sync::mpsc::sync_channel(COMMAND_QUEUE_SIZE);
 
-        // Spawn READ thread (fast 2ms loop, never blocks on writes)
+        // Get telemetry queue from publisher (lock-free, non-blocking)
+        let telemetry_queue = publisher.as_ref().map(|p| p.get_telemetry_queue());
+
+        // Spawn READ thread (sub-2ms loop, never blocks on TCP)
         let read_thread = Some(heartbeat::spawn_read_thread(
             Arc::clone(&transport),
             Arc::clone(&state),
             Arc::clone(&shutdown),
+            telemetry_queue.clone(),
         ));
 
         // Spawn WRITE thread (20ms loop, handles all command transmission)
@@ -145,6 +167,7 @@ impl Gd32Driver {
             Arc::clone(&state),
             command_rx,
             Arc::clone(&shutdown),
+            telemetry_queue,
         ));
 
         // Wait for GD32 to respond with STATUS_DATA
@@ -152,7 +175,27 @@ impl Gd32Driver {
         Self::wait_for_status_packet(&transport, &state)?;
         log::info!("GD32: Received STATUS_DATA - GD32 is ready");
 
+        // Phase 6: Switch to navigation mode (mode 0x02) for operation
+        // This enables accessories (air pump, brushes) and is required for proper operation
+        // Working commit fc8e8f6 explicitly did this transition after initialization
+        log::info!("GD32: Switching to navigation mode (0x02) for operation");
+        Self::send_command(&transport, &Gd32Command::MotorControlType(0x02))?;
+        thread::sleep(Duration::from_millis(50)); // Give device time to switch modes
+
+        // Update state to reflect mode change
+        {
+            let state_guard = state.lock();
+            let mut cmd_state = state_guard.command.lock();
+            cmd_state.motor_mode = 0x02;
+        }
+
         log::info!("GD32: Initialization complete - ready for operations");
+
+        // Wait for hardware stabilization (matches working commit b8f0d53)
+        // This delay allows GD32 to clear error states and stabilize before operations begin
+        log::info!("GD32: Waiting 1400ms for hardware stabilization");
+        thread::sleep(Duration::from_millis(1400));
+        log::info!("GD32: Stabilization complete");
 
         Ok(Gd32Driver {
             state,
@@ -171,7 +214,7 @@ impl Gd32Driver {
     ///
     /// If the device is in deep sleep mode, continue sending CMD=0x08 to wake it.
     fn wait_for_status_packet(
-        transport: &Arc<Mutex<Box<dyn Transport>>>,
+        transport: &Arc<Mutex<SerialTransport>>,
         state: &Arc<Mutex<Gd32State>>,
     ) -> Result<()> {
         let start = Instant::now();
@@ -227,7 +270,7 @@ impl Gd32Driver {
     }
 
     /// Send a command to the GD32 (for initialization only, before threads start)
-    fn send_command(transport: &Arc<Mutex<Box<dyn Transport>>>, cmd: &Gd32Command) -> Result<()> {
+    fn send_command(transport: &Arc<Mutex<SerialTransport>>, cmd: &Gd32Command) -> Result<()> {
         let packet = cmd.encode();
         log::debug!(
             "GD32: TX CMD=0x{:02X}, {} bytes: {:02X?}",
@@ -309,6 +352,13 @@ impl Gd32Driver {
     /// Discovered via AuxCtrl decompilation at address 0x00060988.
     /// NOTE: Must send CMD=0xA2 (LidarPrep) before this command!
     pub fn set_lidar_power(&mut self, enable: bool) -> Result<()> {
+        // Update power state tracking
+        let state = self.state.lock();
+        let mut cmd_state = state.command.lock();
+        cmd_state.lidar_powered = enable;
+        drop(cmd_state);
+        drop(state);
+
         log::info!("GD32: Setting lidar power: {}", enable);
         self.queue_command(Gd32Command::LidarPower(enable))?;
         log::debug!("GD32: Queued CMD=0x97 (LidarPower={})", enable);
@@ -324,6 +374,14 @@ impl Gd32Driver {
     /// * `pwm_percent` - PWM duty cycle (0-100%). Values outside range will be clamped.
     pub fn set_lidar_pwm(&mut self, pwm_percent: i32) -> Result<()> {
         let clamped = pwm_percent.clamp(0, 100);
+
+        // Update last PWM value
+        let state = self.state.lock();
+        let mut cmd_state = state.command.lock();
+        cmd_state.last_lidar_pwm = clamped;
+        drop(cmd_state);
+        drop(state);
+
         log::info!("GD32: Setting lidar PWM: {}%", clamped);
         self.queue_command(Gd32Command::LidarPWM(pwm_percent))?;
         log::debug!("GD32: Queued CMD=0x71 (LidarPWM={})", clamped);
@@ -333,100 +391,33 @@ impl Gd32Driver {
     /// Set vacuum blower speed (0-100%)
     pub fn set_blower_speed(&mut self, speed: u8) -> Result<()> {
         let speed_value = (speed as u16) * 100; // Scale to device range
-        self.queue_command(Gd32Command::BlowerSpeed(speed_value))
-    }
 
-    /// Get battery information
-    ///
-    /// Returns (voltage in V, current in A, level 0-100%) or None if no telemetry received yet
-    pub fn get_battery_info(&self) -> Option<(f32, f32, u8)> {
+        // Update state tracking for dynamic mode switching
         let state = self.state.lock();
-        let telemetry = state.telemetry.lock();
-        telemetry.as_ref().and_then(|t| {
-            match (t.battery_voltage, t.battery_current, t.battery_level) {
-                (Some(v), Some(c), Some(l)) => Some((v, c, l)),
-                _ => None,
-            }
-        })
+        let mut cmd_state = state.command.lock();
+        cmd_state.last_air_pump = speed_value;
+        drop(cmd_state);
+        drop(state);
+
+        log::info!("GD32: Setting air pump/blower speed: {}%", speed);
+        self.queue_command(Gd32Command::BlowerSpeed(speed_value))?;
+        log::debug!("GD32: Queued CMD=0x68 (BlowerSpeed={})", speed_value);
+        Ok(())
     }
 
-    /// Get current error code
-    pub fn get_error_code(&self) -> Option<u8> {
-        let state = self.state.lock();
-        let telemetry = state.telemetry.lock();
-        telemetry.as_ref().and_then(|t| t.error_code)
-    }
-
-    /// Get status flags
-    ///
-    /// Returns (status_flag, charging_flag, battery_state_flag, percent_value) or None if no telemetry
-    pub fn get_status_flags(&self) -> Option<(u8, bool, bool, f32)> {
-        let state = self.state.lock();
-        let telemetry = state.telemetry.lock();
-        telemetry.as_ref().and_then(|t| {
-            match (
-                t.status_flag,
-                t.charging_flag,
-                t.battery_state_flag,
-                t.percent_value,
-            ) {
-                (Some(s), Some(c), Some(b), Some(p)) => Some((s, c, b, p)),
-                _ => None,
-            }
-        })
-    }
-
-    /// Get IR proximity sensor values
-    ///
-    /// All values use ×5 scaling. Button detection: 100-199 = pressed.
-    /// Returns (ir_sensor_1, start_button_ir, dock_button_ir) or None if no telemetry
-    pub fn get_ir_sensors(&self) -> Option<(u16, u16, u16)> {
-        let state = self.state.lock();
-        let telemetry = state.telemetry.lock();
-        telemetry.as_ref().and_then(|t| {
-            match (t.ir_sensor_1, t.start_button_ir, t.dock_button_ir) {
-                (Some(i1), Some(sb), Some(db)) => Some((i1, sb, db)),
-                _ => None,
-            }
-        })
-    }
-
-    /// Check if start button is pressed (IR value 100-199)
-    pub fn is_start_button_pressed(&self) -> Option<bool> {
-        let state = self.state.lock();
-        let telemetry = state.telemetry.lock();
-        telemetry
-            .as_ref()
-            .and_then(|t| t.start_button_ir.map(|v| (100..200).contains(&v)))
-    }
-
-    /// Check if dock button is pressed (IR value 100-199)
-    pub fn is_dock_button_pressed(&self) -> Option<bool> {
-        let state = self.state.lock();
-        let telemetry = state.telemetry.lock();
-        telemetry
-            .as_ref()
-            .and_then(|t| t.dock_button_ir.map(|v| (100..200).contains(&v)))
-    }
-
-    /// Get packet statistics
-    ///
-    /// Returns (total_rx_packets, total_tx_packets, lost_packet_count)
-    pub fn get_packet_stats(&self) -> (u64, u64, u32) {
-        let state = self.state.lock();
-        (
-            state.diagnostics.total_rx_packets.load(Ordering::Relaxed),
-            state.diagnostics.total_tx_packets.load(Ordering::Relaxed),
-            state.diagnostics.lost_packet_count.load(Ordering::Relaxed),
-        )
-    }
-
-    /// Check if telemetry is fresh (not stale)
-    ///
-    /// Returns true if telemetry is fresher than max_age, false otherwise
-    pub fn is_telemetry_fresh(&self, max_age: Duration) -> bool {
-        self.state.lock().is_telemetry_fresh(max_age)
-    }
+    // TODO: Telemetry getter methods removed - in daemon mode, data is streamed via TCP
+    // These methods were part of the library API but are not needed when running as a daemon.
+    // If we need direct API access in the future (e.g., for testing or standalone usage),
+    // uncomment and implement these methods:
+    //
+    // pub fn get_battery_info(&self) -> Option<u8>
+    // pub fn get_error_code(&self) -> Option<u8>
+    // pub fn get_status_flags(&self) -> Option<(u8, bool, bool, f32)>
+    // pub fn get_ir_sensors(&self) -> Option<(u16, u16, u16)>
+    // pub fn is_start_button_pressed(&self) -> Option<bool>
+    // pub fn is_dock_button_pressed(&self) -> Option<bool>
+    // pub fn get_packet_stats(&self) -> (u64, u64, u32)
+    // pub fn is_telemetry_fresh(&self, max_age: Duration) -> bool
 
     // === Motor Control Methods ===
 
@@ -436,61 +427,22 @@ impl Gd32Driver {
         let left_ticks = left as i32;
         let right_ticks = right as i32;
 
-        // Update target state for heartbeat thread
-        {
-            let state = self.state.lock();
-            let mut cmd_state = state.command.lock();
-            cmd_state.target_left = left_ticks;
-            cmd_state.target_right = right_ticks;
-        }
+        // Update target velocities in command state
+        // Motor mode stays at 0x01 (direct control using CMD=0x67)
+        let state = self.state.lock();
+        let mut cmd_state = state.command.lock();
+        cmd_state.target_left = left_ticks;
+        cmd_state.target_right = right_ticks;
 
-        // Note: Actual command transmission and logging happens in heartbeat WRITE thread
+        // Note: Actual motor command transmission and logging happens in heartbeat WRITE thread
         // with deduplication optimization (only sends when value changes or 100ms timeout)
 
         Ok(())
     }
 
-    pub fn get_odometry(&mut self) -> Result<Odometry> {
-        // Get encoder values from telemetry
-        let state = self.state.lock();
-        let telemetry = state.telemetry.lock();
-
-        let (encoder_left, encoder_right) = match telemetry.as_ref() {
-            Some(t) => match (t.encoder_left, t.encoder_right) {
-                (Some(l), Some(r)) => (l, r),
-                _ => return Err(Error::NotInitialized),
-            },
-            None => return Err(Error::NotInitialized),
-        };
-        drop(telemetry);
-        drop(state);
-
-        // Convert encoder ticks to position
-        // These conversion factors need hardware calibration
-        const WHEEL_RADIUS: f32 = 0.05; // meters
-        const TICKS_PER_REVOLUTION: f32 = 1000.0; // Placeholder
-
-        let left_distance = (encoder_left as f32) / TICKS_PER_REVOLUTION
-            * 2.0
-            * std::f32::consts::PI
-            * WHEEL_RADIUS;
-        let right_distance = (encoder_right as f32) / TICKS_PER_REVOLUTION
-            * 2.0
-            * std::f32::consts::PI
-            * WHEEL_RADIUS;
-
-        // Simple differential drive odometry
-        let distance = (left_distance + right_distance) / 2.0;
-
-        Ok(Odometry {
-            x: distance,
-            y: 0.0, // Simplified - needs proper pose tracking
-            theta: 0.0,
-            velocity: crate::types::Velocity::zero(), // Could be calculated from encoder changes
-            encoder_left,
-            encoder_right,
-        })
-    }
+    // Note: Odometry computation removed - SangamIO is pure hardware abstraction
+    // Consumers compute odometry from raw encoder ticks
+    // pub fn get_odometry(&mut self) -> Result<Odometry> { ... }
 
     pub fn set_air_pump(&mut self, power: u8) -> Result<()> {
         let clamped = power.min(100);
@@ -500,6 +452,14 @@ impl Gd32Driver {
 
     pub fn set_side_brush(&mut self, speed: u8) -> Result<()> {
         let clamped = speed.min(100);
+
+        // Update state tracking for dynamic mode switching
+        let state = self.state.lock();
+        let mut cmd_state = state.command.lock();
+        cmd_state.last_side_brush = clamped;
+        drop(cmd_state); // Release lock before queueing commands
+        drop(state);
+
         log::info!("GD32: Setting side brush speed: {}%", clamped);
         self.queue_command(Gd32Command::SideBrushSpeed(clamped))?;
         log::debug!("GD32: Queued CMD=0x69 (SideBrushSpeed={})", clamped);
@@ -508,6 +468,14 @@ impl Gd32Driver {
 
     pub fn set_rolling_brush(&mut self, speed: u8) -> Result<()> {
         let clamped = speed.min(100);
+
+        // Update state tracking for dynamic mode switching
+        let state = self.state.lock();
+        let mut cmd_state = state.command.lock();
+        cmd_state.last_rolling_brush = clamped;
+        drop(cmd_state);
+        drop(state);
+
         log::info!("GD32: Setting rolling brush speed: {}%", clamped);
         self.queue_command(Gd32Command::RollingBrushSpeed(clamped))?;
         log::debug!("GD32: Queued CMD=0x6A (RollingBrushSpeed={})", clamped);

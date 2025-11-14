@@ -1,0 +1,14 @@
+# Drishti - Real-time Robot Status Visualization System
+# Python dependencies
+
+# MessagePack serialization
+msgpack>=1.0.0
+
+# UI Framework
+PyQt5>=5.15.0
+
+# High-performance plotting for real-time data
+pyqtgraph>=0.13.0
+
+# Numerical computations
+numpy>=1.21.0

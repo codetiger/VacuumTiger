@@ -1,30 +1,41 @@
 [package]
 name = "sangam-io"
-version = "0.1.0"
+version = "0.2.0-dev"
 edition = "2024"
 authors = ["CodeTiger"]
 license = "Apache-2.0"
 repository = "https://github.com/codetiger/VacuumTiger"
-description = "High-level robot API for robotic vacuum cleaners - where robotic signals meet 🤖🌊"
-keywords = ["robotics", "vacuum", "embedded-linux", "robot-api"]
-categories = ["robotics", "api-bindings"]
+description = "Hardware abstraction daemon for robotic vacuum cleaners - pure hardware interface 🤖🌊"
+keywords = ["robotics", "vacuum", "embedded-linux", "hardware-abstraction"]
+categories = ["robotics", "embedded"]
+
+[[bin]]
+name = "sangamio"
+path = "src/main.rs"
 
 [dependencies]
-# Serial I/O
-serialport = "4.5"
-libc = "0.2"  # For low-level serial port configuration
+# Hardware I/O
+serialport = "4.8"
 
-# Error handling
-thiserror = "2.0"
+# Streaming (TCP + MessagePack)
+rmp-serde = "1.3"
+serde = { version = "1.0", features = ["derive"] }
 
-# Logging
-log = "0.4"
+# Configuration
+toml = "0.8"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# System
+signal-hook = "0.3"
 
 # Utilities
-parking_lot = "0.12"  # For faster mutexes
+thiserror = "2.0"
+log = "0.4"
+env_logger = "0.11"
+parking_lot = "0.12"
+crossbeam-queue = "0.3"
 
 [dev-dependencies]
-env_logger = "0.11"
-
-[[example]]
-name = "quick_demo"
+# Testing only
