@@ -1,26 +1,19 @@
 //! Device implementations
 
-use crate::error::Result;
-use crate::streaming::messages::LidarScan;
+pub mod crl200s;
 
-/// Lidar scanner driver trait with callback-based API
-pub trait LidarDriver: Send {
-    /// Start the lidar scanning thread with callback
-    ///
-    /// The callback will be invoked for each scan received from the lidar.
-    fn start<F>(&mut self, callback: F) -> Result<()>
-    where
-        F: Fn(LidarScan) + Send + 'static;
+use crate::config::Config;
+use crate::core::driver::DeviceDriver;
+use crate::error::{Error, Result};
+use crl200s::CRL200SDriver;
 
-    /// Stop the lidar scanning thread
-    fn stop(&mut self) -> Result<()>;
-
-    /// Get scanning statistics (scan_count, error_count)
-    fn get_stats(&self) -> (u64, u64);
+/// Create a device driver based on configuration
+pub fn create_device(config: &Config) -> Result<Box<dyn DeviceDriver>> {
+    match config.device.device_type.as_str() {
+        "crl200s" => {
+            let driver = CRL200SDriver::new(config.device.clone())?;
+            Ok(Box::new(driver))
+        }
+        _ => Err(Error::UnknownDevice(config.device.device_type.clone())),
+    }
 }
-
-pub mod gd32;
-pub use gd32::Gd32Driver;
-
-pub mod delta2d;
-pub use delta2d::Delta2DDriver;

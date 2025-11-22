@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Drishti UI - Robot Vacuum Visualization Application
+Drishti UI - CRL-200S Robot Visualization
 
-Main entry point for the graphical user interface.
+Full-screen robot diagram with sensor overlays.
 """
 
 import sys
@@ -21,10 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    """Main entry point"""
-    # Parse command line arguments
+    """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Drishti - Robot Vacuum Visualization System"
+        description="Drishti - CRL-200S Robot Visualization"
     )
     parser.add_argument(
         "--robot",
@@ -32,20 +31,13 @@ def main():
         help="Robot hostname or IP address (default: 192.168.68.101)"
     )
     parser.add_argument(
-        "--pub-port",
+        "--port",
         type=int,
         default=5555,
-        help="Telemetry publisher port (default: 5555)"
+        help="TCP port (default: 5555)"
     )
     parser.add_argument(
-        "--cmd-port",
-        type=int,
-        default=5556,
-        help="Command receiver port (default: 5556)"
-    )
-    parser.add_argument(
-        "--verbose",
-        "-v",
+        "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging"
     )
@@ -55,39 +47,24 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    logger.info("=" * 60)
-    logger.info("Drishti - Robot Vacuum Visualization System")
-    logger.info("=" * 60)
-    logger.info(f"Robot: {args.robot}")
-    logger.info(f"Telemetry port: {args.pub_port}")
-    logger.info(f"Command port: {args.cmd_port}")
-    logger.info("=" * 60)
+    logger.info("Drishti - CRL-200S Robot Visualization")
+    logger.info(f"Connecting to {args.robot}:{args.port}")
 
     # Create Qt application
     app = QApplication(sys.argv)
-
-    # Set application style
     app.setStyle('Fusion')
 
     # Create and show main window
     try:
-        window = MainWindow(
-            robot_ip=args.robot,
-            pub_port=args.pub_port,
-            cmd_port=args.cmd_port
-        )
+        window = MainWindow(robot_ip=args.robot, port=args.port)
         window.show()
 
-        logger.info("Application started successfully")
-        logger.info("Close the window or press Ctrl+C to exit")
-
-        # Run application event loop
+        logger.info("Application started")
         sys.exit(app.exec_())
 
     except KeyboardInterrupt:
-        logger.info("\nApplication interrupted by user")
+        logger.info("Interrupted by user")
         sys.exit(0)
-
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)

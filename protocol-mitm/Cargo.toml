@@ -1,10 +1,10 @@
 [package]
 name = "protocol_mitm"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
+version = "0.1.0"
+authors = ["CodeTiger"]
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/codetiger/VacuumTiger"
 
 [dependencies]
 chrono = "0.4"

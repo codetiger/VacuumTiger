@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### SangamIO v0.3.0 - 2024-11-22
+
+**TCP Streaming Protocol (Phase 2):**
+- JSON wire format with length-prefixed framing
+- Configurable wire format (JSON or Postcard binary)
+- TCP Publisher thread for sensor streaming at 500Hz
+- TCP Receiver thread for command handling
+- Full command set: Motion, Actuator, Sensor Config, Safety, Lifecycle
+- DeviceDriver trait with send_command interface
+
+**Command Categories:**
+- Motion Control: SetVelocity, SetTankDrive, Stop, EmergencyStop
+- Actuator Control: SetActuator, SetActuatorMultiple
+- Sensor Configuration: SetSensorConfig, ResetSensor, Enable/Disable
+- Safety Configuration: SetSafetyLimits, ClearEmergencyStop
+- System Lifecycle: Sleep, Wake, Shutdown, Restart
+
+#### Drishti v2.0.0 - 2024-11-22
+
+**Complete UI Rewrite:**
+- Full-screen robot diagram with physically-correct layout
+- All 13 sensors overlaid on diagram
+- JSON protocol support (replaces MessagePack)
+- Simplified single-widget architecture
+
+**Sensor Overlays:**
+- Bumpers (left/right) with red highlighting on trigger
+- Cliff sensors (4) at actual positions with green/red status
+- Wheel encoders with live tick counters
+- Battery indicator in top-right corner
+- Start/dock buttons with power/home icons
+- Lidar turret, main brush, side brush visualization
+
+**Removed:**
+- Old 4-panel layout (lidar, graphs, control panel)
+- MessagePack protocol support
+- Complex widget hierarchy
+
 #### Drishti Client (v1.0.0) - 2024-11-13
 
 **Python client for robot monitoring and control:**

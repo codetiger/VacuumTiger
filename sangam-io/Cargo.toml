@@ -1,41 +1,28 @@
 [package]
 name = "sangam-io"
-version = "0.2.0-dev"
-edition = "2024"
+version = "0.3.0"
+edition = "2021"
+description = "Hardware abstraction daemon for robot vacuum"
 authors = ["CodeTiger"]
-license = "Apache-2.0"
-repository = "https://github.com/codetiger/VacuumTiger"
-description = "Hardware abstraction daemon for robotic vacuum cleaners - pure hardware interface 🤖🌊"
-keywords = ["robotics", "vacuum", "embedded-linux", "hardware-abstraction"]
-categories = ["robotics", "embedded"]
-
-[[bin]]
-name = "sangamio"
-path = "src/main.rs"
 
 [dependencies]
-# Hardware I/O
-serialport = "4.8"
-
-# Streaming (TCP + MessagePack)
-rmp-serde = "1.3"
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+postcard = { version = "1.0", features = ["alloc"] }
 
-# Configuration
-toml = "0.8"
+# Serial port
+serialport = "4.2"
 
-# CLI
-clap = { version = "4.5", features = ["derive"] }
-
-# System
-signal-hook = "0.3"
-
-# Utilities
-thiserror = "2.0"
+# Logging
 log = "0.4"
-env_logger = "0.11"
-parking_lot = "0.12"
+env_logger = "0.10"
+
+# Concurrency
 crossbeam-queue = "0.3"
 
-[dev-dependencies]
-# Testing only
+# Error handling
+thiserror = "1.0"
+
+# Signal handling
+ctrlc = "3.4"

@@ -1,13 +1,11 @@
-//! TCP streaming for bidirectional robot communication.
-//!
-//! This module provides publish/receive capabilities for:
-//! - **Outbound**: Raw sensor data (telemetry) and lidar scans
-//! - **Inbound**: Robot commands (motion and actuators)
+//! TCP streaming module for SangamIO
 
 pub mod messages;
 pub mod tcp_publisher;
 pub mod tcp_receiver;
+pub mod wire;
 
-// Re-export main types for external use
+pub use messages::{Message, Payload};
 pub use tcp_publisher::TcpPublisher;
-pub use tcp_receiver::TcpCommandReceiver;
+pub use tcp_receiver::TcpReceiver;
+pub use wire::{create_serializer, Serializer, WireFormat};

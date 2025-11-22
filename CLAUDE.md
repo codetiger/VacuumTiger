@@ -43,7 +43,7 @@ VacuumTiger is an open-source robotic vacuum firmware project for the CRL-200S h
 2. **Concrete Over Abstract**: Direct implementations instead of trait objects (except LidarDriver)
 3. **Lock-Free Streaming**: Uses lock-free queues for sensor data flow
 4. **Real-Time Guarantees**: OS threads for heartbeat (20ms) instead of async
-5. **TCP Protocol**: MessagePack over TCP for all communication
+5. **TCP Protocol**: JSON over TCP for all communication (configurable wire format)
 
 ## Build and Deployment
 
@@ -107,20 +107,40 @@ sshpass -p "vacuum@123" ssh root@vacuum "RUST_LOG=info /usr/sbin/sangamio"
 
 ### Message Format
 
-All messages use length-prefixed framing with MessagePack payloads:
+All messages use length-prefixed framing with JSON payloads:
 
 ```
-+------------------+-------------+------+-----------------------+
-| Length (4 bytes) | Topic (str) | NULL | Payload (MessagePack) |
-+------------------+-------------+------+-----------------------+
++------------------+------------------+
+| Length (4 bytes) | JSON Message     |
+| (big-endian)     |                  |
++------------------+------------------+
+```
+
+### Message Structure
+
+```json
+{
+    "topic": "sensors/gd32_status",
+    "payload": {
+        "type": "SensorGroup",
+        "group_id": "gd32_status",
+        "timestamp_us": 1234567890,
+        "values": {
+            "is_charging": {"Bool": false},
+            "wheel_left": {"U16": 12345},
+            "bumper_left": {"Bool": false},
+            ...
+        }
+    }
+}
 ```
 
 ### Topics
 
 **Outbound (Daemon → Client)**:
-- `telemetry`: SensorUpdate @ 500Hz (battery, encoders, sensors, odometry)
-- `lidar`: LidarScan @ 5Hz (360° point cloud)
-- `quality`: ConnectionQuality @ 1Hz (GD32 link statistics)
+- `sensors/gd32_status`: Sensor data @ 500Hz (all 13 sensors)
+- `sensors/gd32_version`: Version info (one-time)
+- `sensors/lidar`: LidarScan @ 5Hz (point cloud)
 
 **Inbound (Client → Daemon)**:
 - `command`: RobotCommand (SetVelocity, Stop, actuator control, etc.)
@@ -130,25 +150,26 @@ All messages use length-prefixed framing with MessagePack payloads:
 ```python
 import socket
 import struct
-import msgpack
+import json
 
 # Connect to daemon
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect(('vacuum', 5555))  # Telemetry stream
+sock.connect(('192.168.68.101', 5555))
 
 # Read messages
 while True:
     # Read length prefix
     length = struct.unpack('>I', sock.recv(4))[0]
 
-    # Read frame
-    frame = sock.recv(length)
-    null_idx = frame.index(0)
-    topic = frame[:null_idx].decode('utf-8')
-    data = msgpack.unpackb(frame[null_idx + 1:])
+    # Read JSON message
+    data = sock.recv(length)
+    msg = json.loads(data)
 
-    if topic == "telemetry":
-        print(f"Battery: {data['battery_level']}%")
+    topic = msg['topic']
+    if topic == 'sensors/gd32_status':
+        values = msg['payload']['values']
+        charging = values['is_charging']['Bool']
+        print(f"Charging: {charging}")
 ```
 
 ## Configuration
@@ -298,26 +319,27 @@ ssh root@vacuum "top -p $(pgrep sangamio)"
 
 ## Drishti Visualization
 
-### Console Client
-
-```bash
-cd drishti
-pip install -r requirements.txt
-python drishti.py --robot vacuum --verbose
-```
-
 ### GUI Application
 
 ```bash
-python drishti_ui.py --robot vacuum
+cd drishti
+source venv/bin/activate
+python drishti_ui.py --robot 192.168.68.101
 ```
 
 Features:
-- Real-time sensor visualization
-- Lidar point cloud display
-- Motion control interface
-- Actuator control sliders
-- Telemetry graphs
+- Full-screen robot diagram with physically-correct layout
+- Real-time sensor overlays (all 13 sensors)
+- Bumper/cliff highlighting on trigger
+- Wheel encoder tick counters
+- Battery/charging status indicator
+- Start/dock button states
+
+### Console Client (Legacy)
+
+```bash
+python drishti.py --robot 192.168.68.101 --verbose
+```
 
 ## Common Pitfalls and Solutions
 
