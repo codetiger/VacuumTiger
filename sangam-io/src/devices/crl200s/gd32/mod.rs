@@ -181,7 +181,7 @@ impl GD32Driver {
                                 // Parse version string
                                 let version_string = if packet.payload[0] < 128 {
                                     let len = packet.payload[0] as usize;
-                                    if packet.payload.len() >= len + 1 {
+                                    if packet.payload.len() > len {
                                         String::from_utf8_lossy(&packet.payload[1..=len])
                                             .to_string()
                                     } else {

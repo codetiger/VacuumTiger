@@ -5,18 +5,15 @@ use crate::streaming::messages::Message;
 
 /// Supported wire formats
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub enum WireFormat {
     /// Binary format using postcard - fast and compact
     Postcard,
     /// JSON format - human-readable for debugging
+    #[default]
     Json,
 }
 
-impl Default for WireFormat {
-    fn default() -> Self {
-        WireFormat::Json
-    }
-}
 
 /// Serializer that can handle both formats
 #[derive(Clone)]

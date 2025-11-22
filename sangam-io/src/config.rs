@@ -37,16 +37,13 @@ pub struct NetworkConfig {
 /// Wire format configuration (deserializable from string)
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum WireFormatConfig {
     Postcard,
+    #[default]
     Json,
 }
 
-impl Default for WireFormatConfig {
-    fn default() -> Self {
-        WireFormatConfig::Json
-    }
-}
 
 impl From<WireFormatConfig> for WireFormat {
     fn from(config: WireFormatConfig) -> Self {
