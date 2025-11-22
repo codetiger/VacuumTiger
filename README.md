@@ -1,43 +1,215 @@
 # VacuumTiger
 
-Open-source firmware stack for robotic vacuum cleaners.
+**Open-source firmware for hackable vacuum robots**
 
-## What is VacuumTiger?
+VacuumTiger is a modular, configuration-driven firmware stack that makes it easy to build autonomous vacuum robots. Define your sensors and actuators in JSON, and the system handles everything else—from real-time control to network streaming.
 
-VacuumTiger is a modular software stack designed to make it easy to build and support various robot vacuum platforms. The architecture separates hardware abstraction from higher-level control, allowing the same control software to work across different robot models.
+## Why VacuumTiger?
 
-**Currently supported:** CRL-200S based models (3iRobotix platform)
+- **Configurable**: Define sensors, actuators, and hardware in a single JSON file
+- **Extensible**: Add new robot platforms by implementing one trait
+- **Generic Protocol**: TCP streaming works with any SLAM application
+- **Real-time**: 500Hz sensor updates, <25ms command latency
+- **Hackable**: Small codebase (~3K lines Rust), no dependencies on proprietary SDKs
 
-### Components
-
-- **SangamIO**: Hardware abstraction daemon with TCP streaming interface (Rust)
-- **Drishti**: Diagnostic tool for sensor testing and protocol verification (Python)
-
-The design prioritizes:
-- **Portability**: Clean abstraction layer for supporting new robot hardware
-- **Simplicity**: Direct implementations over complex abstractions
-- **Real-time performance**: Low latency control loops with safety guarantees
-
-## System Architecture
+## How It Works
 
 ```
 ┌─────────────────────────────────────────────────┐
-│         Client Applications (Drishti/SLAM)      │
-└─────────────┬───────────────┬───────────────────┘
-              │ TCP 5555/5556 │
-┌─────────────▼───────────────▼───────────────────┐
-│            SangamIO Daemon (Robot)              │
-│  • Telemetry streaming @ 500Hz (sensors)        │
-│  • Lidar streaming @ 5Hz (360° scans)           │
-│  • Command processing (motion/actuators)        │
-│  • Real-time control loop (50Hz)                │
-└─────────────┬───────────────┬───────────────────┘
-              │ /dev/ttyS3    │ /dev/ttyS1
-       ┌──────▼─────────┐  ┌──▼─────────────┐
-       │ GD32F103 MCU   │  │ Delta-2D Lidar │
-       │ (Motor Control)│  │ (360° Scanning)│
-       └────────────────┘  └────────────────┘
+│          SLAM Application (Planned)             │
+│   Reads hardware.json to discover capabilities  │
+└─────────────┬───────────────────────────────────┘
+              │ TCP Protocol (Generic)
+┌─────────────▼───────────────────────────────────┐
+│            SangamIO Daemon                      │
+│   Configuration-driven hardware abstraction     │
+│   • Streams sensor groups defined in config     │
+│   • Routes commands to configured actuators     │
+└─────────────┬───────────────────────────────────┘
+              │ DeviceDriver Trait
+┌─────────────▼───────────────────────────────────┐
+│   Robot-Specific Driver (e.g., CRL-200S)        │
+│   Implements protocol for specific hardware     │
+└─────────────────────────────────────────────────┘
 ```
+
+## Configuration-Driven Design
+
+Everything is defined in `hardware.json`:
+
+```json
+{
+  "device": {
+    "type": "crl200s",
+    "name": "CRL-200S Vacuum Robot",
+    "hardware": {
+      "gd32_port": "/dev/ttyS3",
+      "lidar_port": "/dev/ttyS1"
+    },
+    "sensor_groups": [
+      {
+        "id": "navigation",
+        "source": "gd32",
+        "sensors": [
+          { "id": "wheel_left", "type": "U16", "unit": "ticks" },
+          { "id": "wheel_right", "type": "U16", "unit": "ticks" },
+          { "id": "cliff_left", "type": "Bool" },
+          { "id": "bumper_front", "type": "Bool" }
+        ]
+      },
+      {
+        "id": "lidar",
+        "source": "delta2d",
+        "sensors": [
+          { "id": "scan", "type": "PointCloud2D" }
+        ]
+      }
+    ],
+    "actuators": [
+      {
+        "id": "drive",
+        "type": "DifferentialDrive",
+        "modes": ["velocity", "tank"]
+      },
+      {
+        "id": "vacuum",
+        "type": "Pwm",
+        "min": 0,
+        "max": 100
+      }
+    ]
+  },
+  "network": {
+    "bind_address": "0.0.0.0:5555",
+    "wire_format": "json"
+  }
+}
+```
+
+**SLAM applications read this same config** to discover what sensors and actuators are available, enabling truly portable navigation algorithms.
+
+## Generic TCP Protocol
+
+The protocol is robot-agnostic. Any client that speaks the wire format can control any VacuumTiger robot.
+
+### Message Format
+
+```
+[4-byte length (big-endian)][JSON payload]
+```
+
+### Sensor Streaming (Daemon → Client)
+
+```json
+{
+  "topic": "sensors/navigation",
+  "payload": {
+    "type": "SensorGroup",
+    "group_id": "navigation",
+    "timestamp_us": 1700000000000,
+    "values": {
+      "wheel_left": { "U16": 12345 },
+      "wheel_right": { "U16": 12340 },
+      "cliff_left": { "Bool": false },
+      "bumper_front": { "Bool": false }
+    }
+  }
+}
+```
+
+### Commands (Client → Daemon)
+
+```json
+{
+  "topic": "command",
+  "payload": {
+    "type": "Command",
+    "command": {
+      "SetVelocity": { "linear": 0.2, "angular": 0.0 }
+    }
+  }
+}
+```
+
+### Available Commands
+
+| Category | Commands |
+|----------|----------|
+| Motion | `SetVelocity`, `SetTankDrive`, `Stop`, `EmergencyStop` |
+| Actuators | `SetActuator`, `SetActuatorMultiple` |
+| Sensors | `EnableSensor`, `DisableSensor`, `SetSensorConfig` |
+| System | `Sleep`, `Wake`, `Shutdown`, `Restart` |
+
+## Adding a New Robot Platform
+
+VacuumTiger is designed to support any robot hardware. Here's how to add a new platform:
+
+### 1. Create Configuration
+
+```json
+{
+  "device": {
+    "type": "my_robot",
+    "hardware": {
+      "motor_port": "/dev/ttyUSB0"
+    },
+    "sensor_groups": [
+      {
+        "id": "odometry",
+        "sensors": [
+          { "id": "left_encoder", "type": "I32" },
+          { "id": "right_encoder", "type": "I32" }
+        ]
+      }
+    ],
+    "actuators": [
+      { "id": "drive", "type": "DifferentialDrive", "modes": ["velocity"] }
+    ]
+  }
+}
+```
+
+### 2. Implement DeviceDriver Trait
+
+```rust
+// src/devices/my_robot/mod.rs
+pub struct MyRobotDriver { /* ... */ }
+
+impl DeviceDriver for MyRobotDriver {
+    fn initialize(
+        &mut self,
+        sensor_data: HashMap<String, Arc<Mutex<SensorGroupData>>>
+    ) -> Result<()> {
+        // Open serial ports
+        // Spawn reader threads
+        // Update sensor_data in real-time
+    }
+
+    fn send_command(&mut self, cmd: Command) -> Result<()> {
+        match cmd {
+            Command::SetVelocity { linear, angular } => {
+                // Convert to your hardware protocol
+            }
+            // Handle other commands...
+        }
+    }
+}
+```
+
+### 3. Register in Factory
+
+```rust
+// src/devices/mod.rs
+pub fn create_device(config: &Config) -> Result<Box<dyn DeviceDriver>> {
+    match config.device.device_type.as_str() {
+        "crl200s" => Ok(Box::new(CRL200SDriver::new(...))),
+        "my_robot" => Ok(Box::new(MyRobotDriver::new(...))),
+        _ => Err(Error::UnknownDevice(...)),
+    }
+}
+```
+
+That's it! Your new robot works with any existing SLAM application.
 
 ## Repository Structure
 
@@ -45,138 +217,42 @@ The design prioritizes:
 VacuumTiger/
 ├── sangam-io/              # Hardware abstraction daemon (Rust)
 │   ├── src/
-│   │   ├── app.rs          # Main application loop
-│   │   ├── devices/        # GD32 driver, Delta-2D lidar driver
-│   │   └── streaming/      # TCP streaming server
-│   ├── PROTOCOL.md         # TCP protocol specification
-│   ├── ARCHITECTURE.md     # Design decisions
-│   └── DEPLOYMENT.md       # Production deployment guide
-├── drishti/                # Python visualization client
-│   ├── drishti.py          # Console client library
-│   ├── drishti_ui.py       # GUI application
-│   └── ui/                 # PyQt5 components
-├── protocol-mitm/          # Protocol reverse-engineering tools
-│   ├── src/                # Serial MITM logger (Rust)
-│   ├── scripts/            # Robot-side automation scripts
-│   └── tools/              # Development machine tools
-└── firmware-gd32/          # Future: Custom GD32 firmware (planned)
+│   │   ├── core/           # DeviceDriver trait, sensor types
+│   │   ├── devices/        # Robot-specific implementations
+│   │   │   └── crl200s/    # CRL-200S driver (GD32 + Delta-2D)
+│   │   └── streaming/      # TCP protocol, wire format
+│   └── hardware.json       # Robot configuration
+├── drishti/                # Diagnostic visualization (Python)
+│   ├── drishti_ui.py       # GUI with sensor overlays
+│   └── drishti.py          # Console client
+└── protocol-mitm/          # Reverse engineering tools
 ```
 
 ## Quick Start
 
-### 1. Install Dependencies
+### Build SangamIO
 
-**Rust and ARM toolchain:**
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Install Rust with ARM target
 rustup target add armv7-unknown-linux-musleabihf
-```
 
-**Python (for Drishti):**
-```bash
-cd drishti
-pip install -r requirements.txt
-```
-
-### 2. Build and Deploy SangamIO
-
-```bash
+# Build for robot
 cd sangam-io
 cargo build --release --target armv7-unknown-linux-musleabihf
-
-# Deploy to robot (see DEPLOYMENT.md for full details)
-cat target/armv7-unknown-linux-musleabihf/release/sangamio | \
-  ssh root@vacuum "cat > /usr/sbin/sangamio && chmod +x /usr/sbin/sangamio"
 ```
 
-### 3. Launch Drishti Visualization
+### Deploy to Robot
 
 ```bash
-cd drishti
-python drishti_ui.py --robot 192.168.68.101
+# Copy binary to robot
+cat target/armv7-unknown-linux-musleabihf/release/sangamio | \
+  ssh root@vacuum "cat > /usr/sbin/sangamio && chmod +x /usr/sbin/sangamio"
+
+# Run daemon
+ssh root@vacuum "RUST_LOG=info /usr/sbin/sangamio"
 ```
 
-## TCP Protocol
-
-SangamIO provides a JSON-based TCP streaming interface:
-
-- **Port 5555**: Telemetry stream (sensors @ 500Hz, lidar @ 5Hz)
-- **Port 5556**: Command channel (motion, actuators, lifecycle)
-
-**Message Format:** Length-prefixed JSON framing
-```
-[4-byte length (big-endian)][topic\0][JSON payload]
-```
-
-**Example Python Client:**
-```python
-import socket
-import struct
-import json
-
-# Connect to telemetry stream
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect(('vacuum', 5555))
-
-while True:
-    # Read frame length
-    length = struct.unpack('>I', sock.recv(4))[0]
-    frame = sock.recv(length)
-
-    # Parse topic and payload
-    null_idx = frame.index(0)
-    topic = frame[:null_idx].decode('utf-8')
-    data = json.loads(frame[null_idx + 1:])
-
-    if topic == "telemetry":
-        sensor = data.get("SensorUpdate", {})
-        print(f"Battery: {sensor.get('battery_level')}%")
-```
-
-See **[sangam-io/PROTOCOL.md](sangam-io/PROTOCOL.md)** for complete protocol specification.
-
-## SangamIO Daemon
-
-**Hardware abstraction daemon for robotic vacuum cleaners with TCP streaming interface**
-
-### Features
-
-- **TCP Streaming**: Real-time telemetry on port 5555, commands on port 5556
-- **JSON Wire Format**: Human-readable protocol with configurable binary option
-- **Automatic Management**: Background heartbeat (20ms), control loops (50Hz)
-- **Direct Hardware Access**: Optimized for low latency (<25ms command-to-action)
-- **Production Ready**: Binary size ~350KB, <1% CPU on Allwinner A33
-
-### Supported Hardware
-
-| Component | Device | Status |
-|-----------|--------|--------|
-| Motor Controller | GD32F103 (CRL-200S) | ✅ Verified |
-| Lidar | 3iRobotix Delta-2D | ✅ Verified |
-| Motor Controller | STM32, ESP32 | 📋 Planned |
-| Lidar | RPLIDAR, YDLIDAR | 📋 Planned |
-
-**Platform**: Embedded Linux (ARM/x86) with standard library
-
-### Command Categories
-
-- **Motion Control**: SetVelocity, SetTankDrive, Stop, EmergencyStop
-- **Actuator Control**: SetActuator, SetActuatorMultiple
-- **Sensor Configuration**: SetSensorConfig, ResetSensor, Enable/Disable
-- **Safety Configuration**: SetSafetyLimits, ClearEmergencyStop
-- **System Lifecycle**: Sleep, Wake, Shutdown, Restart
-
-### Documentation
-
-- **[sangam-io/PROTOCOL.md](sangam-io/PROTOCOL.md)** - TCP message format and commands
-- **[sangam-io/DEPLOYMENT.md](sangam-io/DEPLOYMENT.md)** - Production installation guide
-- **[sangam-io/ARCHITECTURE.md](sangam-io/ARCHITECTURE.md)** - Design decisions and extensibility
-
-## Drishti Diagnostic Tool
-
-**Sensor testing and TCP protocol verification**
-
-Drishti provides a visual interface for monitoring robot sensors and testing the TCP protocol. It displays a physically-correct robot diagram with real-time sensor overlays.
+### Connect with Drishti
 
 ```bash
 cd drishti
@@ -184,66 +260,39 @@ pip install -r requirements.txt
 python drishti_ui.py --robot 192.168.68.101
 ```
 
-See [drishti/README.md](drishti/README.md) for details.
+![Drishti UI](drishti/drishti.png)
 
 ## Project Status
 
-**Current Versions**: SangamIO v0.3.0 | Drishti v2.0.0
-
 | Component | Status | Notes |
 |-----------|--------|-------|
-| SangamIO Daemon | ✅ Complete | TCP streaming with JSON protocol, ~350KB binary |
-| GD32 Driver | ✅ Verified | Automatic heartbeat (20ms), DeviceDriver trait |
-| Delta-2D Lidar | ✅ Verified | 5Hz scanning, lock-free streaming |
-| Drishti UI | ✅ Complete | Full-screen robot diagram with sensor overlays |
-| TCP Protocol | ✅ Complete | JSON over TCP with configurable binary option |
-| Protocol MITM Tools | ✅ Complete | Serial interception & logging |
-| Documentation | ✅ Complete | Architecture + Protocol + Deployment guides |
-| Additional Controllers | 📋 Planned | STM32, ESP32 |
-| Custom Firmware | 📋 Planned | GD32 firmware development |
-| PCB Design | 📋 Planned | Custom controller board |
-
-Legend: ✅ Complete | 🚧 In Progress | 📋 Planned
-
-## Hardware Reference
-
-### Verified Platform
-
-- **Main CPU**: Allwinner A33 (or any Linux SBC with UART)
-- **Motor MCU**: GigaDevice GD32F103VCT6 (Cortex-M3 @ 108MHz)
-- **Lidar**: 3iRobotix Delta-2D (360°, 12m range)
-- **Sensors**: IMU, wheel encoders, cliff sensors, bumpers
-- **Actuators**: Drive motors, vacuum blower, brushes
-
-## Development Tools
-
-- **[protocol-mitm/](protocol-mitm/)** - MITM tools for protocol reverse-engineering and analysis
+| SangamIO Daemon | ✅ Complete | Config-driven, ~350KB binary |
+| CRL-200S Driver | ✅ Verified | GD32 motor controller + Delta-2D lidar |
+| TCP Protocol | ✅ Complete | Generic JSON streaming |
+| Drishti UI | ✅ Complete | Real-time sensor visualization |
+| SLAM Application | 📋 Planned | Navigation and mapping |
+| Additional Platforms | 📋 Planned | Roomba, Turtlebot, etc. |
 
 ## Contributing
 
-Contributions welcome! Areas where help is needed:
+Help us build the best open-source vacuum robot firmware:
 
-- Additional motor controllers (STM32, ESP32)
-- More lidar models (RPLIDAR, YDLIDAR)
-- Hardware testing and validation
-- Documentation improvements
+- **New platforms**: Implement DeviceDriver for your robot
+- **SLAM**: Build navigation algorithms using the generic protocol
+- **Sensors**: Add support for new lidar models, IMUs
+- **Documentation**: Improve guides and examples
 
 ## Safety Notice
 
-⚠️ **IMPORTANT**: This firmware controls physical hardware that can cause injury or damage:
-
-- Always test in a controlled, safe environment
+⚠️ This firmware controls physical hardware. Always:
+- Test in a safe, controlled environment
 - Keep emergency stop accessible
-- Verify all connections before powering on
 - Monitor battery voltage during operation
 
 ## License
 
-Licensed under Apache License 2.0. See [LICENSE](LICENSE) for details.
+Apache License 2.0. See [LICENSE](LICENSE) for details.
 
-## Related Links
+## Links
 
-- **[TCP Protocol](sangam-io/PROTOCOL.md)** - Complete protocol specification
-- **[Deployment Guide](sangam-io/DEPLOYMENT.md)** - Production installation
-- **[Architecture](sangam-io/ARCHITECTURE.md)** - Design decisions
-- **[Original Research](https://github.com/codetiger/VacuumRobot)** - Protocol reverse engineering work
+- [Original Research](https://github.com/codetiger/VacuumRobot)

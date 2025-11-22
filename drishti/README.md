@@ -35,6 +35,8 @@ python drishti.py --robot 192.168.68.101
 - JSON protocol over TCP
 - Visual indicators for all 13 sensors
 
+![Drishti UI](drishti.png)
+
 ## TCP Protocol
 
 Connects to SangamIO on port 5555 for telemetry stream.
