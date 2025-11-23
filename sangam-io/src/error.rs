@@ -16,6 +16,12 @@ pub enum Error {
     #[error("Thread panic")]
     ThreadPanic,
 
+    #[error("Mutex poisoned")]
+    MutexPoisoned,
+
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
+
     #[error("Unknown device type: {0}")]
     UnknownDevice(String),
 

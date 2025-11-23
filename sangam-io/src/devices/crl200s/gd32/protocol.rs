@@ -150,16 +150,13 @@ impl PacketReader {
         }
 
         // Find sync bytes
-        let sync_pos = self.find_sync_bytes();
-        if sync_pos.is_none() {
+        let Some(sync_idx) = self.find_sync_bytes() else {
             // No sync found, clear buffer if too large
             if self.buffer.len() > MAX_BUFFER_SIZE {
                 self.buffer.clear();
             }
             return Ok(None);
-        }
-
-        let sync_idx = sync_pos.unwrap();
+        };
 
         // Remove bytes before sync
         if sync_idx > 0 {
@@ -235,7 +232,10 @@ pub fn cmd_motor_speed(left: i16, right: i16) -> Packet {
 }
 
 pub fn cmd_air_pump(speed: u8) -> Packet {
-    Packet::new(CMD_AIR_PUMP, vec![speed])
+    // BlowerSpeed uses u16 little-endian format
+    // Scale 0-100% to device range (0-10000)
+    let scaled = (speed as u16) * 100;
+    Packet::new(CMD_AIR_PUMP, scaled.to_le_bytes().to_vec())
 }
 
 pub fn cmd_main_brush(speed: u8) -> Packet {
@@ -244,6 +244,22 @@ pub fn cmd_main_brush(speed: u8) -> Packet {
 
 pub fn cmd_side_brush(speed: u8) -> Packet {
     Packet::new(CMD_SIDE_BRUSH, vec![speed])
+}
+
+// Lidar control commands
+
+pub fn cmd_lidar_prep() -> Packet {
+    Packet::new(CMD_LIDAR_PREP, vec![0x10, 0x0E, 0x00, 0x00])
+}
+
+pub fn cmd_lidar_power(on: bool) -> Packet {
+    Packet::new(CMD_LIDAR_POWER, vec![if on { 0x01 } else { 0x00 }])
+}
+
+pub fn cmd_lidar_pwm(speed: i32) -> Packet {
+    let clamped = speed.clamp(0, 100);
+    let payload = clamped.to_le_bytes().to_vec();
+    Packet::new(CMD_LIDAR_PWM, payload)
 }
 
 #[cfg(test)]

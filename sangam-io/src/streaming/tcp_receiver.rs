@@ -37,12 +37,21 @@ impl TcpReceiver {
 
         // Set read timeout so we can check shutdown flag
         stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
             .ok();
 
-        while self.shutdown.load(Ordering::Relaxed) {
+        log::debug!("Entering receiver loop");
+
+        loop {
+            // shutdown flag is actually "running" - true means keep running
+            if !self.shutdown.load(Ordering::Relaxed) {
+                log::debug!("Shutdown flag set, exiting");
+                break;
+            }
+
             match self.read_message(&mut stream) {
                 Ok(Some(msg)) => {
+                    log::info!("Received message: {:?}", msg.topic);
                     if let Err(e) = self.handle_message(msg) {
                         log::error!("Failed to handle message: {}", e);
                     }
@@ -75,10 +84,19 @@ impl TcpReceiver {
         // Read length prefix
         let mut len_buf = [0u8; 4];
         match stream.read_exact(&mut len_buf) {
-            Ok(_) => {}
+            Ok(_) => {
+                log::debug!("Read length prefix: {:?}", len_buf);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Ok(None),
-            Err(e) => return Err(Error::Io(e)),
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                log::debug!("EOF on length read");
+                return Err(Error::Io(e));
+            }
+            Err(e) => {
+                log::debug!("Error reading length: {:?}", e.kind());
+                return Err(Error::Io(e));
+            }
         }
 
         let len = u32::from_be_bytes(len_buf) as usize;

@@ -3,18 +3,35 @@
 pub mod protocol;
 
 use crate::core::types::{Command, SensorGroupData, SensorValue};
-use crate::devices::crl200s::constants::*;
+use crate::devices::crl200s::constants::{
+    CMD_STATUS, CMD_VERSION, FLAG_BATTERY_CONNECTED, FLAG_BUMPER_LEFT, FLAG_BUMPER_RIGHT,
+    FLAG_CHARGING, FLAG_CLIFF_LEFT_FRONT, FLAG_CLIFF_LEFT_SIDE, FLAG_CLIFF_RIGHT_FRONT,
+    FLAG_CLIFF_RIGHT_SIDE, FLAG_DUSTBOX_ATTACHED, HEARTBEAT_ACTUATOR_REFRESH_CYCLES,
+    INIT_RETRY_DELAY_MS, LIDAR_DISABLE_DELAY_MS, LIDAR_ENABLE_DELAY_MS, OFFSET_BUMPER_FLAGS,
+    OFFSET_CHARGING_FLAGS, OFFSET_CLIFF_FLAGS, OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS,
+    OFFSET_START_BUTTON, OFFSET_WHEEL_LEFT_ENCODER, OFFSET_WHEEL_RIGHT_ENCODER, SERIAL_READ_TIMEOUT_MS,
+    STATUS_PAYLOAD_MIN_SIZE,
+};
 use crate::error::{Error, Result};
 use protocol::{
-    cmd_air_pump, cmd_heartbeat, cmd_initialize, cmd_main_brush, cmd_motor_speed,
-    cmd_motor_velocity, cmd_side_brush, cmd_version_request, PacketReader,
+    cmd_air_pump, cmd_heartbeat, cmd_initialize, cmd_lidar_power, cmd_lidar_prep, cmd_lidar_pwm,
+    cmd_main_brush, cmd_motor_speed, cmd_motor_velocity, cmd_side_brush, cmd_version_request,
+    PacketReader,
 };
 use serialport::SerialPort;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+/// Shared actuator state for periodic refresh
+#[derive(Default)]
+pub struct ActuatorState {
+    pub vacuum: AtomicU8,
+    pub main_brush: AtomicU8,
+    pub side_brush: AtomicU8,
+}
 
 /// GD32 driver managing heartbeat and sensor reading
 pub struct GD32Driver {
@@ -23,6 +40,7 @@ pub struct GD32Driver {
     shutdown: Arc<AtomicBool>,
     heartbeat_handle: Option<JoinHandle<()>>,
     reader_handle: Option<JoinHandle<()>>,
+    actuator_state: Arc<ActuatorState>,
 }
 
 impl GD32Driver {
@@ -39,6 +57,7 @@ impl GD32Driver {
             shutdown: Arc::new(AtomicBool::new(false)),
             heartbeat_handle: None,
             reader_handle: None,
+            actuator_state: Arc::new(ActuatorState::default()),
         })
     }
 
@@ -54,7 +73,7 @@ impl GD32Driver {
 
         for attempt in 1..=5 {
             {
-                let mut port = self.port.lock().unwrap();
+                let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
                 if let Err(e) = port.write_all(&init_bytes) {
                     log::warn!("Init send failed (attempt {}): {}", attempt, e);
                 }
@@ -63,6 +82,55 @@ impl GD32Driver {
         }
 
         log::info!("GD32 initialization sequence sent");
+        Ok(())
+    }
+
+    /// Enable or disable the lidar motor via GD32
+    pub fn enable_lidar(&self, enable: bool, pwm_speed: i32) -> Result<()> {
+        let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
+
+        if enable {
+            log::info!("Enabling lidar (PWM: {}%)", pwm_speed);
+
+            // Send prep command
+            let prep_bytes = cmd_lidar_prep().to_bytes();
+            log::debug!("Sending lidar prep: {:02X?}", prep_bytes);
+            port.write_all(&prep_bytes).map_err(Error::Io)?;
+            drop(port);
+            thread::sleep(Duration::from_millis(LIDAR_ENABLE_DELAY_MS));
+
+            // Send power on
+            let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
+            let power_bytes = cmd_lidar_power(true).to_bytes();
+            log::debug!("Sending lidar power on: {:02X?}", power_bytes);
+            port.write_all(&power_bytes).map_err(Error::Io)?;
+            drop(port);
+            thread::sleep(Duration::from_millis(LIDAR_ENABLE_DELAY_MS));
+
+            // Set PWM speed
+            let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
+            let pwm_bytes = cmd_lidar_pwm(pwm_speed).to_bytes();
+            log::debug!("Sending lidar PWM: {:02X?}", pwm_bytes);
+            port.write_all(&pwm_bytes).map_err(Error::Io)?;
+
+            log::info!("Lidar enabled");
+        } else {
+            log::info!("Disabling lidar");
+
+            // Set PWM to 0
+            let pwm_bytes = cmd_lidar_pwm(0).to_bytes();
+            port.write_all(&pwm_bytes).map_err(Error::Io)?;
+            drop(port);
+            thread::sleep(Duration::from_millis(LIDAR_DISABLE_DELAY_MS));
+
+            // Power off
+            let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
+            let power_bytes = cmd_lidar_power(false).to_bytes();
+            port.write_all(&power_bytes).map_err(Error::Io)?;
+
+            log::info!("Lidar disabled");
+        }
+
         Ok(())
     }
 
@@ -75,15 +143,17 @@ impl GD32Driver {
         let shutdown = Arc::clone(&self.shutdown);
         let port = Arc::clone(&self.port);
         let interval_ms = self.heartbeat_interval_ms;
+        let actuator_state = Arc::clone(&self.actuator_state);
 
         // Start heartbeat thread
         let heartbeat_shutdown = Arc::clone(&shutdown);
         let heartbeat_port = Arc::clone(&port);
+        let heartbeat_actuators = Arc::clone(&actuator_state);
         self.heartbeat_handle = Some(
             thread::Builder::new()
                 .name("gd32-heartbeat".to_string())
                 .spawn(move || {
-                    Self::heartbeat_loop(heartbeat_port, heartbeat_shutdown, interval_ms);
+                    Self::heartbeat_loop(heartbeat_port, heartbeat_shutdown, interval_ms, heartbeat_actuators);
                 })
                 .map_err(|e| Error::Other(format!("Failed to spawn heartbeat thread: {}", e)))?,
         );
@@ -104,27 +174,60 @@ impl GD32Driver {
         Ok(())
     }
 
-    /// Heartbeat loop - sends CMD=0x06 at configured interval
+    /// Heartbeat loop - sends CMD=0x06 at configured interval and refreshes actuators
     fn heartbeat_loop(
         port: Arc<Mutex<Box<dyn SerialPort>>>,
         shutdown: Arc<AtomicBool>,
         interval_ms: u64,
+        actuator_state: Arc<ActuatorState>,
     ) {
         let heartbeat_pkt = cmd_heartbeat();
         let heartbeat_bytes = heartbeat_pkt.to_bytes();
+        let mut cycle_count = 0u32;
 
         while !shutdown.load(Ordering::Relaxed) {
-            // Use try_lock to avoid blocking on reader thread
-            if let Ok(mut port) = port.try_lock() {
-                if let Err(e) = port.write_all(&heartbeat_bytes) {
-                    log::error!("Heartbeat send failed: {}", e);
-                } else {
-                    log::trace!("Heartbeat sent");
-                }
+            // Use blocking lock to ensure commands are always sent
+            let Ok(mut port) = port.lock() else {
+                log::error!("Heartbeat: mutex poisoned, exiting");
+                break;
+            };
+
+            // Send heartbeat
+            if let Err(e) = port.write_all(&heartbeat_bytes) {
+                log::error!("Heartbeat send failed: {}", e);
             } else {
-                log::trace!("Heartbeat skipped (port busy)");
+                log::trace!("Heartbeat sent");
             }
 
+            // Refresh actuators every N cycles (~100ms) to prevent GD32 timeout
+            // but not every cycle to reduce serial bus contention
+            cycle_count += 1;
+            if cycle_count >= HEARTBEAT_ACTUATOR_REFRESH_CYCLES {
+                cycle_count = 0;
+
+                // Refresh vacuum
+                let vacuum = actuator_state.vacuum.load(Ordering::Relaxed);
+                if vacuum > 0 {
+                    let pkt = cmd_air_pump(vacuum);
+                    let _ = port.write_all(&pkt.to_bytes());
+                }
+
+                // Refresh main brush
+                let main_brush = actuator_state.main_brush.load(Ordering::Relaxed);
+                if main_brush > 0 {
+                    let pkt = cmd_main_brush(main_brush);
+                    let _ = port.write_all(&pkt.to_bytes());
+                }
+
+                // Refresh side brush
+                let side_brush = actuator_state.side_brush.load(Ordering::Relaxed);
+                if side_brush > 0 {
+                    let pkt = cmd_side_brush(side_brush);
+                    let _ = port.write_all(&pkt.to_bytes());
+                }
+            }
+
+            drop(port); // Release lock before sleeping
             thread::sleep(Duration::from_millis(interval_ms));
         }
 
@@ -144,7 +247,10 @@ impl GD32Driver {
 
         while !shutdown.load(Ordering::Relaxed) {
             let packet_result = {
-                let mut port = port.lock().unwrap();
+                let Ok(mut port) = port.lock() else {
+                    log::error!("Reader: mutex poisoned, exiting");
+                    break;
+                };
                 reader.read_packet(&mut *port)
             };
 
@@ -165,9 +271,12 @@ impl GD32Driver {
                         version_requested = true;
 
                         let version_pkt = cmd_version_request();
-                        let mut port = port.lock().unwrap();
-                        if let Err(e) = port.write_all(&version_pkt.to_bytes()) {
-                            log::error!("Failed to send version request: {}", e);
+                        if let Ok(mut port) = port.lock() {
+                            if let Err(e) = port.write_all(&version_pkt.to_bytes()) {
+                                log::error!("Failed to send version request: {}", e);
+                            }
+                        } else {
+                            log::error!("Failed to lock port for version request");
                         }
                     }
 
@@ -175,7 +284,10 @@ impl GD32Driver {
                     if packet.cmd == CMD_VERSION && !version_received {
                         if let Some(ref vdata) = version_data {
                             if !packet.payload.is_empty() {
-                                let mut data = vdata.lock().unwrap();
+                                let Ok(mut data) = vdata.lock() else {
+                                    log::error!("Failed to lock version data");
+                                    continue;
+                                };
                                 data.touch();
 
                                 // Parse version string
@@ -223,7 +335,10 @@ impl GD32Driver {
                     // Handle sensor status data
                     if packet.cmd == CMD_STATUS && packet.payload.len() >= STATUS_PAYLOAD_MIN_SIZE {
                         // Update shared data directly (no allocations)
-                        let mut data = sensor_data.lock().unwrap();
+                        let Ok(mut data) = sensor_data.lock() else {
+                            log::error!("Failed to lock sensor data");
+                            continue;
+                        };
                         let payload = &packet.payload;
 
                         // Update timestamp
@@ -364,30 +479,53 @@ impl GD32Driver {
             // Actuator Control
             Command::SetActuator { ref id, value } => {
                 let speed = (value.clamp(0.0, 100.0)) as u8;
-                match id.as_str() {
-                    "vacuum" => cmd_air_pump(speed),
-                    "brush" => cmd_main_brush(speed),
-                    "side_brush" => cmd_side_brush(speed),
+                let pkt = match id.as_str() {
+                    "vacuum" => {
+                        self.actuator_state.vacuum.store(speed, Ordering::Relaxed);
+                        cmd_air_pump(speed)
+                    }
+                    "brush" => {
+                        self.actuator_state.main_brush.store(speed, Ordering::Relaxed);
+                        cmd_main_brush(speed)
+                    }
+                    "side_brush" => {
+                        self.actuator_state.side_brush.store(speed, Ordering::Relaxed);
+                        cmd_side_brush(speed)
+                    }
                     _ => {
                         log::warn!("Unknown actuator: {}", id);
                         return Ok(());
                     }
-                }
+                };
+                let bytes = pkt.to_bytes();
+                log::info!("SetActuator: {} = {}, bytes: {:02X?}", id, speed, bytes);
+                let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
+                port.write_all(&bytes).map_err(Error::Io)?;
+                return Ok(());
             }
             Command::SetActuatorMultiple { ref actuators } => {
                 // Send multiple actuator commands
                 for (id, value) in actuators {
                     let speed = (value.clamp(0.0, 100.0)) as u8;
                     let pkt = match id.as_str() {
-                        "vacuum" => cmd_air_pump(speed),
-                        "brush" => cmd_main_brush(speed),
-                        "side_brush" => cmd_side_brush(speed),
+                        "vacuum" => {
+                            self.actuator_state.vacuum.store(speed, Ordering::Relaxed);
+                            cmd_air_pump(speed)
+                        }
+                        "brush" => {
+                            self.actuator_state.main_brush.store(speed, Ordering::Relaxed);
+                            cmd_main_brush(speed)
+                        }
+                        "side_brush" => {
+                            self.actuator_state.side_brush.store(speed, Ordering::Relaxed);
+                            cmd_side_brush(speed)
+                        }
                         _ => {
                             log::warn!("Unknown actuator: {}", id);
                             continue;
                         }
                     };
-                    let mut port = self.port.lock().unwrap();
+                    let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
                     port.write_all(&pkt.to_bytes()).map_err(Error::Io)?;
                 }
                 return Ok(());
@@ -395,69 +533,44 @@ impl GD32Driver {
 
             // Sensor Configuration
             Command::SetSensorConfig { ref sensor_id, .. } => {
-                // TODO: Implement sensor configuration (e.g., IMU calibration)
-                log::info!("SetSensorConfig for {} - not yet implemented", sensor_id);
-                return Ok(());
+                return Err(Error::NotImplemented(format!("SetSensorConfig for {}", sensor_id)));
             }
             Command::ResetSensor { ref sensor_id } => {
-                // TODO: Implement sensor reset
-                log::info!("ResetSensor {} - not yet implemented", sensor_id);
-                return Ok(());
+                return Err(Error::NotImplemented(format!("ResetSensor {}", sensor_id)));
             }
             Command::EnableSensor { ref sensor_id } => {
-                // TODO: Implement sensor enable
-                log::info!("EnableSensor {} - not yet implemented", sensor_id);
-                return Ok(());
+                return Err(Error::NotImplemented(format!("EnableSensor {}", sensor_id)));
             }
             Command::DisableSensor { ref sensor_id } => {
-                // TODO: Implement sensor disable
-                log::info!("DisableSensor {} - not yet implemented", sensor_id);
-                return Ok(());
+                return Err(Error::NotImplemented(format!("DisableSensor {}", sensor_id)));
             }
 
             // Safety Configuration
-            Command::SetSafetyLimits {
-                max_linear,
-                max_angular,
-            } => {
-                // TODO: Implement safety limits (may need GD32 firmware support)
-                log::info!(
-                    "SetSafetyLimits linear={:?}, angular={:?} - not yet implemented",
-                    max_linear,
-                    max_angular
-                );
-                return Ok(());
+            Command::SetSafetyLimits { .. } => {
+                return Err(Error::NotImplemented("SetSafetyLimits".to_string()));
             }
             Command::ClearEmergencyStop => {
-                // TODO: Implement clear emergency stop
-                log::info!("ClearEmergencyStop - not yet implemented");
-                return Ok(());
+                return Err(Error::NotImplemented("ClearEmergencyStop".to_string()));
             }
 
             // System Lifecycle
             Command::Sleep => {
-                // TODO: Implement sleep mode (stop lidar, reduce polling)
-                log::info!("Sleep mode - not yet implemented");
-                return Ok(());
+                return Err(Error::NotImplemented("Sleep".to_string()));
             }
             Command::Wake => {
-                // TODO: Implement wake mode
-                log::info!("Wake mode - not yet implemented");
-                return Ok(());
+                return Err(Error::NotImplemented("Wake".to_string()));
             }
             Command::Shutdown => {
                 self.shutdown.store(true, Ordering::Relaxed);
                 return Ok(());
             }
             Command::Restart => {
-                // TODO: Implement restart (re-initialization)
-                log::info!("Restart - not yet implemented");
-                return Ok(());
+                return Err(Error::NotImplemented("Restart".to_string()));
             }
         };
 
         let bytes = packet.to_bytes();
-        let mut port = self.port.lock().unwrap();
+        let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
         port.write_all(&bytes).map_err(Error::Io)?;
 
         Ok(())
@@ -478,8 +591,9 @@ impl GD32Driver {
 
         // Send stop command
         let stop_pkt = cmd_motor_velocity(0, 0);
-        let mut port = self.port.lock().unwrap();
-        let _ = port.write_all(&stop_pkt.to_bytes());
+        if let Ok(mut port) = self.port.lock() {
+            let _ = port.write_all(&stop_pkt.to_bytes());
+        }
 
         log::info!("GD32 driver shutdown complete");
         Ok(())

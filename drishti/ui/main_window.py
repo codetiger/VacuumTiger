@@ -6,7 +6,7 @@ Single full-screen widget showing robot diagram with sensor overlays.
 
 from PyQt5.QtCore import Qt, pyqtSlot
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QLabel, QStatusBar)
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QKeyEvent
 import logging
 
 from ui.threads.telemetry_thread import TelemetryThread
@@ -24,6 +24,10 @@ class MainWindow(QMainWindow):
         self.robot_ip = robot_ip
         self.port = port
         self.telemetry_thread = None
+        self.lidar_enabled = False  # Lidar starts disabled
+        self.side_brush_enabled = False
+        self.main_brush_enabled = False
+        self.vacuum_enabled = False
 
         # Initialize UI
         self.setWindowTitle(f"Drishti - CRL-200S Monitor ({robot_ip})")
@@ -110,6 +114,58 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage(message, 3000)
         logger.info(message)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        """Handle key press events."""
+        if event.key() == Qt.Key_L:
+            # Toggle lidar
+            self.lidar_enabled = not self.lidar_enabled
+            if self.lidar_enabled:
+                self._send_command({"type": "EnableSensor", "sensor_id": "lidar"})
+                self.status_bar.showMessage("Lidar ENABLED", 2000)
+                logger.info("Lidar enabled")
+            else:
+                self._send_command({"type": "DisableSensor", "sensor_id": "lidar"})
+                self.status_bar.showMessage("Lidar DISABLED", 2000)
+                logger.info("Lidar disabled")
+        elif event.key() == Qt.Key_S:
+            # Toggle side brush
+            self.side_brush_enabled = not self.side_brush_enabled
+            speed = 100.0 if self.side_brush_enabled else 0.0
+            self._send_command({"type": "SetActuator", "id": "side_brush", "value": speed})
+            state = "ON" if self.side_brush_enabled else "OFF"
+            self.status_bar.showMessage(f"Side Brush {state}", 2000)
+            logger.info(f"Side brush {state}")
+        elif event.key() == Qt.Key_B:
+            # Toggle main brush (rolling brush)
+            self.main_brush_enabled = not self.main_brush_enabled
+            speed = 100.0 if self.main_brush_enabled else 0.0
+            self._send_command({"type": "SetActuator", "id": "brush", "value": speed})
+            state = "ON" if self.main_brush_enabled else "OFF"
+            self.status_bar.showMessage(f"Main Brush {state}", 2000)
+            logger.info(f"Main brush {state}")
+        elif event.key() == Qt.Key_V:
+            # Toggle vacuum pump
+            self.vacuum_enabled = not self.vacuum_enabled
+            speed = 100.0 if self.vacuum_enabled else 0.0
+            self._send_command({"type": "SetActuator", "id": "vacuum", "value": speed})
+            state = "ON" if self.vacuum_enabled else "OFF"
+            self.status_bar.showMessage(f"Vacuum {state}", 2000)
+            logger.info(f"Vacuum {state}")
+        elif event.key() == Qt.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(event)
+
+    def _send_command(self, command: dict):
+        """Send a command to the robot via existing telemetry connection."""
+        if self.telemetry_thread:
+            if self.telemetry_thread.send_command(command):
+                logger.debug(f"Command sent: {command}")
+            else:
+                self.status_bar.showMessage("Command failed: not connected", 3000)
+        else:
+            self.status_bar.showMessage("Command failed: no connection", 3000)
 
     def closeEvent(self, event):
         """Handle window close event."""

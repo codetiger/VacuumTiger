@@ -35,9 +35,8 @@ pub struct NetworkConfig {
 }
 
 /// Wire format configuration (deserializable from string)
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
-#[derive(Default)]
 pub enum WireFormatConfig {
     Postcard,
     #[default]

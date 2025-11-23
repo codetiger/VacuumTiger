@@ -83,6 +83,37 @@ class TelemetryThread(QThread):
                 pass
         self.wait()
 
+    def send_command(self, command: dict) -> bool:
+        """Send a command through the existing connection."""
+        if not self.socket:
+            logger.error("Cannot send command: not connected")
+            return False
+
+        try:
+            # Create message with topic and payload
+            message = {
+                "topic": "command",
+                "payload": {
+                    "type": "Command",
+                    "command": command
+                }
+            }
+
+            # Encode as JSON
+            data = json.dumps(message).encode('utf-8')
+
+            # Create length-prefixed message
+            length = struct.pack('>I', len(data))
+
+            # Send through existing socket
+            self.socket.sendall(length + data)
+            logger.debug(f"Command sent: {command}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to send command: {e}")
+            return False
+
     def _read_message(self) -> dict:
         """Read a length-prefixed JSON message."""
         # Read 4-byte length prefix

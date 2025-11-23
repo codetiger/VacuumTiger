@@ -78,13 +78,6 @@ fn default_poll_interval() -> u64 {
     10 // 100Hz default
 }
 
-impl SensorGroupSpec {
-    /// Returns true if this is a one-time read sensor (poll_interval_ms == 0)
-    pub fn is_read_once(&self) -> bool {
-        self.poll_interval_ms == 0
-    }
-}
-
 /// Actuator specification from config
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActuatorSpec {

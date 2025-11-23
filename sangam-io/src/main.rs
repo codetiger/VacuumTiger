@@ -88,7 +88,7 @@ fn main() -> Result<()> {
 
     // Initialize driver with shared sensor data
     {
-        let mut driver = driver.lock().unwrap();
+        let mut driver = driver.lock().map_err(|_| error::Error::MutexPoisoned)?;
         driver.initialize(sensor_data.clone())?;
     }
 
@@ -100,7 +100,7 @@ fn main() -> Result<()> {
         log::info!("Received shutdown signal");
         r.store(false, Ordering::Relaxed);
     })
-    .expect("Error setting Ctrl-C handler");
+    .map_err(|e| error::Error::Other(format!("Error setting Ctrl-C handler: {}", e)))?;
 
     // Get wire format from config
     let wire_format: WireFormat = config.network.wire_format.into();
@@ -132,7 +132,13 @@ fn main() -> Result<()> {
 
                 // Spawn publisher thread
                 let pub_shutdown = Arc::clone(&shutdown);
-                let pub_stream = stream.try_clone().expect("Failed to clone stream");
+                let pub_stream = match stream.try_clone() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!("Failed to clone stream: {}", e);
+                        continue;
+                    }
+                };
                 let _pub_handle = thread::Builder::new()
                     .name("tcp-publisher".to_string())
                     .spawn(move || {
@@ -168,7 +174,7 @@ fn main() -> Result<()> {
     // Shutdown
     log::info!("Shutting down...");
     {
-        let mut driver = driver.lock().unwrap();
+        let mut driver = driver.lock().map_err(|_| error::Error::MutexPoisoned)?;
         driver.send_command(crate::core::types::Command::Shutdown)?;
     }
 

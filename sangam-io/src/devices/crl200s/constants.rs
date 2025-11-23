@@ -15,13 +15,21 @@ pub const CMD_MOTOR_VELOCITY: u8 = 0x66; // Differential drive (linear + angular
 pub const CMD_MOTOR_SPEED: u8 = 0x67; // Direct wheel control
 
 // Actuator commands
-pub const CMD_AIR_PUMP: u8 = 0x69; // 0-100%
-pub const CMD_MAIN_BRUSH: u8 = 0x6A; // 0-100%
-pub const CMD_SIDE_BRUSH: u8 = 0x6B; // 0-100%
+pub const CMD_AIR_PUMP: u8 = 0x68; // BlowerSpeed 0-100%
+pub const CMD_SIDE_BRUSH: u8 = 0x69; // SideBrushSpeed 0-100%
+pub const CMD_MAIN_BRUSH: u8 = 0x6A; // RollingBrushSpeed 0-100%
+
+// Lidar control commands
+pub const CMD_LIDAR_PREP: u8 = 0xA2; // Lidar preparation
+pub const CMD_LIDAR_POWER: u8 = 0x97; // Lidar power on/off
+pub const CMD_LIDAR_PWM: u8 = 0x71; // Lidar motor speed (0-100%)
 
 // Timing constants
 pub const SERIAL_READ_TIMEOUT_MS: u64 = 50;
 pub const INIT_RETRY_DELAY_MS: u64 = 100;
+pub const LIDAR_ENABLE_DELAY_MS: u64 = 100;
+pub const LIDAR_DISABLE_DELAY_MS: u64 = 50;
+pub const HEARTBEAT_ACTUATOR_REFRESH_CYCLES: u32 = 5;
 
 // Packet sizes
 pub const MIN_PACKET_SIZE: usize = 6; // SYNC(2) + LEN(1) + CMD(1) + CRC(2)
