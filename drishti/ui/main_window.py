@@ -30,6 +30,13 @@ class MainWindow(QMainWindow):
         self.main_brush_enabled = False
         self.vacuum_enabled = False
 
+        # Drive control state
+        self.linear_velocity = 0.0
+        self.angular_velocity = 0.0
+        self.linear_step = 0.5  # m/s
+        self.angular_step = 0.5  # rad/s
+        self.motor_enabled = False
+
         # Initialize UI
         self.setWindowTitle(f"Drishti - CRL-200S Monitor ({robot_ip})")
         self.setGeometry(100, 100, 800, 800)
@@ -136,6 +143,16 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Lidar DISABLED", 2000)
             return
 
+        # Handle wheel motor enable/disable from panel
+        if cmd_type == 'EnableSensor' and command.get('sensor_id') == 'wheel_motor':
+            self.motor_enabled = True
+            self.status_bar.showMessage("Wheel Motor ENABLED", 2000)
+            return
+        elif cmd_type == 'DisableSensor' and command.get('sensor_id') == 'wheel_motor':
+            self.motor_enabled = False
+            self.status_bar.showMessage("Wheel Motor DISABLED", 2000)
+            return
+
         # Handle actuator commands
         actuator = command.get('id', 'unknown')
         value = command.get('value', 0)
@@ -207,10 +224,70 @@ class MainWindow(QMainWindow):
             state = "ON" if self.vacuum_enabled else "OFF"
             self.status_bar.showMessage(f"Vacuum {state}", 2000)
             logger.info(f"Vacuum {state}")
+        elif event.key() == Qt.Key_M:
+            # Toggle wheel motor
+            self.motor_enabled = not self.motor_enabled
+            self.control_panel.set_motor_enabled(self.motor_enabled)
+            if self.motor_enabled:
+                self._send_command({"type": "EnableSensor", "sensor_id": "wheel_motor"})
+                self.status_bar.showMessage("Wheel Motor ENABLED", 2000)
+                logger.info("Wheel motor enabled")
+            else:
+                self._send_command({"type": "DisableSensor", "sensor_id": "wheel_motor"})
+                self.status_bar.showMessage("Wheel Motor DISABLED", 2000)
+                logger.info("Wheel motor disabled")
         elif event.key() == Qt.Key_Escape:
             self.close()
+        # Arrow keys for drive control (only when motor is enabled)
+        elif event.key() == Qt.Key_Up:
+            if not event.isAutoRepeat() and self.motor_enabled:
+                self.linear_velocity = self.linear_step
+                self.angular_velocity = 0.0
+                self._send_velocity()
+        elif event.key() == Qt.Key_Down:
+            if not event.isAutoRepeat() and self.motor_enabled:
+                self.linear_velocity = -self.linear_step
+                self.angular_velocity = 0.0
+                self._send_velocity()
+        elif event.key() == Qt.Key_Left:
+            if not event.isAutoRepeat() and self.motor_enabled:
+                self.linear_velocity = 0.0
+                self.angular_velocity = self.angular_step
+                self._send_velocity()
+        elif event.key() == Qt.Key_Right:
+            if not event.isAutoRepeat() and self.motor_enabled:
+                self.linear_velocity = 0.0
+                self.angular_velocity = -self.angular_step
+                self._send_velocity()
+        elif event.key() == Qt.Key_Space:
+            # Emergency stop
+            self.linear_velocity = 0.0
+            self.angular_velocity = 0.0
+            self._send_velocity()
+            self.status_bar.showMessage("STOP", 2000)
         else:
             super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent):
+        """Handle key release events for drive control."""
+        if event.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+            if not event.isAutoRepeat():
+                self.linear_velocity = 0.0
+                self.angular_velocity = 0.0
+                self._send_velocity()
+        else:
+            super().keyReleaseEvent(event)
+
+    def _send_velocity(self):
+        """Send current velocity to robot."""
+        command = {
+            "type": "SetVelocity",
+            "linear": self.linear_velocity,
+            "angular": self.angular_velocity
+        }
+        self._send_command(command)
+        self.control_panel.set_velocity(self.linear_velocity, self.angular_velocity)
+        logger.debug(f"Velocity: linear={self.linear_velocity:.2f}, angular={self.angular_velocity:.2f}")
 
     def _send_command(self, command: dict):
         """Send a command to the robot via existing telemetry connection."""

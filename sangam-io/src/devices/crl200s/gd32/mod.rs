@@ -35,6 +35,7 @@ pub struct ActuatorState {
     pub lidar_pwm: AtomicU8,
     pub linear_velocity: AtomicI16,
     pub angular_velocity: AtomicI16,
+    pub wheel_motor_enabled: AtomicBool, // Explicit wheel motor enable flag
 }
 
 /// GD32 driver managing heartbeat and sensor reading
@@ -217,8 +218,12 @@ impl GD32Driver {
             let main_brush = actuator_state.main_brush.load(Ordering::Relaxed);
             let side_brush = actuator_state.side_brush.load(Ordering::Relaxed);
             let lidar_enabled = actuator_state.lidar_enabled.load(Ordering::Relaxed);
+            let linear = actuator_state.linear_velocity.load(Ordering::Relaxed);
+            let angular = actuator_state.angular_velocity.load(Ordering::Relaxed);
+            let wheel_motor_enabled = actuator_state.wheel_motor_enabled.load(Ordering::Relaxed);
 
-            let any_actuator_active = vacuum > 0 || main_brush > 0 || side_brush > 0 || lidar_enabled;
+            // Motor mode is needed if any actuator is active OR wheel motor is explicitly enabled
+            let any_actuator_active = vacuum > 0 || main_brush > 0 || side_brush > 0 || lidar_enabled || wheel_motor_enabled;
 
             // Send motor mode 0x02 when first actuator is enabled
             if any_actuator_active && !actuator_state.motor_mode_set.load(Ordering::Relaxed) {
@@ -237,14 +242,16 @@ impl GD32Driver {
             }
 
             if actuator_state.motor_mode_set.load(Ordering::Relaxed) {
+                // Send motor mode 0x02 periodically to keep GD32 in navigation mode
+                let mode_pkt = cmd_motor_mode(0x02);
+                let _ = port.write_all(&mode_pkt.to_bytes());
+
                 // Motor mode 0x02 active - send velocity command as heartbeat
-                let linear = actuator_state.linear_velocity.load(Ordering::Relaxed);
-                let angular = actuator_state.angular_velocity.load(Ordering::Relaxed);
                 let pkt = cmd_motor_velocity(linear, angular);
                 if let Err(e) = port.write_all(&pkt.to_bytes()) {
                     log::error!("Velocity heartbeat send failed: {}", e);
                 } else {
-                    log::trace!("Velocity heartbeat sent");
+                    log::trace!("Velocity heartbeat sent: linear={}, angular={}", linear, angular);
                 }
 
                 // Send actuator commands every cycle
@@ -517,6 +524,8 @@ impl GD32Driver {
                 // Store velocity for heartbeat to send continuously
                 self.actuator_state.linear_velocity.store(linear_units, Ordering::Relaxed);
                 self.actuator_state.angular_velocity.store(angular_units, Ordering::Relaxed);
+                log::info!("SetVelocity: linear={:.3} m/s ({} units), angular={:.3} rad/s ({} units)",
+                          linear, linear_units, angular, angular_units);
                 cmd_motor_velocity(linear_units, angular_units)
             }
             Command::SetTankDrive { left, right } => {
@@ -593,9 +602,29 @@ impl GD32Driver {
                 return Err(Error::NotImplemented(format!("ResetSensor {}", sensor_id)));
             }
             Command::EnableSensor { ref sensor_id } => {
+                if sensor_id == "wheel_motor" {
+                    log::info!("Enabling wheel motor");
+                    self.actuator_state.wheel_motor_enabled.store(true, Ordering::Relaxed);
+                    return Ok(());
+                }
                 return Err(Error::NotImplemented(format!("EnableSensor {}", sensor_id)));
             }
             Command::DisableSensor { ref sensor_id } => {
+                if sensor_id == "wheel_motor" {
+                    log::info!("Disabling wheel motor");
+                    self.actuator_state.wheel_motor_enabled.store(false, Ordering::Relaxed);
+                    // Also stop any motion
+                    self.actuator_state.linear_velocity.store(0, Ordering::Relaxed);
+                    self.actuator_state.angular_velocity.store(0, Ordering::Relaxed);
+
+                    // Send motor mode 0x00 to exit navigation mode
+                    let mode_pkt = cmd_motor_mode(0x00);
+                    let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
+                    port.write_all(&mode_pkt.to_bytes()).map_err(Error::Io)?;
+                    log::info!("Motor mode set to idle (0x00)");
+
+                    return Ok(());
+                }
                 return Err(Error::NotImplemented(format!("DisableSensor {}", sensor_id)));
             }
 

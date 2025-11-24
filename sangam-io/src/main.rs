@@ -122,7 +122,6 @@ fn main() -> Result<()> {
                 log::info!("Client connected: {}", addr);
 
                 // Clone resources for threads
-                let shutdown = Arc::clone(&running);
                 let sensor_data_clone = sensor_data.clone();
                 let driver_clone = Arc::clone(&driver);
 
@@ -131,7 +130,7 @@ fn main() -> Result<()> {
                 let recv_serializer = create_serializer(wire_format);
 
                 // Spawn publisher thread
-                let pub_shutdown = Arc::clone(&shutdown);
+                let pub_running = Arc::clone(&running);
                 let pub_stream = match stream.try_clone() {
                     Ok(s) => s,
                     Err(e) => {
@@ -143,19 +142,19 @@ fn main() -> Result<()> {
                     .name("tcp-publisher".to_string())
                     .spawn(move || {
                         let publisher =
-                            TcpPublisher::new(pub_serializer, sensor_data_clone, pub_shutdown);
+                            TcpPublisher::new(pub_serializer, sensor_data_clone, pub_running);
                         if let Err(e) = publisher.run(pub_stream) {
                             log::error!("Publisher error: {}", e);
                         }
                     });
 
                 // Spawn receiver thread
-                let recv_shutdown = Arc::clone(&shutdown);
+                let recv_running = Arc::clone(&running);
                 let _recv_handle = thread::Builder::new()
                     .name("tcp-receiver".to_string())
                     .spawn(move || {
                         let receiver =
-                            TcpReceiver::new(recv_serializer, driver_clone, recv_shutdown);
+                            TcpReceiver::new(recv_serializer, driver_clone, recv_running);
                         if let Err(e) = receiver.run(stream) {
                             log::error!("Receiver error: {}", e);
                         }

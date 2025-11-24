@@ -218,9 +218,10 @@ pub fn cmd_version_request() -> Packet {
 }
 
 pub fn cmd_motor_velocity(linear: i16, angular: i16) -> Packet {
-    let mut payload = Vec::with_capacity(4);
-    payload.extend_from_slice(&linear.to_le_bytes());
-    payload.extend_from_slice(&angular.to_le_bytes());
+    // Protocol uses 8 bytes: two i32 little-endian values
+    let mut payload = Vec::with_capacity(8);
+    payload.extend_from_slice(&(linear as i32).to_le_bytes());
+    payload.extend_from_slice(&(angular as i32).to_le_bytes());
     Packet::new(CMD_MOTOR_VELOCITY, payload)
 }
 

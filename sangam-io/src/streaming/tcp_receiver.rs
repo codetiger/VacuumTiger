@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 pub struct TcpReceiver {
     serializer: Serializer,
     driver: Arc<Mutex<Box<dyn DeviceDriver>>>,
-    shutdown: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
 }
 
 impl TcpReceiver {
@@ -22,12 +22,12 @@ impl TcpReceiver {
     pub fn new(
         serializer: Serializer,
         driver: Arc<Mutex<Box<dyn DeviceDriver>>>,
-        shutdown: Arc<AtomicBool>,
+        running: Arc<AtomicBool>,
     ) -> Self {
         Self {
             serializer,
             driver,
-            shutdown,
+            running,
         }
     }
 
@@ -43,9 +43,8 @@ impl TcpReceiver {
         log::debug!("Entering receiver loop");
 
         loop {
-            // shutdown flag is actually "running" - true means keep running
-            if !self.shutdown.load(Ordering::Relaxed) {
-                log::debug!("Shutdown flag set, exiting");
+            if !self.running.load(Ordering::Relaxed) {
+                log::debug!("Running flag cleared, exiting");
                 break;
             }
 

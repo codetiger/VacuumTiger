@@ -15,7 +15,7 @@ use std::time::Duration;
 pub struct TcpPublisher {
     serializer: Serializer,
     sensor_data: HashMap<String, Arc<Mutex<SensorGroupData>>>,
-    shutdown: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
 }
 
 impl TcpPublisher {
@@ -23,12 +23,12 @@ impl TcpPublisher {
     pub fn new(
         serializer: Serializer,
         sensor_data: HashMap<String, Arc<Mutex<SensorGroupData>>>,
-        shutdown: Arc<AtomicBool>,
+        running: Arc<AtomicBool>,
     ) -> Self {
         Self {
             serializer,
             sensor_data,
-            shutdown,
+            running,
         }
     }
 
@@ -39,19 +39,25 @@ impl TcpPublisher {
         // Set TCP_NODELAY for low latency
         stream.set_nodelay(true).ok();
 
+        // Set write timeout to avoid blocking forever
+        stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+
         // Track last sent timestamps for each group
         let mut last_sent: HashMap<String, u64> = HashMap::new();
         for group_id in self.sensor_data.keys() {
             last_sent.insert(group_id.clone(), 0);
         }
 
-        while !self.shutdown.load(Ordering::Relaxed) {
+        while self.running.load(Ordering::Relaxed) {
             let mut sent_any = false;
 
             for (group_id, data) in &self.sensor_data {
                 let data = match data.lock() {
                     Ok(d) => d,
-                    Err(_) => continue,
+                    Err(e) => {
+                        log::error!("Failed to lock sensor data for {}: {}", group_id, e);
+                        continue;
+                    }
                 };
 
                 let last = last_sent.get(group_id).copied().unwrap_or(0);
@@ -63,8 +69,11 @@ impl TcpPublisher {
                         return Err(e);
                     }
 
+                    log::trace!("Sent {} (ts: {} -> {})", group_id, last, data.timestamp_us);
                     last_sent.insert(group_id.clone(), data.timestamp_us);
                     sent_any = true;
+                } else {
+                    log::trace!("No new data for {} (ts: {} <= {})", group_id, data.timestamp_us, last);
                 }
             }
 

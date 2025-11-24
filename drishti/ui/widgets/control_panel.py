@@ -5,10 +5,10 @@ Provides UI controls for vacuum, side brush, and main brush with speed control.
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QSlider, QPushButton, QGroupBox, QFrame
+    QSlider, QPushButton, QGroupBox, QFrame, QGridLayout
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QKeyEvent
 
 
 class ActuatorControl(QWidget):
@@ -298,6 +298,170 @@ class DustboxStatus(QWidget):
             self.type_label.setText("Type: Unknown")
 
 
+class DriveControl(QWidget):
+    """Arrow key-style drive control widget for robot motion."""
+
+    # Signal: (linear_velocity, angular_velocity)
+    velocity_changed = pyqtSignal(float, float)
+    # Signal: (enabled)
+    motor_toggled = pyqtSignal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.linear_velocity = 0.0  # m/s
+        self.angular_velocity = 0.0  # rad/s
+        self.linear_step = 0.5  # m/s per press
+        self.angular_step = 0.5  # rad/s per press
+        self.motor_enabled = False
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+
+        # Header with title and motor toggle
+        header = QHBoxLayout()
+
+        title = QLabel("Drive Control")
+        title.setFont(QFont("Arial", 10, QFont.Bold))
+        header.addWidget(title)
+
+        header.addStretch()
+
+        self.motor_toggle = QPushButton("OFF")
+        self.motor_toggle.setCheckable(True)
+        self.motor_toggle.setFixedWidth(50)
+        self.motor_toggle.clicked.connect(self._on_motor_toggle)
+        self._update_motor_style()
+        header.addWidget(self.motor_toggle)
+
+        layout.addLayout(header)
+
+        # Arrow buttons grid
+        # Layout:  Row 0:     [▲]
+        #          Row 1: [◀] [▼] [▶]
+        grid = QGridLayout()
+        grid.setSpacing(3)
+
+        # Forward button (up arrow) - row 0, col 1
+        self.btn_forward = QPushButton("▲")
+        self.btn_forward.setFixedSize(40, 40)
+        self.btn_forward.setFont(QFont("Arial", 14))
+        self.btn_forward.pressed.connect(self._on_forward_pressed)
+        self.btn_forward.released.connect(self._on_released)
+        grid.addWidget(self.btn_forward, 0, 1)
+
+        # Left button - row 1, col 0
+        self.btn_left = QPushButton("◀")
+        self.btn_left.setFixedSize(40, 40)
+        self.btn_left.setFont(QFont("Arial", 14))
+        self.btn_left.pressed.connect(self._on_left_pressed)
+        self.btn_left.released.connect(self._on_released)
+        grid.addWidget(self.btn_left, 1, 0)
+
+        # Backward button (down arrow) - row 1, col 1 (same column as forward)
+        self.btn_backward = QPushButton("▼")
+        self.btn_backward.setFixedSize(40, 40)
+        self.btn_backward.setFont(QFont("Arial", 14))
+        self.btn_backward.pressed.connect(self._on_backward_pressed)
+        self.btn_backward.released.connect(self._on_released)
+        grid.addWidget(self.btn_backward, 1, 1)
+
+        # Right button - row 1, col 2
+        self.btn_right = QPushButton("▶")
+        self.btn_right.setFixedSize(40, 40)
+        self.btn_right.setFont(QFont("Arial", 14))
+        self.btn_right.pressed.connect(self._on_right_pressed)
+        self.btn_right.released.connect(self._on_released)
+        grid.addWidget(self.btn_right, 1, 2)
+
+        # Center the grid
+        grid_container = QHBoxLayout()
+        grid_container.addStretch()
+        grid_container.addLayout(grid)
+        grid_container.addStretch()
+        layout.addLayout(grid_container)
+
+        # Velocity display
+        self.velocity_label = QLabel("Lin: 0.00 m/s  Ang: 0.00 rad/s")
+        self.velocity_label.setAlignment(Qt.AlignCenter)
+        self.velocity_label.setStyleSheet("color: #666; font-size: 9px;")
+        layout.addWidget(self.velocity_label)
+
+    def _on_forward_pressed(self):
+        if not self.motor_enabled:
+            return
+        self.linear_velocity = self.linear_step
+        self.angular_velocity = 0.0
+        self._emit_velocity()
+
+    def _on_backward_pressed(self):
+        if not self.motor_enabled:
+            return
+        self.linear_velocity = -self.linear_step
+        self.angular_velocity = 0.0
+        self._emit_velocity()
+
+    def _on_left_pressed(self):
+        if not self.motor_enabled:
+            return
+        self.linear_velocity = 0.0
+        self.angular_velocity = self.angular_step
+        self._emit_velocity()
+
+    def _on_right_pressed(self):
+        if not self.motor_enabled:
+            return
+        self.linear_velocity = 0.0
+        self.angular_velocity = -self.angular_step
+        self._emit_velocity()
+
+    def _on_released(self):
+        if not self.motor_enabled:
+            return
+        self.linear_velocity = 0.0
+        self.angular_velocity = 0.0
+        self._emit_velocity()
+
+    def _emit_velocity(self):
+        self.velocity_label.setText(
+            f"Lin: {self.linear_velocity:.2f} m/s  Ang: {self.angular_velocity:.2f} rad/s"
+        )
+        self.velocity_changed.emit(self.linear_velocity, self.angular_velocity)
+
+    def _on_motor_toggle(self):
+        self.motor_enabled = self.motor_toggle.isChecked()
+        self._update_motor_style()
+        self.motor_toggled.emit(self.motor_enabled)
+
+    def _update_motor_style(self):
+        if self.motor_enabled:
+            self.motor_toggle.setText("ON")
+            self.motor_toggle.setStyleSheet(
+                "background-color: #4CAF50; color: white; font-weight: bold;"
+            )
+        else:
+            self.motor_toggle.setText("OFF")
+            self.motor_toggle.setStyleSheet(
+                "background-color: #666; color: white;"
+            )
+
+    def set_motor_enabled(self, enabled: bool):
+        """Set motor enabled state (from keyboard shortcut)."""
+        self.motor_enabled = enabled
+        self.motor_toggle.setChecked(enabled)
+        self._update_motor_style()
+
+    def set_velocity(self, linear: float, angular: float):
+        """Set velocity from external source (keyboard)."""
+        self.linear_velocity = linear
+        self.angular_velocity = angular
+        self.velocity_label.setText(
+            f"Lin: {self.linear_velocity:.2f} m/s  Ang: {self.angular_velocity:.2f} rad/s"
+        )
+
+
 class ControlPanel(QWidget):
     """Control panel with actuator controls and status widgets."""
 
@@ -357,6 +521,18 @@ class ControlPanel(QWidget):
         self.lidar_control.lidar_toggled.connect(self._on_lidar_toggled)
         layout.addWidget(self.lidar_control)
 
+        # Separator
+        line3 = QFrame()
+        line3.setFrameShape(QFrame.HLine)
+        line3.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(line3)
+
+        # Drive control
+        self.drive_control = DriveControl()
+        self.drive_control.velocity_changed.connect(self._on_velocity_changed)
+        self.drive_control.motor_toggled.connect(self._on_motor_toggled)
+        layout.addWidget(self.drive_control)
+
         # Push everything to top
         layout.addStretch()
 
@@ -389,9 +565,34 @@ class ControlPanel(QWidget):
             command = {"type": "DisableSensor", "sensor_id": "lidar"}
         self.command_requested.emit(command)
 
+    def _on_velocity_changed(self, linear: float, angular: float):
+        """Handle velocity change from drive control."""
+        command = {
+            "type": "SetVelocity",
+            "linear": linear,
+            "angular": angular
+        }
+        self.command_requested.emit(command)
+
+    def _on_motor_toggled(self, enabled: bool):
+        """Handle motor toggle from drive control."""
+        if enabled:
+            command = {"type": "EnableSensor", "sensor_id": "wheel_motor"}
+        else:
+            command = {"type": "DisableSensor", "sensor_id": "wheel_motor"}
+        self.command_requested.emit(command)
+
     def set_lidar_enabled(self, enabled: bool):
         """Set lidar enabled state (from keyboard shortcut)."""
         self.lidar_control.set_enabled(enabled)
+
+    def set_motor_enabled(self, enabled: bool):
+        """Set motor enabled state (from keyboard shortcut)."""
+        self.drive_control.set_motor_enabled(enabled)
+
+    def set_velocity(self, linear: float, angular: float):
+        """Set velocity display (from keyboard)."""
+        self.drive_control.set_velocity(linear, angular)
 
     def set_actuator_state(self, actuator_id: str, enabled: bool, speed: int = 100):
         """Set actuator state (from keyboard shortcut)."""
