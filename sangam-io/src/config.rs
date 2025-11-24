@@ -1,6 +1,6 @@
 //! Configuration loading from JSON
 
-use crate::core::types::{ActuatorSpec, SensorGroupSpec};
+use crate::core::types::SensorGroupSpec;
 use crate::error::{Error, Result};
 use crate::streaming::WireFormat;
 use serde::Deserialize;
@@ -23,7 +23,6 @@ pub struct DeviceConfig {
     pub name: String,
     pub hardware: HardwareConfig,
     pub sensor_groups: Vec<SensorGroupSpec>,
-    pub actuators: Vec<ActuatorSpec>,
 }
 
 /// Network configuration

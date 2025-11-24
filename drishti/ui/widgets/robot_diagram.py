@@ -113,6 +113,13 @@ class RobotDiagram(QWidget):
             'dock_button': 0,
         }
 
+        # Actuator speeds (0-100%)
+        self.actuator_speeds = {
+            'vacuum': 0.0,
+            'main_brush': 0.0,
+            'side_brush': 0.0,
+        }
+
         # Animation state
         self.wheel_left_angle = 0.0
         self.wheel_right_angle = 0.0
@@ -120,6 +127,8 @@ class RobotDiagram(QWidget):
         self.main_brush_angle = 0.0
         self.last_wheel_left = 0
         self.last_wheel_right = 0
+        self.charging_animation_phase = 0.0  # 0.0 to 1.0 for charging animation
+        self.charging_debounce_count = 0  # Debounce charging state changes
 
         # Animation timer
         self.animation_timer = QTimer(self)
@@ -128,8 +137,30 @@ class RobotDiagram(QWidget):
 
     def update_sensors(self, data: dict):
         """Update sensor data from telemetry."""
+        # Debounce charging state at sensor update rate (500Hz)
+        if 'is_charging' in data:
+            raw_charging = data.get('is_charging', False)
+            if raw_charging:
+                self.charging_debounce_count = min(self.charging_debounce_count + 1, 100)
+            else:
+                self.charging_debounce_count = max(self.charging_debounce_count - 1, 0)
+
         self.sensor_data.update(data)
         self.update()
+
+    def update_actuator(self, actuator_id: str, speed: float):
+        """Update actuator speed for animation.
+
+        Args:
+            actuator_id: 'vacuum', 'brush', or 'side_brush'
+            speed: Speed in percent (0-100)
+        """
+        if actuator_id == 'brush':
+            self.actuator_speeds['main_brush'] = speed
+        elif actuator_id == 'side_brush':
+            self.actuator_speeds['side_brush'] = speed
+        elif actuator_id == 'vacuum':
+            self.actuator_speeds['vacuum'] = speed
 
     def _update_animation(self):
         """Update animation angles based on sensor changes."""
@@ -147,10 +178,26 @@ class RobotDiagram(QWidget):
             self.wheel_right_angle += delta * 0.1
             self.last_wheel_right = wheel_right
 
-        # Side brush rotation (constant when dustbox attached)
-        if self.sensor_data.get('dustbox_attached', True):
-            self.side_brush_angle += 5.0
-            self.main_brush_angle += 3.0
+        # Brush rotation based on actuator speeds
+        # Scale rotation speed by actuator percentage (0-100%)
+        side_brush_speed = self.actuator_speeds.get('side_brush', 0.0)
+        main_brush_speed = self.actuator_speeds.get('main_brush', 0.0)
+
+        if side_brush_speed > 0:
+            self.side_brush_angle += 15.0 * (side_brush_speed / 100.0)
+        if main_brush_speed > 0:
+            self.main_brush_angle += 9.0 * (main_brush_speed / 100.0)
+
+        # Charging animation (oscillates 0 to 1 and back)
+        # Consider charging if debounce count is above threshold (needs ~50ms of consistent charging)
+        is_charging_stable = self.charging_debounce_count >= 25
+
+        if is_charging_stable:
+            self.charging_animation_phase += 0.03
+            if self.charging_animation_phase > 2.0:
+                self.charging_animation_phase = 0.0
+        else:
+            self.charging_animation_phase = 0.0
 
         self.update()
 
@@ -420,40 +467,74 @@ class RobotDiagram(QWidget):
         # Reset transform to screen coordinates
         painter.resetTransform()
 
-        is_charging = self.sensor_data.get('is_charging', False)
-        is_connected = self.sensor_data.get('is_battery_connected', True)
+        # Use debounced charging state for stable display
+        is_charging = self.charging_debounce_count >= 25
+        battery_level = self.sensor_data.get('battery_level', 45)  # Default 45% for now
 
         # Position at top-right corner of widget
-        x = self.width() - 50
-        y = 30
-        w, h = 48, 24
-
-        if not is_connected:
-            # Draw warning
-            painter.setPen(QPen(QColor(255, 60, 60), 2))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRect(QRectF(x - w/2, y - h/2, w, h))
-            return
+        x = self.width() - 60
+        y = 25
+        w, h = 36, 18
 
         # Battery outline
-        painter.setPen(QPen(QColor(80, 80, 80), 1))
-        painter.setBrush(QBrush(QColor(220, 220, 220)))
-        painter.drawRect(QRectF(x - w/2, y - h/2, w, h))
-        painter.drawRect(QRectF(x + w/2, y - 6, 4, 12))  # Terminal
+        painter.setPen(QPen(QColor(100, 100, 100), 1.5))
+        painter.setBrush(QBrush(QColor(240, 240, 240)))
+        painter.drawRoundedRect(QRectF(x - w/2, y - h/2, w, h), 2, 2)
+
+        # Battery terminal (positive end)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor(100, 100, 100)))
+        painter.drawRect(QRectF(x + w/2, y - 4, 3, 8))
+
+        # Battery fill based on level
+        fill_x = x - w/2 + 2
+        max_fill_width = w - 4
 
         if is_charging:
-            # Charging bolt
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(self.COLOR_CHARGING))
+            # Animated fill: oscillates from current level to 100%
+            # Phase 0-1: expand from battery_level to 100%
+            # Phase 1-2: contract from 100% back to battery_level
+            if self.charging_animation_phase <= 1.0:
+                anim_level = battery_level + (100 - battery_level) * self.charging_animation_phase
+            else:
+                anim_level = 100 - (100 - battery_level) * (self.charging_animation_phase - 1.0)
+            fill_width = max_fill_width * (anim_level / 100.0)
+            fill_color = self.COLOR_CHARGING  # Orange/yellow for charging
+        else:
+            fill_width = max_fill_width * (battery_level / 100.0)
+            # Color based on level
+            if battery_level > 50:
+                fill_color = QColor(76, 175, 80)  # Green
+            elif battery_level > 20:
+                fill_color = QColor(255, 193, 7)  # Yellow/Amber
+            else:
+                fill_color = QColor(244, 67, 54)  # Red
+
+        painter.setBrush(QBrush(fill_color))
+        painter.drawRoundedRect(QRectF(fill_x, y - h/2 + 2, fill_width, h - 4), 1, 1)
+
+        # Charging bolt overlay (on top of fill)
+        if is_charging:
+            painter.setPen(QPen(QColor(80, 80, 80), 1))
+            painter.setBrush(QBrush(QColor(255, 220, 0)))  # Yellow bolt
+            # Filled lightning bolt centered in battery
             bolt = QPainterPath()
-            bolt.moveTo(x + 6, y - 8)
-            bolt.lineTo(x - 4, y + 2)
-            bolt.lineTo(x + 2, y + 2)
-            bolt.lineTo(x - 6, y + 8)
-            bolt.lineTo(x + 4, y - 2)
-            bolt.lineTo(x - 2, y - 2)
+            bolt.moveTo(x + 2, y - 5)
+            bolt.lineTo(x - 1, y - 1)
+            bolt.lineTo(x + 1, y - 1)
+            bolt.lineTo(x - 2, y + 5)
+            bolt.lineTo(x + 1, y + 1)
+            bolt.lineTo(x - 1, y + 1)
             bolt.closeSubpath()
             painter.drawPath(bolt)
+
+        # Battery percentage text below
+        painter.setPen(QColor(80, 80, 80))
+        font = QFont('Arial', 8)
+        painter.setFont(font)
+        text = f"{battery_level}%"
+        painter.drawText(QRectF(x - 25, y + h/2 + 2, 50, 15),
+                        Qt.AlignCenter, text)
 
     def _draw_labels(self, painter, scale):
         """Draw text labels for sensor values."""
@@ -483,8 +564,6 @@ class RobotDiagram(QWidget):
 
         # Status text at bottom
         status_parts = []
-        if self.sensor_data.get('is_charging', False):
-            status_parts.append("CHARGING")
         if not self.sensor_data.get('dustbox_attached', True):
             status_parts.append("NO DUSTBOX")
         if self.sensor_data.get('bumper_left', False) or self.sensor_data.get('bumper_right', False):

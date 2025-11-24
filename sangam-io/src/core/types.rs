@@ -38,7 +38,7 @@ pub enum SensorValue {
     F64(f64),
     String(String),
     Vector3([f32; 3]),
-    PointCloud2D(Vec<(f32, f32)>), // (angle_rad, distance_m)
+    PointCloud2D(Vec<(f32, f32, u8)>), // (angle_rad, distance_m, quality)
 }
 
 /// Actuator types

@@ -98,7 +98,7 @@ impl DeviceDriver for CRL200SDriver {
         match &cmd {
             Command::EnableSensor { sensor_id } if sensor_id == "lidar" => {
                 if let Some(ref gd32) = self.gd32 {
-                    gd32.enable_lidar(true, 100)?;
+                    gd32.enable_lidar(true, 60)?;
                 }
                 return Ok(());
             }

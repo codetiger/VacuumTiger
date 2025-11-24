@@ -37,12 +37,4 @@ impl Message {
             },
         }
     }
-
-    /// Create a command message
-    pub fn command(cmd: Command) -> Self {
-        Self {
-            topic: "command".to_string(),
-            payload: Payload::Command { command: cmd },
-        }
-    }
 }

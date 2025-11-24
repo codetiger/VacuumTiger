@@ -45,7 +45,7 @@ impl TcpPublisher {
             last_sent.insert(group_id.clone(), 0);
         }
 
-        while self.shutdown.load(Ordering::Relaxed) {
+        while !self.shutdown.load(Ordering::Relaxed) {
             let mut sent_any = false;
 
             for (group_id, data) in &self.sensor_data {

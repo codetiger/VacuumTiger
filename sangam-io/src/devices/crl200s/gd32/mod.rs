@@ -6,21 +6,20 @@ use crate::core::types::{Command, SensorGroupData, SensorValue};
 use crate::devices::crl200s::constants::{
     CMD_STATUS, CMD_VERSION, FLAG_BATTERY_CONNECTED, FLAG_BUMPER_LEFT, FLAG_BUMPER_RIGHT,
     FLAG_CHARGING, FLAG_CLIFF_LEFT_FRONT, FLAG_CLIFF_LEFT_SIDE, FLAG_CLIFF_RIGHT_FRONT,
-    FLAG_CLIFF_RIGHT_SIDE, FLAG_DUSTBOX_ATTACHED, HEARTBEAT_ACTUATOR_REFRESH_CYCLES,
-    INIT_RETRY_DELAY_MS, LIDAR_DISABLE_DELAY_MS, LIDAR_ENABLE_DELAY_MS, OFFSET_BUMPER_FLAGS,
-    OFFSET_CHARGING_FLAGS, OFFSET_CLIFF_FLAGS, OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS,
-    OFFSET_START_BUTTON, OFFSET_WHEEL_LEFT_ENCODER, OFFSET_WHEEL_RIGHT_ENCODER, SERIAL_READ_TIMEOUT_MS,
-    STATUS_PAYLOAD_MIN_SIZE,
+    FLAG_CLIFF_RIGHT_SIDE, FLAG_DUSTBOX_ATTACHED, INIT_RETRY_DELAY_MS, OFFSET_BUMPER_FLAGS, 
+    OFFSET_CHARGING_FLAGS, OFFSET_CLIFF_FLAGS, OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS, 
+    OFFSET_START_BUTTON, OFFSET_WHEEL_LEFT_ENCODER, OFFSET_WHEEL_RIGHT_ENCODER, 
+    SERIAL_READ_TIMEOUT_MS, STATUS_PAYLOAD_MIN_SIZE,
 };
 use crate::error::{Error, Result};
 use protocol::{
     cmd_air_pump, cmd_heartbeat, cmd_initialize, cmd_lidar_power, cmd_lidar_prep, cmd_lidar_pwm,
-    cmd_main_brush, cmd_motor_speed, cmd_motor_velocity, cmd_side_brush, cmd_version_request,
-    PacketReader,
+    cmd_main_brush, cmd_motor_mode, cmd_motor_speed, cmd_motor_velocity, cmd_side_brush,
+    cmd_version_request, PacketReader,
 };
 use serialport::SerialPort;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -31,6 +30,11 @@ pub struct ActuatorState {
     pub vacuum: AtomicU8,
     pub main_brush: AtomicU8,
     pub side_brush: AtomicU8,
+    pub motor_mode_set: AtomicBool, // Track if motor mode 0x02 has been sent
+    pub lidar_enabled: AtomicBool,
+    pub lidar_pwm: AtomicU8,
+    pub linear_velocity: AtomicI16,
+    pub angular_velocity: AtomicI16,
 }
 
 /// GD32 driver managing heartbeat and sensor reading
@@ -81,6 +85,15 @@ impl GD32Driver {
             thread::sleep(Duration::from_millis(INIT_RETRY_DELAY_MS));
         }
 
+        // Initialize lidar to off state
+        {
+            let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
+            let power_bytes = cmd_lidar_power(false).to_bytes();
+            let _ = port.write_all(&power_bytes);
+            let pwm_bytes = cmd_lidar_pwm(0).to_bytes();
+            let _ = port.write_all(&pwm_bytes);
+        }
+
         log::info!("GD32 initialization sequence sent");
         Ok(())
     }
@@ -97,7 +110,6 @@ impl GD32Driver {
             log::debug!("Sending lidar prep: {:02X?}", prep_bytes);
             port.write_all(&prep_bytes).map_err(Error::Io)?;
             drop(port);
-            thread::sleep(Duration::from_millis(LIDAR_ENABLE_DELAY_MS));
 
             // Send power on
             let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
@@ -105,7 +117,6 @@ impl GD32Driver {
             log::debug!("Sending lidar power on: {:02X?}", power_bytes);
             port.write_all(&power_bytes).map_err(Error::Io)?;
             drop(port);
-            thread::sleep(Duration::from_millis(LIDAR_ENABLE_DELAY_MS));
 
             // Set PWM speed
             let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
@@ -113,15 +124,22 @@ impl GD32Driver {
             log::debug!("Sending lidar PWM: {:02X?}", pwm_bytes);
             port.write_all(&pwm_bytes).map_err(Error::Io)?;
 
+            // Store lidar state for heartbeat to send continuously
+            self.actuator_state.lidar_enabled.store(true, Ordering::Relaxed);
+            self.actuator_state.lidar_pwm.store(pwm_speed as u8, Ordering::Relaxed);
+
             log::info!("Lidar enabled");
         } else {
             log::info!("Disabling lidar");
+
+            // Clear lidar state
+            self.actuator_state.lidar_enabled.store(false, Ordering::Relaxed);
+            self.actuator_state.lidar_pwm.store(0, Ordering::Relaxed);
 
             // Set PWM to 0
             let pwm_bytes = cmd_lidar_pwm(0).to_bytes();
             port.write_all(&pwm_bytes).map_err(Error::Io)?;
             drop(port);
-            thread::sleep(Duration::from_millis(LIDAR_DISABLE_DELAY_MS));
 
             // Power off
             let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
@@ -174,7 +192,10 @@ impl GD32Driver {
         Ok(())
     }
 
-    /// Heartbeat loop - sends CMD=0x06 at configured interval and refreshes actuators
+    /// Heartbeat loop - sends appropriate commands at configured interval
+    /// When motor mode 0x02 is active: sends velocity (0x66) + actuator commands
+    /// When lidar enabled: sends PWM (0x71)
+    /// Otherwise: sends regular heartbeat (0x06)
     fn heartbeat_loop(
         port: Arc<Mutex<Box<dyn SerialPort>>>,
         shutdown: Arc<AtomicBool>,
@@ -183,7 +204,6 @@ impl GD32Driver {
     ) {
         let heartbeat_pkt = cmd_heartbeat();
         let heartbeat_bytes = heartbeat_pkt.to_bytes();
-        let mut cycle_count = 0u32;
 
         while !shutdown.load(Ordering::Relaxed) {
             // Use blocking lock to ensure commands are always sent
@@ -192,38 +212,69 @@ impl GD32Driver {
                 break;
             };
 
-            // Send heartbeat
-            if let Err(e) = port.write_all(&heartbeat_bytes) {
-                log::error!("Heartbeat send failed: {}", e);
-            } else {
-                log::trace!("Heartbeat sent");
+            // Check actuator states
+            let vacuum = actuator_state.vacuum.load(Ordering::Relaxed);
+            let main_brush = actuator_state.main_brush.load(Ordering::Relaxed);
+            let side_brush = actuator_state.side_brush.load(Ordering::Relaxed);
+            let lidar_enabled = actuator_state.lidar_enabled.load(Ordering::Relaxed);
+
+            let any_actuator_active = vacuum > 0 || main_brush > 0 || side_brush > 0 || lidar_enabled;
+
+            // Send motor mode 0x02 when first actuator is enabled
+            if any_actuator_active && !actuator_state.motor_mode_set.load(Ordering::Relaxed) {
+                let pkt = cmd_motor_mode(0x02);
+                if port.write_all(&pkt.to_bytes()).is_ok() {
+                    actuator_state.motor_mode_set.store(true, Ordering::Relaxed);
+                    log::info!("Motor mode set to navigation (0x02)");
+                    // Wait for GD32 to process mode switch before sending actuator commands
+                    drop(port);
+                    thread::sleep(Duration::from_millis(100));
+                    continue; // Skip commands this cycle, send them next cycle
+                }
+            } else if !any_actuator_active && actuator_state.motor_mode_set.load(Ordering::Relaxed) {
+                // Reset flag when all actuators are off
+                actuator_state.motor_mode_set.store(false, Ordering::Relaxed);
             }
 
-            // Refresh actuators every N cycles (~100ms) to prevent GD32 timeout
-            // but not every cycle to reduce serial bus contention
-            cycle_count += 1;
-            if cycle_count >= HEARTBEAT_ACTUATOR_REFRESH_CYCLES {
-                cycle_count = 0;
+            if actuator_state.motor_mode_set.load(Ordering::Relaxed) {
+                // Motor mode 0x02 active - send velocity command as heartbeat
+                let linear = actuator_state.linear_velocity.load(Ordering::Relaxed);
+                let angular = actuator_state.angular_velocity.load(Ordering::Relaxed);
+                let pkt = cmd_motor_velocity(linear, angular);
+                if let Err(e) = port.write_all(&pkt.to_bytes()) {
+                    log::error!("Velocity heartbeat send failed: {}", e);
+                } else {
+                    log::trace!("Velocity heartbeat sent");
+                }
 
-                // Refresh vacuum
-                let vacuum = actuator_state.vacuum.load(Ordering::Relaxed);
+                // Send actuator commands every cycle
                 if vacuum > 0 {
                     let pkt = cmd_air_pump(vacuum);
                     let _ = port.write_all(&pkt.to_bytes());
                 }
 
-                // Refresh main brush
-                let main_brush = actuator_state.main_brush.load(Ordering::Relaxed);
                 if main_brush > 0 {
                     let pkt = cmd_main_brush(main_brush);
                     let _ = port.write_all(&pkt.to_bytes());
                 }
 
-                // Refresh side brush
-                let side_brush = actuator_state.side_brush.load(Ordering::Relaxed);
                 if side_brush > 0 {
                     let pkt = cmd_side_brush(side_brush);
                     let _ = port.write_all(&pkt.to_bytes());
+                }
+
+                // Send lidar PWM if enabled
+                if lidar_enabled {
+                    let lidar_pwm = actuator_state.lidar_pwm.load(Ordering::Relaxed);
+                    let pkt = cmd_lidar_pwm(lidar_pwm as i32);
+                    let _ = port.write_all(&pkt.to_bytes());
+                }
+            } else {
+                // No actuators active - send regular heartbeat
+                if let Err(e) = port.write_all(&heartbeat_bytes) {
+                    log::error!("Heartbeat send failed: {}", e);
+                } else {
+                    log::trace!("Heartbeat sent");
                 }
             }
 
@@ -463,6 +514,9 @@ impl GD32Driver {
                 // Convert m/s and rad/s to motor units
                 let linear_units = (linear * 1000.0) as i16;
                 let angular_units = (angular * 1000.0) as i16;
+                // Store velocity for heartbeat to send continuously
+                self.actuator_state.linear_velocity.store(linear_units, Ordering::Relaxed);
+                self.actuator_state.angular_velocity.store(angular_units, Ordering::Relaxed);
                 cmd_motor_velocity(linear_units, angular_units)
             }
             Command::SetTankDrive { left, right } => {

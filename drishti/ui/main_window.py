@@ -5,12 +5,13 @@ Single full-screen widget showing robot diagram with sensor overlays.
 """
 
 from PyQt5.QtCore import Qt, pyqtSlot
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QLabel, QStatusBar)
+from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStatusBar)
 from PyQt5.QtGui import QFont, QKeyEvent
 import logging
 
 from ui.threads.telemetry_thread import TelemetryThread
 from ui.widgets.robot_diagram import RobotDiagram
+from ui.widgets.control_panel import ControlPanel
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +45,22 @@ class MainWindow(QMainWindow):
         title_bar = self._create_title_bar()
         main_layout.addWidget(title_bar)
 
-        # Robot diagram (full screen)
+        # Content area: robot diagram (80%) + control panel (20%)
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+
+        # Robot diagram (left side, 80%)
         self.robot_diagram = RobotDiagram()
-        main_layout.addWidget(self.robot_diagram, 1)  # Stretch factor 1
+        content_layout.addWidget(self.robot_diagram, 4)  # Stretch factor 4
+
+        # Control panel (right side, 20%)
+        self.control_panel = ControlPanel()
+        self.control_panel.setStyleSheet("background-color: #e8e8e8;")
+        self.control_panel.command_requested.connect(self._on_panel_command)
+        content_layout.addWidget(self.control_panel, 1)  # Stretch factor 1
+
+        main_layout.addLayout(content_layout, 1)
 
         # Status bar
         self.status_bar = QStatusBar()
@@ -97,10 +111,47 @@ class MainWindow(QMainWindow):
         # Update robot diagram with new sensor values
         self.robot_diagram.update_sensors(data)
 
+        # Update control panel with sensor data
+        self.control_panel.update_sensors(data)
+
         # Update status bar with timestamp
         timestamp = data.get('_timestamp_us', 0)
         group = data.get('_group_id', 'unknown')
         self.status_bar.showMessage(f"{group} @ {timestamp}", 500)
+
+    @pyqtSlot(dict)
+    def _on_panel_command(self, command: dict):
+        """Handle command from control panel."""
+        self._send_command(command)
+
+        cmd_type = command.get('type', '')
+
+        # Handle lidar enable/disable from panel
+        if cmd_type == 'EnableSensor' and command.get('sensor_id') == 'lidar':
+            self.lidar_enabled = True
+            self.status_bar.showMessage("Lidar ENABLED", 2000)
+            return
+        elif cmd_type == 'DisableSensor' and command.get('sensor_id') == 'lidar':
+            self.lidar_enabled = False
+            self.status_bar.showMessage("Lidar DISABLED", 2000)
+            return
+
+        # Handle actuator commands
+        actuator = command.get('id', 'unknown')
+        value = command.get('value', 0)
+
+        # Sync main window state with panel
+        if actuator == 'vacuum':
+            self.vacuum_enabled = value > 0
+        elif actuator == 'side_brush':
+            self.side_brush_enabled = value > 0
+        elif actuator == 'brush':
+            self.main_brush_enabled = value > 0
+
+        # Update robot diagram animation
+        self.robot_diagram.update_actuator(actuator, value)
+
+        self.status_bar.showMessage(f"{actuator}: {value}%", 2000)
 
     @pyqtSlot(bool, str)
     def _on_connection_status(self, connected: bool, message: str):
@@ -120,6 +171,7 @@ class MainWindow(QMainWindow):
         if event.key() == Qt.Key_L:
             # Toggle lidar
             self.lidar_enabled = not self.lidar_enabled
+            self.control_panel.set_lidar_enabled(self.lidar_enabled)
             if self.lidar_enabled:
                 self._send_command({"type": "EnableSensor", "sensor_id": "lidar"})
                 self.status_bar.showMessage("Lidar ENABLED", 2000)
@@ -133,6 +185,7 @@ class MainWindow(QMainWindow):
             self.side_brush_enabled = not self.side_brush_enabled
             speed = 100.0 if self.side_brush_enabled else 0.0
             self._send_command({"type": "SetActuator", "id": "side_brush", "value": speed})
+            self.control_panel.set_actuator_state("side_brush", self.side_brush_enabled)
             state = "ON" if self.side_brush_enabled else "OFF"
             self.status_bar.showMessage(f"Side Brush {state}", 2000)
             logger.info(f"Side brush {state}")
@@ -141,6 +194,7 @@ class MainWindow(QMainWindow):
             self.main_brush_enabled = not self.main_brush_enabled
             speed = 100.0 if self.main_brush_enabled else 0.0
             self._send_command({"type": "SetActuator", "id": "brush", "value": speed})
+            self.control_panel.set_actuator_state("brush", self.main_brush_enabled)
             state = "ON" if self.main_brush_enabled else "OFF"
             self.status_bar.showMessage(f"Main Brush {state}", 2000)
             logger.info(f"Main brush {state}")
@@ -149,6 +203,7 @@ class MainWindow(QMainWindow):
             self.vacuum_enabled = not self.vacuum_enabled
             speed = 100.0 if self.vacuum_enabled else 0.0
             self._send_command({"type": "SetActuator", "id": "vacuum", "value": speed})
+            self.control_panel.set_actuator_state("vacuum", self.vacuum_enabled)
             state = "ON" if self.vacuum_enabled else "OFF"
             self.status_bar.showMessage(f"Vacuum {state}", 2000)
             logger.info(f"Vacuum {state}")

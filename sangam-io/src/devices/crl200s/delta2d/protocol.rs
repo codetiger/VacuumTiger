@@ -16,7 +16,6 @@ pub struct LidarPoint {
 #[derive(Debug, Clone)]
 pub struct LidarScan {
     pub points: Vec<LidarPoint>,
-    pub timestamp_us: u64,
 }
 
 /// Command types from lidar
@@ -56,6 +55,7 @@ impl Delta2DPacketReader {
         match port.read(&mut temp_buf) {
             Ok(0) => return Ok(None),
             Ok(n) => {
+                log::trace!("Lidar raw read: {} bytes: {:02X?}", n, &temp_buf[..n.min(32)]);
                 self.buffer.extend_from_slice(&temp_buf[..n]);
             }
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
@@ -77,14 +77,19 @@ impl Delta2DPacketReader {
             return Ok(None);
         }
 
-        // Find sync byte 0xA5
-        let Some(sync_idx) = self.buffer.iter().position(|&b| b == 0xA5) else {
+        // Find sync byte 0xAA (Delta-2D uses 0xAA, not 0xA5)
+        let Some(sync_idx) = self.buffer.iter().position(|&b| b == 0xAA) else {
             // No sync found, clear buffer if too large
             if self.buffer.len() > 4096 {
+                log::warn!("Lidar buffer overflow, no sync byte found in {} bytes", self.buffer.len());
                 self.buffer.clear();
             }
             return Ok(None);
         };
+
+        if sync_idx > 0 {
+            log::trace!("Lidar: discarding {} bytes before sync", sync_idx);
+        }
 
         // Remove bytes before sync
         if sync_idx > 0 {
@@ -116,12 +121,23 @@ impl Delta2DPacketReader {
             return Ok(None);
         }
 
+        // Log packet type for debugging
+        log::debug!("Lidar packet: cmd=0x{:02X}, type={:?}, chunk=0x{:02X}, payload_len={}",
+                   self.buffer[5], cmd_type, self.buffer[4], payload_len);
+
         // Extract payload
         let payload = &self.buffer[8..8 + payload_len as usize];
 
         // Parse based on command type
         let scan = if cmd_type == CommandType::Measurement && payload_len > 5 {
             Some(self.parse_measurement(payload)?)
+        } else if cmd_type == CommandType::Health && payload_len >= 1 {
+            // Health packet: 1 byte = RPM/RPS scaled by x0.05 RPS or x3 RPM
+            let rps_raw = payload[0];
+            let rpm = rps_raw as u16 * 3;
+            let rps = rps_raw as f32 * 0.05;
+            log::info!("Lidar health: RPM={}, RPS={:.2}", rpm, rps);
+            None
         } else {
             None
         };
@@ -136,10 +152,7 @@ impl Delta2DPacketReader {
         let mut points = Vec::with_capacity(100);
 
         if payload.len() < 5 {
-            return Ok(LidarScan {
-                points,
-                timestamp_us: current_timestamp_us(),
-            });
+            return Ok(LidarScan { points });
         }
 
         // Byte 0: Motor RPM * 3
@@ -178,18 +191,8 @@ impl Delta2DPacketReader {
             point_index += 1;
         }
 
-        Ok(LidarScan {
-            points,
-            timestamp_us: current_timestamp_us(),
-        })
+        Ok(LidarScan { points })
     }
-}
-
-fn current_timestamp_us() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_micros() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -248,6 +248,10 @@ pub fn cmd_side_brush(speed: u8) -> Packet {
 
 // Lidar control commands
 
+pub fn cmd_motor_mode(mode: u8) -> Packet {
+    Packet::new(CMD_MOTOR_MODE, vec![mode])
+}
+
 pub fn cmd_lidar_prep() -> Packet {
     Packet::new(CMD_LIDAR_PREP, vec![0x10, 0x0E, 0x00, 0x00])
 }

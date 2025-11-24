@@ -69,7 +69,7 @@ impl Delta2DDriver {
         error_count: Arc<AtomicU64>,
     ) {
         let mut reader = Delta2DPacketReader::new();
-        let mut accumulated_points: Vec<(f32, f32)> = Vec::with_capacity(360);
+        let mut accumulated_points: Vec<(f32, f32, u8)> = Vec::with_capacity(360);
         let mut last_angle: f32 = 0.0;
 
         while !shutdown.load(Ordering::Relaxed) {
@@ -85,7 +85,7 @@ impl Delta2DDriver {
                             Self::publish_scan(&sensor_data, &accumulated_points);
                             accumulated_points.clear();
                         }
-                        accumulated_points.push((point.angle, point.distance));
+                        accumulated_points.push((point.angle, point.distance, point.quality));
                         last_angle = point.angle;
                     }
 
@@ -127,7 +127,7 @@ impl Delta2DDriver {
     }
 
     /// Publish accumulated scan to sensor data
-    fn publish_scan(sensor_data: &Arc<Mutex<SensorGroupData>>, points: &[(f32, f32)]) {
+    fn publish_scan(sensor_data: &Arc<Mutex<SensorGroupData>>, points: &[(f32, f32, u8)]) {
         let Ok(mut data) = sensor_data.lock() else {
             log::error!("Failed to lock sensor data for lidar scan");
             return;
@@ -136,19 +136,6 @@ impl Delta2DDriver {
         data.update("scan", SensorValue::PointCloud2D(points.to_vec()));
 
         log::trace!("Published lidar scan with {} points", points.len());
-    }
-
-    /// Get scan statistics (scan_count, error_count)
-    pub fn get_stats(&self) -> (u64, u64) {
-        (
-            self.scan_count.load(Ordering::Relaxed),
-            self.error_count.load(Ordering::Relaxed),
-        )
-    }
-
-    /// Check if the driver is active
-    pub fn is_active(&self) -> bool {
-        self.reader_handle.is_some() && !self.shutdown.load(Ordering::Relaxed)
     }
 
     /// Shutdown the driver
