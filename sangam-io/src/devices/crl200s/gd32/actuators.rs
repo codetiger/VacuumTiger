@@ -3,7 +3,7 @@
 //! This module contains functions for controlling actuators (vacuum, brushes, lidar).
 
 use super::protocol::{
-    cmd_air_pump, cmd_lidar_power, cmd_lidar_pwm, cmd_main_brush, cmd_motor_mode,
+    cmd_air_pump, cmd_led_state, cmd_lidar_power, cmd_lidar_pwm, cmd_main_brush, cmd_motor_mode,
     cmd_motor_velocity, cmd_side_brush, Packet,
 };
 use super::state::ActuatorState;
@@ -38,6 +38,10 @@ pub(super) fn actuator_command(
         "side_brush" => {
             actuator_state.side_brush.store(speed, Ordering::Relaxed);
             Some(cmd_side_brush(speed))
+        }
+        "led" => {
+            actuator_state.led_state.store(speed, Ordering::Relaxed);
+            Some(cmd_led_state(speed))
         }
         _ => {
             log::warn!("Unknown actuator: {}", id);

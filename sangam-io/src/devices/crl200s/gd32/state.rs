@@ -21,11 +21,13 @@ use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, Ordering};
 /// - `linear_velocity`: Forward/backward velocity in mm/s (signed)
 /// - `angular_velocity`: Rotation velocity in mrad/s (signed)
 /// - `wheel_motor_enabled`: Explicit flag to keep mode 0x02 active even without motion
+/// - `led_state`: LED state value (0-255, sent on-demand only)
 #[derive(Default)]
 pub struct ActuatorState {
     pub vacuum: AtomicU8,
     pub main_brush: AtomicU8,
     pub side_brush: AtomicU8,
+    pub led_state: AtomicU8,
     pub motor_mode_set: AtomicBool,
     pub lidar_enabled: AtomicBool,
     pub lidar_pwm: AtomicU8,

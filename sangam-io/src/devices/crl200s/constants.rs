@@ -18,6 +18,7 @@ pub const CMD_MOTOR_SPEED: u8 = 0x67; // Direct wheel control
 pub const CMD_AIR_PUMP: u8 = 0x68; // BlowerSpeed 0-100%
 pub const CMD_SIDE_BRUSH: u8 = 0x69; // SideBrushSpeed 0-100%
 pub const CMD_MAIN_BRUSH: u8 = 0x6A; // RollingBrushSpeed 0-100%
+pub const CMD_BUTTON_LED: u8 = 0x8D; // LED state (0=off, 1=charging, 3=discharge, 6=charged, 11=standby)
 
 // Lidar control commands
 pub const CMD_MOTOR_MODE: u8 = 0x65; // Motor mode switch (0x02 = navigation mode)

@@ -5,7 +5,7 @@ Provides UI controls for vacuum, side brush, and main brush with speed control.
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QSlider, QPushButton, QGroupBox, QFrame, QGridLayout
+    QSlider, QPushButton, QGroupBox, QFrame, QGridLayout, QSpinBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QKeyEvent
@@ -298,6 +298,57 @@ class DustboxStatus(QWidget):
             self.type_label.setText("Type: Unknown")
 
 
+class LEDControl(QWidget):
+    """LED mode control with spinbox for 0-255 value selection."""
+
+    # Signal: (led_value)
+    command_changed = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+
+        # Header
+        title = QLabel("LED Mode")
+        title.setFont(QFont("Arial", 10, QFont.Bold))
+        layout.addWidget(title)
+
+        # Spinbox row
+        spinbox_layout = QHBoxLayout()
+
+        self.spinbox = QSpinBox()
+        self.spinbox.setMinimum(0)
+        self.spinbox.setMaximum(20)
+        self.spinbox.setValue(0)
+        self.spinbox.valueChanged.connect(self._on_value_changed)
+        spinbox_layout.addWidget(self.spinbox)
+
+        self.send_btn = QPushButton("Set")
+        self.send_btn.setFixedWidth(40)
+        self.send_btn.clicked.connect(self._on_send_clicked)
+        spinbox_layout.addWidget(self.send_btn)
+
+        layout.addLayout(spinbox_layout)
+
+        # Hint label
+        hint = QLabel("0=Off, 1=Blue, 7=Red, 17=Purple")
+        hint.setStyleSheet("color: #888; font-size: 9px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+    def _on_value_changed(self, value: int):
+        # Don't auto-send on value change, wait for button click
+        pass
+
+    def _on_send_clicked(self):
+        self.command_changed.emit(self.spinbox.value())
+
+
 class DriveControl(QWidget):
     """Arrow key-style drive control widget for robot motion."""
 
@@ -506,6 +557,11 @@ class ControlPanel(QWidget):
         self.main_brush_ctrl.command_changed.connect(self._on_actuator_command)
         layout.addWidget(self.main_brush_ctrl)
 
+        # LED control
+        self.led_ctrl = LEDControl()
+        self.led_ctrl.command_changed.connect(self._on_led_command)
+        layout.addWidget(self.led_ctrl)
+
         # Separator
         line2 = QFrame()
         line2.setFrameShape(QFrame.HLine)
@@ -542,6 +598,15 @@ class ControlPanel(QWidget):
             "type": "SetActuator",
             "id": actuator_id,
             "value": speed
+        }
+        self.command_requested.emit(command)
+
+    def _on_led_command(self, value: int):
+        """Handle LED control command."""
+        command = {
+            "type": "SetActuator",
+            "id": "led",
+            "value": float(value)
         }
         self.command_requested.emit(command)
 

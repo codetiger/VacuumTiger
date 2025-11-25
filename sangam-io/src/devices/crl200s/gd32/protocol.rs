@@ -2,10 +2,10 @@
 //! Packet format: [0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_H] [CRC_L]
 
 use crate::devices::crl200s::constants::{
-    CMD_AIR_PUMP, CMD_HEARTBEAT, CMD_IMU_CALIBRATE_STATE, CMD_INITIALIZE, CMD_LIDAR_POWER,
-    CMD_LIDAR_PWM, CMD_MAIN_BRUSH, CMD_MOTOR_MODE, CMD_MOTOR_SPEED, CMD_MOTOR_VELOCITY,
-    CMD_REQUEST_STM32_DATA, CMD_SIDE_BRUSH, CMD_VERSION, MAX_BUFFER_SIZE, MIN_PACKET_SIZE,
-    SYNC_BYTE_1, SYNC_BYTE_2,
+    CMD_AIR_PUMP, CMD_BUTTON_LED, CMD_HEARTBEAT, CMD_IMU_CALIBRATE_STATE, CMD_INITIALIZE,
+    CMD_LIDAR_POWER, CMD_LIDAR_PWM, CMD_MAIN_BRUSH, CMD_MOTOR_MODE, CMD_MOTOR_SPEED,
+    CMD_MOTOR_VELOCITY, CMD_REQUEST_STM32_DATA, CMD_SIDE_BRUSH, CMD_VERSION, MAX_BUFFER_SIZE,
+    MIN_PACKET_SIZE, SYNC_BYTE_1, SYNC_BYTE_2,
 };
 use crate::error::{Error, Result};
 use std::io::Read;
@@ -251,6 +251,20 @@ pub fn cmd_main_brush(speed: u8) -> Packet {
 
 pub fn cmd_side_brush(speed: u8) -> Packet {
     Packet::new(CMD_SIDE_BRUSH, vec![speed])
+}
+
+/// Build LED state command packet (0x8D)
+///
+/// Known state values:
+/// - 0: Off
+/// - 1: Charging/Active (blinking)
+/// - 3: Discharging/In use
+/// - 6: Fully charged
+/// - 11: Standby/Waiting
+///
+/// Any value 0-255 is accepted for experimentation.
+pub fn cmd_led_state(state: u8) -> Packet {
+    Packet::new(CMD_BUTTON_LED, vec![state])
 }
 
 // Lidar control commands
