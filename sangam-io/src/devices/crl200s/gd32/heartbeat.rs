@@ -20,10 +20,21 @@
 //! - GD32 requires **100ms processing time** before accepting actuator commands
 //! - This thread waits 100ms after mode switch, then resumes normal heartbeat
 //! - Mode switches happen automatically when any actuator is activated
+//!
+//! # Known Limitations
+//!
+//! ## Wheel Motors Require Other Actuators
+//!
+//! The GD32 firmware appears to stop wheel motors after ~1-2 seconds if no other
+//! actuator (vacuum, brushes, or lidar) is active. This is likely a safety feature
+//! in the stock firmware - R2D always runs lidar during navigation.
+//!
+//! **Workaround**: Enable lidar (even at low PWM) before enabling wheel motors
+//! for sustained operation.
 
 use super::protocol::{
     cmd_air_pump, cmd_heartbeat, cmd_lidar_pwm, cmd_main_brush, cmd_motor_mode, cmd_motor_velocity,
-    cmd_side_brush,
+    cmd_request_stm32_data, cmd_side_brush,
 };
 use super::state::ActuatorState;
 use serialport::SerialPort;
@@ -68,6 +79,11 @@ pub(super) fn heartbeat_loop(
 ) {
     let heartbeat_pkt = cmd_heartbeat();
     let heartbeat_bytes = heartbeat_pkt.to_bytes();
+
+    // Counter for periodic STM32 data request (0x0D)
+    // At 20ms interval, 75 cycles = 1.5 seconds (matching R2D MITM log frequency)
+    let stm32_request_interval = 1500 / interval_ms;
+    let mut stm32_request_counter: u64 = 0;
 
     while !shutdown.load(Ordering::Relaxed) {
         // Use blocking lock to ensure commands are always sent
@@ -150,6 +166,18 @@ pub(super) fn heartbeat_loop(
                 log::error!("Heartbeat send failed: {}", e);
             } else {
                 log::trace!("Heartbeat sent");
+            }
+        }
+
+        // Send STM32 data request (0x0D) every ~1.5 seconds
+        stm32_request_counter += 1;
+        if stm32_request_counter >= stm32_request_interval {
+            stm32_request_counter = 0;
+            let pkt = cmd_request_stm32_data();
+            if let Err(e) = port.write_all(&pkt.to_bytes()) {
+                log::warn!("STM32 data request (0x0D) send failed: {}", e);
+            } else {
+                log::trace!("STM32 data request sent");
             }
         }
 

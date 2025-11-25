@@ -22,11 +22,10 @@
 //!
 //! These conversions are defined by the GD32F103 firmware protocol.
 
-/// Conversion factor from m/s to GD32 velocity units (mm/s)
-const VELOCITY_TO_DEVICE_UNITS: f32 = 1000.0;
-
 use super::actuators;
-use super::protocol::{cmd_motor_mode, cmd_motor_speed, cmd_motor_velocity};
+use super::protocol::{
+    cmd_imu_calibrate_state, cmd_motor_mode, cmd_motor_speed, cmd_motor_velocity,
+};
 use super::state::ActuatorState;
 use crate::core::types::Command;
 use crate::error::{Error, Result};
@@ -34,6 +33,26 @@ use serialport::SerialPort;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Conversion factor from m/s to GD32 velocity units (mm/s)
+const VELOCITY_TO_DEVICE_UNITS: f32 = 1000.0;
+
+/// Default IMU calibration payload observed in R2D logs
+const IMU_DEFAULT_PAYLOAD: [u8; 4] = [0x10, 0x0E, 0x00, 0x00];
+
+/// Send IMU calibration state command (0xA2)
+fn send_imu_command(port: &Arc<Mutex<Box<dyn SerialPort>>>, payload: &[u8]) -> Result<()> {
+    let pkt = cmd_imu_calibrate_state(payload.to_vec());
+    let bytes = pkt.to_bytes();
+    log::info!(
+        "IMU command: payload={:02X?}, bytes={:02X?}",
+        payload,
+        bytes
+    );
+    let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
+    port_guard.write_all(&bytes).map_err(Error::Io)?;
+    Ok(())
+}
 
 /// Send a command to the GD32
 ///
@@ -58,6 +77,8 @@ use std::sync::{Arc, Mutex};
 /// # Sensor Commands
 ///
 /// - `EnableSensor`/`DisableSensor` for "wheel_motor": Controls motor mode 0x02
+/// - `EnableSensor` for "imu": Sends IMU calibration state command (0xA2) with default payload
+/// - `SetSensorConfig` for "imu": Sends IMU calibration with custom payload bytes
 /// - Other sensors: NotImplemented (GD32 doesn't support runtime sensor config)
 ///
 /// # Lifecycle Commands
@@ -130,13 +151,40 @@ pub(super) fn send_command(
         }
 
         // Sensor Configuration
-        Command::SetSensorConfig { ref sensor_id, .. } => {
+        Command::SetSensorConfig {
+            ref sensor_id,
+            ref config,
+        } => {
+            if sensor_id == "imu" {
+                // Extract payload from config, or use default
+                let payload: Vec<u8> =
+                    if let Some(crate::core::types::SensorValue::String(hex_str)) =
+                        config.get("payload")
+                    {
+                        // Parse hex string like "100E0000" to bytes
+                        hex_str
+                            .as_bytes()
+                            .chunks(2)
+                            .filter_map(|chunk| {
+                                std::str::from_utf8(chunk)
+                                    .ok()
+                                    .and_then(|s| u8::from_str_radix(s, 16).ok())
+                            })
+                            .collect()
+                    } else {
+                        IMU_DEFAULT_PAYLOAD.to_vec()
+                    };
+                return send_imu_command(port, &payload);
+            }
             return Err(Error::NotImplemented(format!(
                 "SetSensorConfig for {}",
                 sensor_id
             )));
         }
         Command::ResetSensor { ref sensor_id } => {
+            if sensor_id == "imu" {
+                return send_imu_command(port, &IMU_DEFAULT_PAYLOAD);
+            }
             return Err(Error::NotImplemented(format!("ResetSensor {}", sensor_id)));
         }
         Command::EnableSensor { ref sensor_id } => {
@@ -146,6 +194,9 @@ pub(super) fn send_command(
                     .wheel_motor_enabled
                     .store(true, Ordering::Relaxed);
                 return Ok(());
+            }
+            if sensor_id == "imu" {
+                return send_imu_command(port, &IMU_DEFAULT_PAYLOAD);
             }
             return Err(Error::NotImplemented(format!("EnableSensor {}", sensor_id)));
         }

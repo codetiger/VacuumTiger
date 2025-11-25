@@ -21,9 +21,14 @@ pub const CMD_MAIN_BRUSH: u8 = 0x6A; // RollingBrushSpeed 0-100%
 
 // Lidar control commands
 pub const CMD_MOTOR_MODE: u8 = 0x65; // Motor mode switch (0x02 = navigation mode)
-pub const CMD_LIDAR_PREP: u8 = 0xA2; // Lidar preparation
 pub const CMD_LIDAR_POWER: u8 = 0x97; // Lidar power on/off
 pub const CMD_LIDAR_PWM: u8 = 0x71; // Lidar motor speed (0-100%)
+
+// Calibration commands
+pub const CMD_IMU_CALIBRATE_STATE: u8 = 0xA2; // Query IMU factory calibration state
+
+// System polling commands
+pub const CMD_REQUEST_STM32_DATA: u8 = 0x0D; // Request STM32 sensor data (polled every ~3s)
 
 // Timing constants
 pub const SERIAL_READ_TIMEOUT_MS: u64 = 50;

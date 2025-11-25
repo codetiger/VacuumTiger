@@ -3,7 +3,7 @@
 //! This module contains functions for controlling actuators (vacuum, brushes, lidar).
 
 use super::protocol::{
-    cmd_air_pump, cmd_lidar_power, cmd_lidar_prep, cmd_lidar_pwm, cmd_main_brush, cmd_motor_mode,
+    cmd_air_pump, cmd_lidar_power, cmd_lidar_pwm, cmd_main_brush, cmd_motor_mode,
     cmd_motor_velocity, cmd_side_brush, Packet,
 };
 use super::state::ActuatorState;
@@ -58,14 +58,7 @@ pub(super) fn enable_lidar(
     if enable {
         log::info!("Enabling lidar (PWM: {}%)", pwm_speed);
 
-        // Send prep command
-        let prep_bytes = cmd_lidar_prep().to_bytes();
-        log::debug!("Sending lidar prep: {:02X?}", prep_bytes);
-        port_guard.write_all(&prep_bytes).map_err(Error::Io)?;
-        drop(port_guard);
-
         // Send power on
-        let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
         let power_bytes = cmd_lidar_power(true).to_bytes();
         log::debug!("Sending lidar power on: {:02X?}", power_bytes);
         port_guard.write_all(&power_bytes).map_err(Error::Io)?;

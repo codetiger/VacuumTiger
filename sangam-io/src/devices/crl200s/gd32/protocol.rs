@@ -1,7 +1,12 @@
 //! GD32 Protocol Implementation
 //! Packet format: [0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_H] [CRC_L]
 
-use crate::devices::crl200s::constants::*;
+use crate::devices::crl200s::constants::{
+    CMD_AIR_PUMP, CMD_HEARTBEAT, CMD_IMU_CALIBRATE_STATE, CMD_INITIALIZE, CMD_LIDAR_POWER,
+    CMD_LIDAR_PWM, CMD_MAIN_BRUSH, CMD_MOTOR_MODE, CMD_MOTOR_SPEED, CMD_MOTOR_VELOCITY,
+    CMD_REQUEST_STM32_DATA, CMD_SIDE_BRUSH, CMD_VERSION, MAX_BUFFER_SIZE, MIN_PACKET_SIZE,
+    SYNC_BYTE_1, SYNC_BYTE_2,
+};
 use crate::error::{Error, Result};
 use std::io::Read;
 
@@ -254,10 +259,6 @@ pub fn cmd_motor_mode(mode: u8) -> Packet {
     Packet::new(CMD_MOTOR_MODE, vec![mode])
 }
 
-pub fn cmd_lidar_prep() -> Packet {
-    Packet::new(CMD_LIDAR_PREP, vec![0x10, 0x0E, 0x00, 0x00])
-}
-
 pub fn cmd_lidar_power(on: bool) -> Packet {
     Packet::new(CMD_LIDAR_POWER, vec![if on { 0x01 } else { 0x00 }])
 }
@@ -266,6 +267,21 @@ pub fn cmd_lidar_pwm(speed: i32) -> Packet {
     let clamped = speed.clamp(0, 100);
     let payload = clamped.to_le_bytes().to_vec();
     Packet::new(CMD_LIDAR_PWM, payload)
+}
+
+/// IMU calibration state command (0xA2)
+///
+/// Called by upstream application before enabling lidar.
+/// Observed payload in R2D logs: `[0x10, 0x0E, 0x00, 0x00]`
+pub fn cmd_imu_calibrate_state(payload: Vec<u8>) -> Packet {
+    Packet::new(CMD_IMU_CALIBRATE_STATE, payload)
+}
+
+/// Request STM32 data command (0x0D)
+///
+/// Polls sensor status from STM32. Called internally by driver every ~3 seconds.
+pub fn cmd_request_stm32_data() -> Packet {
+    Packet::new(CMD_REQUEST_STM32_DATA, vec![])
 }
 
 #[cfg(test)]
