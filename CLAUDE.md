@@ -205,21 +205,27 @@ VacuumTiger/
 │   │   ├── error.rs          # Error types
 │   │   ├── serial_io.rs      # Serial transport layer
 │   │   ├── devices/          # Hardware drivers
-│   │   │   ├── mod.rs        # LidarDriver trait
-│   │   │   ├── gd32/         # Motor controller
-│   │   │   │   ├── mod.rs    # Driver implementation
-│   │   │   │   ├── protocol.rs # Packet encoding
-│   │   │   │   ├── heartbeat.rs # 20ms watchdog
-│   │   │   │   └── state.rs  # Shared state
-│   │   │   └── delta2d/      # 3iRobotix lidar
-│   │   │       ├── mod.rs    # LidarDriver impl
-│   │   │       └── protocol.rs # Packet parsing
+│   │   │   ├── mod.rs        # DeviceDriver trait
+│   │   │   ├── crl200s/      # CRL-200S robot platform
+│   │   │   │   ├── gd32/     # Motor controller driver
+│   │   │   │   │   ├── mod.rs         # Driver orchestration
+│   │   │   │   │   ├── protocol.rs    # Packet encoding/decoding
+│   │   │   │   │   ├── heartbeat.rs   # 20ms watchdog loop
+│   │   │   │   │   ├── reader.rs      # Status parsing
+│   │   │   │   │   ├── commands.rs    # Command handlers
+│   │   │   │   │   ├── actuators.rs   # Actuator control
+│   │   │   │   │   └── state.rs       # Shared atomic state
+│   │   │   │   └── delta2d/  # 3iRobotix lidar
+│   │   │   │       ├── mod.rs         # LidarDriver impl
+│   │   │   │       └── protocol.rs    # Packet parsing
+│   │   │   └── constants.rs  # Hardware constants
 │   │   └── streaming/        # TCP communication
-│   │       ├── mod.rs        # Message types
+│   │       ├── mod.rs        # Re-exports
 │   │       ├── messages.rs   # Protocol definitions
+│   │       ├── wire.rs       # Serialization layer
 │   │       ├── tcp_publisher.rs # Outbound stream
 │   │       └── tcp_receiver.rs  # Command handler
-│   └── sangamio.toml         # Configuration file
+│   └── hardware.json         # Configuration file
 │
 └── drishti/                  # Python visualization client
     ├── drishti.py           # Console client

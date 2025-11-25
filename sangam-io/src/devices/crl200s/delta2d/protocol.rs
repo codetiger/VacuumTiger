@@ -55,7 +55,11 @@ impl Delta2DPacketReader {
         match port.read(&mut temp_buf) {
             Ok(0) => return Ok(None),
             Ok(n) => {
-                log::trace!("Lidar raw read: {} bytes: {:02X?}", n, &temp_buf[..n.min(32)]);
+                log::trace!(
+                    "Lidar raw read: {} bytes: {:02X?}",
+                    n,
+                    &temp_buf[..n.min(32)]
+                );
                 self.buffer.extend_from_slice(&temp_buf[..n]);
             }
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
@@ -81,7 +85,10 @@ impl Delta2DPacketReader {
         let Some(sync_idx) = self.buffer.iter().position(|&b| b == 0xAA) else {
             // No sync found, clear buffer if too large
             if self.buffer.len() > 4096 {
-                log::warn!("Lidar buffer overflow, no sync byte found in {} bytes", self.buffer.len());
+                log::warn!(
+                    "Lidar buffer overflow, no sync byte found in {} bytes",
+                    self.buffer.len()
+                );
                 self.buffer.clear();
             }
             return Ok(None);
@@ -122,8 +129,13 @@ impl Delta2DPacketReader {
         }
 
         // Log packet type for debugging
-        log::debug!("Lidar packet: cmd=0x{:02X}, type={:?}, chunk=0x{:02X}, payload_len={}",
-                   self.buffer[5], cmd_type, self.buffer[4], payload_len);
+        log::debug!(
+            "Lidar packet: cmd=0x{:02X}, type={:?}, chunk=0x{:02X}, payload_len={}",
+            self.buffer[5],
+            cmd_type,
+            self.buffer[4],
+            payload_len
+        );
 
         // Extract payload
         let payload = &self.buffer[8..8 + payload_len as usize];

@@ -73,7 +73,12 @@ impl TcpPublisher {
                     last_sent.insert(group_id.clone(), data.timestamp_us);
                     sent_any = true;
                 } else {
-                    log::trace!("No new data for {} (ts: {} <= {})", group_id, data.timestamp_us, last);
+                    log::trace!(
+                        "No new data for {} (ts: {} <= {})",
+                        group_id,
+                        data.timestamp_us,
+                        last
+                    );
                 }
             }
 

@@ -199,7 +199,8 @@ impl PacketReader {
     }
 
     fn find_sync_bytes(&self) -> Option<usize> {
-        (0..self.buffer.len().saturating_sub(1)).find(|&i| self.buffer[i] == SYNC_BYTE_1 && self.buffer[i + 1] == SYNC_BYTE_2)
+        (0..self.buffer.len().saturating_sub(1))
+            .find(|&i| self.buffer[i] == SYNC_BYTE_1 && self.buffer[i + 1] == SYNC_BYTE_2)
     }
 }
 

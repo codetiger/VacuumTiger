@@ -119,7 +119,13 @@ impl TcpReceiver {
         match msg.payload {
             Payload::Command { command } => {
                 log::debug!("Received command: {:?}", command);
-                self.handle_command(command)
+                let result = self.handle_command(command);
+                if result.is_ok() {
+                    log::trace!("Command executed successfully");
+                } else {
+                    log::error!("Command execution failed: {:?}", result);
+                }
+                result
             }
             Payload::SensorGroup { .. } => {
                 log::warn!("Received unexpected SensorGroup message from client");

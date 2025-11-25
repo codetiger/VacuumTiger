@@ -1,4 +1,46 @@
 //! Delta-2D Lidar driver
+//!
+//! # Scan Geometry and Accumulation
+//!
+//! The Delta-2D lidar provides continuous 360° scans at approximately 5Hz.
+//! Each scan is delivered as a stream of individual point measurements.
+//!
+//! ## Coordinate Frame
+//!
+//! - **0° (forward)**: Robot's front direction
+//! - **Rotation**: Clockwise (CW) when viewed from above
+//! - **Angle range**: 0.0° to 360.0° (wraps at 360°)
+//! - **Distance units**: Millimeters (mm)
+//!
+//! ## Scan Accumulation State Machine
+//!
+//! ```text
+//! ┌─────────────────┐
+//! │ Collecting      │ ◄─────┐
+//! │ Points          │       │
+//! │ (angle ↑)       │       │
+//! └────────┬────────┘       │
+//!          │                │
+//!          │ angle < last   │
+//!          │ AND count>50   │
+//!          ▼                │
+//! ┌─────────────────┐       │
+//! │ Publish Scan    │       │
+//! │ Clear Buffer    │───────┘
+//! └─────────────────┘
+//! ```
+//!
+//! **Scan completion detection:**
+//! 1. Monitor angle of each incoming point
+//! 2. When angle decreases (e.g., 359° → 1°), a 360° wrap occurred
+//! 3. Require minimum 50 points to avoid false triggers from noise
+//! 4. Publish accumulated points as complete scan
+//! 5. Reset buffer and continue collecting
+//!
+//! **Why 50 points minimum?**
+//! - Prevents false scan boundaries from angle jitter or bad readings
+//! - At 5Hz scan rate with ~360 points/scan, valid scans have >300 points
+//! - 50-point threshold allows partial scans during startup
 
 pub mod protocol;
 
@@ -13,6 +55,10 @@ use std::time::Duration;
 
 const LIDAR_BAUD_RATE: u32 = 115200;
 const LIDAR_READ_TIMEOUT_MS: u64 = 100;
+
+/// Minimum points required before accepting a scan as complete
+/// This prevents false scan boundaries from angle noise or single bad readings
+const MIN_SCAN_POINTS: usize = 50;
 
 /// Delta-2D lidar driver
 pub struct Delta2DDriver {
@@ -78,10 +124,10 @@ impl Delta2DDriver {
                     let count = scan_count.fetch_add(1, Ordering::Relaxed) + 1;
 
                     // Accumulate points for a complete 360° scan
-                    // Detect scan completion when angle wraps around
+                    // Detect scan completion when angle wraps around (359° → 1°)
                     for point in &scan.points {
-                        if point.angle < last_angle && accumulated_points.len() > 50 {
-                            // Angle wrapped - we have a complete scan
+                        if point.angle < last_angle && accumulated_points.len() > MIN_SCAN_POINTS {
+                            // Angle wrapped around 360° - publish complete scan
                             Self::publish_scan(&sensor_data, &accumulated_points);
                             accumulated_points.clear();
                         }
