@@ -2,10 +2,11 @@
 //! Packet format: [0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_H] [CRC_L]
 
 use crate::devices::crl200s::constants::{
-    CMD_AIR_PUMP, CMD_BUTTON_LED, CMD_HEARTBEAT, CMD_IMU_CALIBRATE_STATE, CMD_INITIALIZE,
-    CMD_LIDAR_POWER, CMD_LIDAR_PWM, CMD_MAIN_BRUSH, CMD_MOTOR_MODE, CMD_MOTOR_SPEED,
-    CMD_MOTOR_VELOCITY, CMD_REQUEST_STM32_DATA, CMD_SIDE_BRUSH, CMD_VERSION, MAX_BUFFER_SIZE,
-    MIN_PACKET_SIZE, SYNC_BYTE_1, SYNC_BYTE_2,
+    CMD_AIR_PUMP, CMD_BUTTON_LED, CMD_CLIFF_IR_CONTROL, CMD_CLIFF_IR_DIRECTION,
+    CMD_COMPASS_CALIBRATE, CMD_COMPASS_CALIBRATION_STATE, CMD_HEARTBEAT, CMD_IMU_CALIBRATE_STATE,
+    CMD_IMU_FACTORY_CALIBRATE, CMD_INITIALIZE, CMD_LIDAR_POWER, CMD_LIDAR_PWM, CMD_MAIN_BRUSH,
+    CMD_MOTOR_MODE, CMD_MOTOR_SPEED, CMD_MOTOR_VELOCITY, CMD_REQUEST_STM32_DATA, CMD_SIDE_BRUSH,
+    CMD_VERSION, MAX_BUFFER_SIZE, MIN_PACKET_SIZE, SYNC_BYTE_1, SYNC_BYTE_2,
 };
 use crate::error::{Error, Result};
 use std::io::Read;
@@ -50,17 +51,14 @@ impl Packet {
     }
 }
 
-/// Calculate 16-bit big-endian word sum checksum for sending
-fn calculate_checksum(cmd: u8, payload: &[u8]) -> (u8, u8) {
+/// Core checksum algorithm: 16-bit big-endian word sum with XOR for odd trailing byte
+///
+/// Used by both sending (calculate) and receiving (verify) code paths.
+fn checksum_data(data: &[u8]) -> u16 {
     let mut checksum: u16 = 0;
-
-    // Create data to checksum: cmd + payload
-    let mut data = Vec::with_capacity(1 + payload.len());
-    data.push(cmd);
-    data.extend_from_slice(payload);
+    let mut i = 0;
 
     // Sum 16-bit words (big-endian pairs)
-    let mut i = 0;
     while i + 1 < data.len() {
         let word = ((data[i] as u16) << 8) | (data[i + 1] as u16);
         checksum = checksum.wrapping_add(word);
@@ -71,6 +69,18 @@ fn calculate_checksum(cmd: u8, payload: &[u8]) -> (u8, u8) {
     if i < data.len() {
         checksum ^= data[i] as u16;
     }
+
+    checksum
+}
+
+/// Calculate 16-bit big-endian word sum checksum for sending
+fn calculate_checksum(cmd: u8, payload: &[u8]) -> (u8, u8) {
+    // Create data to checksum: cmd + payload
+    let mut data = Vec::with_capacity(1 + payload.len());
+    data.push(cmd);
+    data.extend_from_slice(payload);
+
+    let checksum = checksum_data(&data);
 
     // Return as big-endian bytes
     ((checksum >> 8) as u8, (checksum & 0xFF) as u8)
@@ -89,33 +99,20 @@ fn verify_checksum_packet(packet: &[u8]) -> bool {
         return false;
     }
 
-    // Get received CRC
+    // Get received CRC (big-endian)
     let crc_high = packet[total_len - 2];
     let crc_low = packet[total_len - 1];
     let received_crc = ((crc_high as u16) << 8) | (crc_low as u16);
 
     // Calculate checksum over CMD + PAYLOAD (bytes 3 to total_len-2)
     let data = &packet[3..total_len - 2];
+    let calculated_crc = checksum_data(data);
 
-    let mut checksum: u16 = 0;
-    let mut i = 0;
-
-    // Sum 16-bit words (big-endian pairs)
-    while i + 1 < data.len() {
-        let word = ((data[i] as u16) << 8) | (data[i + 1] as u16);
-        checksum = checksum.wrapping_add(word);
-        i += 2;
-    }
-
-    // Handle odd trailing byte with XOR
-    if i < data.len() {
-        checksum ^= data[i] as u16;
-    }
-
-    checksum == received_crc
+    calculated_crc == received_crc
 }
 
 /// Packet reader with buffering for incomplete packets
+#[derive(Default)]
 pub struct PacketReader {
     buffer: Vec<u8>,
 }
@@ -283,12 +280,49 @@ pub fn cmd_lidar_pwm(speed: i32) -> Packet {
     Packet::new(CMD_LIDAR_PWM, payload)
 }
 
+/// IMU factory calibration command (0xA1)
+///
+/// Triggers factory-level IMU calibration. No payload required.
+/// Typically used during manufacturing or to reset IMU to factory defaults.
+pub fn cmd_imu_factory_calibrate() -> Packet {
+    Packet::new(CMD_IMU_FACTORY_CALIBRATE, vec![])
+}
+
 /// IMU calibration state command (0xA2)
 ///
 /// Called by upstream application before enabling lidar.
 /// Observed payload in R2D logs: `[0x10, 0x0E, 0x00, 0x00]`
 pub fn cmd_imu_calibrate_state(payload: Vec<u8>) -> Packet {
     Packet::new(CMD_IMU_CALIBRATE_STATE, payload)
+}
+
+/// Compass/geomagnetism calibration command (0xA3)
+///
+/// Starts compass calibration procedure. No payload required.
+/// Robot typically needs to be rotated 360° during calibration.
+pub fn cmd_compass_calibrate() -> Packet {
+    Packet::new(CMD_COMPASS_CALIBRATE, vec![])
+}
+
+/// Compass calibration state query command (0xA4)
+///
+/// Queries current compass calibration state. No payload required.
+pub fn cmd_compass_calibration_state() -> Packet {
+    Packet::new(CMD_COMPASS_CALIBRATION_STATE, vec![])
+}
+
+/// Cliff IR control command (0x78)
+///
+/// Enables or disables cliff IR sensors.
+pub fn cmd_cliff_ir_control(enable: bool) -> Packet {
+    Packet::new(CMD_CLIFF_IR_CONTROL, vec![if enable { 0x01 } else { 0x00 }])
+}
+
+/// Cliff IR direction command (0x79)
+///
+/// Sets cliff IR direction/configuration.
+pub fn cmd_cliff_ir_direction(direction: u8) -> Packet {
+    Packet::new(CMD_CLIFF_IR_DIRECTION, vec![direction])
 }
 
 /// Request STM32 data command (0x0D)

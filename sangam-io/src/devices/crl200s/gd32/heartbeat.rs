@@ -17,16 +17,16 @@
 //! # Motor Mode Timing
 //!
 //! When switching from idle (0x00) to navigation mode (0x02):
-//! - GD32 requires **100ms processing time** before accepting actuator commands
+//! - GD32 requires **100ms processing time** before accepting component commands
 //! - This thread waits 100ms after mode switch, then resumes normal heartbeat
-//! - Mode switches happen automatically when any actuator is activated
+//! - Mode switches happen automatically when any component is activated
 //!
 //! # Known Limitations
 //!
-//! ## Wheel Motors Require Other Actuators
+//! ## Wheel Motors Require Other Components
 //!
 //! The GD32 firmware appears to stop wheel motors after ~1-2 seconds if no other
-//! actuator (vacuum, brushes, or lidar) is active. This is likely a safety feature
+//! component (vacuum, brushes, or lidar) is active. This is likely a safety feature
 //! in the stock firmware - R2D always runs lidar during navigation.
 //!
 //! **Workaround**: Enable lidar (even at low PWM) before enabling wheel motors
@@ -36,7 +36,7 @@ use super::protocol::{
     cmd_air_pump, cmd_heartbeat, cmd_lidar_pwm, cmd_main_brush, cmd_motor_mode, cmd_motor_velocity,
     cmd_request_stm32_data, cmd_side_brush,
 };
-use super::state::ActuatorState;
+use super::state::ComponentState;
 use serialport::SerialPort;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,14 +51,14 @@ use std::time::Duration;
 ///
 /// # Behavior
 ///
-/// **When any actuator is active (vacuum, brushes, lidar, or wheel_motor_enabled):**
+/// **When any component is active (vacuum, brushes, lidar, or wheel_motor_enabled):**
 /// 1. Set motor mode to 0x02 (navigation mode) if not already set
 /// 2. Send motor mode 0x02 command periodically to maintain state
 /// 3. Send velocity command (0x66) with current linear/angular values
-/// 4. Send actuator commands for all active actuators (speed > 0)
+/// 4. Send component commands for all active components (speed > 0)
 /// 5. Send lidar PWM if lidar is enabled
 ///
-/// **When all actuators are off:**
+/// **When all components are off:**
 /// 1. Clear motor_mode_set flag (allows re-entry to mode 0x02 later)
 /// 2. Send regular heartbeat (0x06)
 ///
@@ -75,7 +75,7 @@ pub(super) fn heartbeat_loop(
     port: Arc<Mutex<Box<dyn SerialPort>>>,
     shutdown: Arc<AtomicBool>,
     interval_ms: u64,
-    actuator_state: Arc<ActuatorState>,
+    component_state: Arc<ComponentState>,
 ) {
     let heartbeat_pkt = cmd_heartbeat();
     let heartbeat_bytes = heartbeat_pkt.to_bytes();
@@ -92,36 +92,38 @@ pub(super) fn heartbeat_loop(
             break;
         };
 
-        // Check actuator states
-        let (vacuum, main_brush, side_brush) = actuator_state.get_actuator_speeds();
-        let lidar_enabled = actuator_state.lidar_enabled.load(Ordering::Relaxed);
-        let (linear, angular) = actuator_state.get_velocities();
+        // Check component states
+        let (vacuum, main_brush, side_brush) = component_state.get_component_speeds();
+        let lidar_enabled = component_state.lidar_enabled.load(Ordering::Relaxed);
+        let (linear, angular) = component_state.get_velocities();
 
-        // Motor mode is needed if any actuator is active OR wheel motor is explicitly enabled
-        let any_actuator_active = actuator_state.any_active();
+        // Motor mode is needed if any component is active OR wheel motor is explicitly enabled
+        let any_component_active = component_state.any_active();
 
-        // Send motor mode 0x02 when first actuator is enabled
-        if any_actuator_active && !actuator_state.motor_mode_set.load(Ordering::Relaxed) {
+        // Send motor mode 0x02 when first component is enabled
+        if any_component_active && !component_state.motor_mode_set.load(Ordering::Relaxed) {
             let pkt = cmd_motor_mode(0x02);
             if port.write_all(&pkt.to_bytes()).is_ok() {
-                actuator_state.motor_mode_set.store(true, Ordering::Relaxed);
+                component_state
+                    .motor_mode_set
+                    .store(true, Ordering::Relaxed);
                 log::info!("Motor mode set to navigation (0x02)");
                 // Wait 100ms for GD32 firmware to process mode switch
                 // This is a hardware requirement: the GD32F103 needs this time to
-                // reconfigure internal state before it can accept actuator commands.
+                // reconfigure internal state before it can accept component commands.
                 // Releasing the port lock during sleep allows other operations to proceed.
                 drop(port);
                 thread::sleep(Duration::from_millis(100));
                 continue; // Skip commands this cycle, send them next cycle
             }
-        } else if !any_actuator_active && actuator_state.motor_mode_set.load(Ordering::Relaxed) {
-            // Reset flag when all actuators are off
-            actuator_state
+        } else if !any_component_active && component_state.motor_mode_set.load(Ordering::Relaxed) {
+            // Reset flag when all components are off
+            component_state
                 .motor_mode_set
                 .store(false, Ordering::Relaxed);
         }
 
-        if actuator_state.motor_mode_set.load(Ordering::Relaxed) {
+        if component_state.motor_mode_set.load(Ordering::Relaxed) {
             // Send motor mode 0x02 periodically to keep GD32 in navigation mode
             let mode_pkt = cmd_motor_mode(0x02);
             let _ = port.write_all(&mode_pkt.to_bytes());
@@ -138,7 +140,7 @@ pub(super) fn heartbeat_loop(
                 );
             }
 
-            // Send actuator commands every cycle
+            // Send component commands every cycle
             if vacuum > 0 {
                 let pkt = cmd_air_pump(vacuum);
                 let _ = port.write_all(&pkt.to_bytes());
@@ -156,12 +158,12 @@ pub(super) fn heartbeat_loop(
 
             // Send lidar PWM if enabled
             if lidar_enabled {
-                let lidar_pwm = actuator_state.lidar_pwm.load(Ordering::Relaxed);
+                let lidar_pwm = component_state.lidar_pwm.load(Ordering::Relaxed);
                 let pkt = cmd_lidar_pwm(lidar_pwm as i32);
                 let _ = port.write_all(&pkt.to_bytes());
             }
         } else {
-            // No actuators active - send regular heartbeat
+            // No components active - send regular heartbeat
             if let Err(e) = port.write_all(&heartbeat_bytes) {
                 log::error!("Heartbeat send failed: {}", e);
             } else {

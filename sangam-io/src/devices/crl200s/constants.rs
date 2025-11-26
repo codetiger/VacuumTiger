@@ -25,8 +25,15 @@ pub const CMD_MOTOR_MODE: u8 = 0x65; // Motor mode switch (0x02 = navigation mod
 pub const CMD_LIDAR_POWER: u8 = 0x97; // Lidar power on/off
 pub const CMD_LIDAR_PWM: u8 = 0x71; // Lidar motor speed (0-100%)
 
+// Sensor control commands
+pub const CMD_CLIFF_IR_CONTROL: u8 = 0x78; // Cliff IR on/off (0=off, 1=on)
+pub const CMD_CLIFF_IR_DIRECTION: u8 = 0x79; // Cliff IR direction
+
 // Calibration commands
+pub const CMD_IMU_FACTORY_CALIBRATE: u8 = 0xA1; // Trigger factory IMU calibration
 pub const CMD_IMU_CALIBRATE_STATE: u8 = 0xA2; // Query IMU factory calibration state
+pub const CMD_COMPASS_CALIBRATE: u8 = 0xA3; // Start compass/geomagnetism calibration
+pub const CMD_COMPASS_CALIBRATION_STATE: u8 = 0xA4; // Query compass calibration state
 
 // System polling commands
 pub const CMD_REQUEST_STM32_DATA: u8 = 0x0D; // Request STM32 sensor data (polled every ~3s)

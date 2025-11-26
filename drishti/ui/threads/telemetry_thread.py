@@ -84,7 +84,18 @@ class TelemetryThread(QThread):
         self.wait()
 
     def send_command(self, command: dict) -> bool:
-        """Send a command through the existing connection."""
+        """Send a command through the existing connection.
+
+        Commands use the ComponentControl protocol:
+        {
+            "type": "ComponentControl",
+            "id": "drive" | "vacuum" | "lidar" | etc.,
+            "action": {
+                "type": "Enable" | "Disable" | "Reset" | "Configure",
+                "config": { ... }  # optional
+            }
+        }
+        """
         if not self.socket:
             logger.error("Cannot send command: not connected")
             return False

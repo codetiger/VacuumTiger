@@ -1,11 +1,11 @@
-//! Actuator state management for GD32 driver
+//! Component state management for GD32 driver
 //!
 //! This module defines the shared state used by the heartbeat thread to refresh
-//! actuator commands every 20ms. All fields use atomic types to allow lockless reads.
+//! component commands every 20ms. All fields use atomic types to allow lockless reads.
 
 use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, Ordering};
 
-/// Shared actuator state for periodic refresh
+/// Shared component state for periodic refresh
 ///
 /// All fields use atomic types to allow lockless reads by the heartbeat thread.
 /// The heartbeat thread reads these values every 20ms and sends corresponding commands.
@@ -21,13 +21,11 @@ use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, Ordering};
 /// - `linear_velocity`: Forward/backward velocity in mm/s (signed)
 /// - `angular_velocity`: Rotation velocity in mrad/s (signed)
 /// - `wheel_motor_enabled`: Explicit flag to keep mode 0x02 active even without motion
-/// - `led_state`: LED state value (0-255, sent on-demand only)
 #[derive(Default)]
-pub struct ActuatorState {
+pub struct ComponentState {
     pub vacuum: AtomicU8,
     pub main_brush: AtomicU8,
     pub side_brush: AtomicU8,
-    pub led_state: AtomicU8,
     pub motor_mode_set: AtomicBool,
     pub lidar_enabled: AtomicBool,
     pub lidar_pwm: AtomicU8,
@@ -36,8 +34,8 @@ pub struct ActuatorState {
     pub wheel_motor_enabled: AtomicBool,
 }
 
-impl ActuatorState {
-    /// Clear all actuator states (used by emergency stop)
+impl ComponentState {
+    /// Clear all component states (used by emergency stop)
     pub fn clear_all(&self) {
         self.vacuum.store(0, Ordering::Relaxed);
         self.main_brush.store(0, Ordering::Relaxed);
@@ -50,7 +48,7 @@ impl ActuatorState {
         self.motor_mode_set.store(false, Ordering::Relaxed);
     }
 
-    /// Check if any actuator is active (determines if motor mode 0x02 is needed)
+    /// Check if any component is active (determines if motor mode 0x02 is needed)
     pub fn any_active(&self) -> bool {
         self.vacuum.load(Ordering::Relaxed) > 0
             || self.main_brush.load(Ordering::Relaxed) > 0
@@ -67,8 +65,8 @@ impl ActuatorState {
         )
     }
 
-    /// Get actuator speeds (vacuum, main_brush, side_brush)
-    pub fn get_actuator_speeds(&self) -> (u8, u8, u8) {
+    /// Get component speeds (vacuum, main_brush, side_brush)
+    pub fn get_component_speeds(&self) -> (u8, u8, u8) {
         (
             self.vacuum.load(Ordering::Relaxed),
             self.main_brush.load(Ordering::Relaxed),

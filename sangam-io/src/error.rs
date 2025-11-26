@@ -72,6 +72,9 @@ pub enum Error {
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 
+    #[error("Invalid parameter: {0}")]
+    InvalidParameter(String),
+
     #[error("Unknown device type: {0}")]
     UnknownDevice(String),
 

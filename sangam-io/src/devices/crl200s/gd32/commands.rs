@@ -1,6 +1,7 @@
 //! Command handling for GD32 driver
 //!
 //! This module processes high-level Command enums and translates them to GD32 protocol packets.
+//! All commands use the unified `ComponentControl` pattern.
 //!
 //! # Unit Conversions
 //!
@@ -22,17 +23,23 @@
 //!
 //! These conversions are defined by the GD32F103 firmware protocol.
 
-use super::actuators;
 use super::protocol::{
-    cmd_imu_calibrate_state, cmd_motor_mode, cmd_motor_speed, cmd_motor_velocity,
+    cmd_air_pump, cmd_cliff_ir_control, cmd_cliff_ir_direction, cmd_compass_calibrate,
+    cmd_compass_calibration_state, cmd_imu_calibrate_state, cmd_imu_factory_calibrate,
+    cmd_led_state, cmd_lidar_power, cmd_lidar_pwm, cmd_main_brush, cmd_motor_mode, cmd_motor_speed,
+    cmd_motor_velocity, cmd_side_brush, Packet,
 };
-use super::state::ActuatorState;
-use crate::core::types::Command;
+use super::state::ComponentState;
+use crate::core::types::{Command, ComponentAction, SensorValue};
 use crate::error::{Error, Result};
 use serialport::SerialPort;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
+
+// ============================================================================
+// Constants
+// ============================================================================
 
 /// Conversion factor from m/s to GD32 velocity units (mm/s)
 const VELOCITY_TO_DEVICE_UNITS: f32 = 1000.0;
@@ -40,219 +47,427 @@ const VELOCITY_TO_DEVICE_UNITS: f32 = 1000.0;
 /// Default IMU calibration payload observed in R2D logs
 const IMU_DEFAULT_PAYLOAD: [u8; 4] = [0x10, 0x0E, 0x00, 0x00];
 
-/// Send IMU calibration state command (0xA2)
-fn send_imu_command(port: &Arc<Mutex<Box<dyn SerialPort>>>, payload: &[u8]) -> Result<()> {
-    let pkt = cmd_imu_calibrate_state(payload.to_vec());
-    let bytes = pkt.to_bytes();
-    log::info!(
-        "IMU command: payload={:02X?}, bytes={:02X?}",
-        payload,
-        bytes
-    );
+// Component IDs - use these instead of string literals to catch typos at compile time
+const ID_DRIVE: &str = "drive";
+const ID_VACUUM: &str = "vacuum";
+const ID_MAIN_BRUSH: &str = "main_brush";
+const ID_SIDE_BRUSH: &str = "side_brush";
+const ID_LED: &str = "led";
+const ID_LIDAR: &str = "lidar";
+const ID_IMU: &str = "imu";
+const ID_COMPASS: &str = "compass";
+const ID_CLIFF_IR: &str = "cliff_ir";
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+/// Helper to send a packet over the serial port
+fn send_packet(port: &Arc<Mutex<Box<dyn SerialPort>>>, pkt: &Packet) -> Result<()> {
     let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
-    port_guard.write_all(&bytes).map_err(Error::Io)?;
+    port_guard.write_all(&pkt.to_bytes()).map_err(Error::Io)?;
+    Ok(())
+}
+
+/// Handle Enable/Disable/Configure for speed-based components (vacuum, main_brush, side_brush)
+///
+/// These components share identical behavior:
+/// - Enable: Set to 100%
+/// - Disable: Set to 0%
+/// - Configure: Set to specified speed (0-100)
+fn handle_speed_component(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    state_field: &AtomicU8,
+    cmd_fn: fn(u8) -> Packet,
+    name: &str,
+    action: &ComponentAction,
+) -> Result<()> {
+    match action {
+        ComponentAction::Enable { .. } => {
+            log::info!("{} enable (100%)", name);
+            state_field.store(100, Ordering::Relaxed);
+            send_packet(port, &cmd_fn(100))
+        }
+        ComponentAction::Disable { .. } => {
+            log::info!("{} disable", name);
+            state_field.store(0, Ordering::Relaxed);
+            send_packet(port, &cmd_fn(0))
+        }
+        ComponentAction::Configure { ref config } => {
+            if let Some(SensorValue::U8(speed)) = config.get("speed") {
+                log::info!("{} speed={}", name, speed);
+                state_field.store(*speed, Ordering::Relaxed);
+                send_packet(port, &cmd_fn(*speed))?;
+            }
+            Ok(())
+        }
+        _ => Err(Error::NotImplemented(format!(
+            "{} does not support {:?}",
+            name, action
+        ))),
+    }
+}
+
+/// Execute emergency stop sequence
+///
+/// Clears all component states and sends stop commands in the correct sequence:
+/// 1. Clear all atomic state
+/// 2. Stop all components (vacuum, brushes, lidar)
+/// 3. Stop motors
+/// 4. Exit navigation mode
+fn emergency_stop(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    component_state: &Arc<ComponentState>,
+) -> Result<()> {
+    log::warn!("EMERGENCY STOP initiated!");
+
+    // Clear all component states first
+    component_state.clear_all();
+
+    // Send all component stop commands BEFORE motor velocity
+    let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
+
+    // Stop all components
+    let _ = port_guard.write_all(&cmd_air_pump(0).to_bytes());
+    let _ = port_guard.write_all(&cmd_main_brush(0).to_bytes());
+    let _ = port_guard.write_all(&cmd_side_brush(0).to_bytes());
+    let _ = port_guard.write_all(&cmd_lidar_pwm(0).to_bytes());
+    let _ = port_guard.write_all(&cmd_lidar_power(false).to_bytes());
+
+    // Stop motors
+    let _ = port_guard.write_all(&cmd_motor_velocity(0, 0).to_bytes());
+
+    // Exit navigation mode
+    let _ = port_guard.write_all(&cmd_motor_mode(0x00).to_bytes());
+
+    log::warn!("Emergency stop complete - all components and motors stopped");
     Ok(())
 }
 
 /// Send a command to the GD32
 ///
 /// This method processes high-level `Command` enums and translates them to
-/// GD32 protocol packets. Commands fall into several categories:
+/// GD32 protocol packets. All control uses the unified `ComponentControl` pattern.
 ///
-/// # Motion Commands
+/// # Component Control
 ///
-/// - `SetVelocity`: Stores velocity in atomic state for heartbeat to send continuously
-/// - `SetTankDrive`: Direct left/right wheel speeds (bypasses velocity control)
-/// - `Stop`: Zeroes velocity (heartbeat continues sending 0,0)
-/// - `EmergencyStop`: Immediately stops all actuators and motors, clears all state
-///
-/// # Actuator Commands
-///
-/// - `SetActuator`: Single actuator (vacuum, brush, side_brush)
-/// - `SetActuatorMultiple`: Batch actuator update (more efficient)
-///
-/// Both store state atomically and send commands immediately. The heartbeat thread
-/// will continue refreshing these commands every 20ms.
-///
-/// # Sensor Commands
-///
-/// - `EnableSensor`/`DisableSensor` for "wheel_motor": Controls motor mode 0x02
-/// - `EnableSensor` for "imu": Sends IMU calibration state command (0xA2) with default payload
-/// - `SetSensorConfig` for "imu": Sends IMU calibration with custom payload bytes
-/// - Other sensors: NotImplemented (GD32 doesn't support runtime sensor config)
+/// Unified control for all sensors and components via `ComponentControl`:
+/// - `drive`: Enable(mode), Disable (stop + mode 0x00), Reset (emergency stop), Configure(velocity/tank)
+/// - `vacuum`, `main_brush`, `side_brush`: Enable/Disable/Configure(speed)
+/// - `led`: Configure(state)
+/// - `lidar`: Enable(pwm)/Disable/Configure(pwm)
+/// - `imu`: Enable (query state), Reset (factory calibrate)
+/// - `compass`: Enable (query state), Reset (start calibration)
+/// - `cliff_ir`: Enable/Disable/Configure(direction)
 ///
 /// # Lifecycle Commands
 ///
 /// - `Shutdown`: Sets shutdown flag to stop threads gracefully
-/// - Others: NotImplemented (Sleep/Wake/Restart not supported by GD32 protocol)
 pub(super) fn send_command(
     port: &Arc<Mutex<Box<dyn SerialPort>>>,
-    actuator_state: &Arc<ActuatorState>,
+    component_state: &Arc<ComponentState>,
     shutdown: &Arc<AtomicBool>,
     cmd: Command,
 ) -> Result<()> {
-    let packet = match cmd {
-        // Motion Control
-        Command::SetVelocity { linear, angular } => {
-            // Convert m/s → mm/s and rad/s → mrad/s for GD32 protocol
-            let linear_units = (linear * VELOCITY_TO_DEVICE_UNITS) as i16;
-            let angular_units = (angular * VELOCITY_TO_DEVICE_UNITS) as i16;
-            // Store velocity for heartbeat to send continuously
-            actuator_state
-                .linear_velocity
-                .store(linear_units, Ordering::Relaxed);
-            actuator_state
-                .angular_velocity
-                .store(angular_units, Ordering::Relaxed);
-            log::info!(
-                "SetVelocity: linear={:.3} m/s ({} units), angular={:.3} rad/s ({} units)",
-                linear,
-                linear_units,
-                angular,
-                angular_units
-            );
-            cmd_motor_velocity(linear_units, angular_units)
-        }
-        Command::SetTankDrive { left, right } => {
-            // Convert left/right wheel speeds from m/s to mm/s
-            let left_units = (left * VELOCITY_TO_DEVICE_UNITS) as i16;
-            let right_units = (right * VELOCITY_TO_DEVICE_UNITS) as i16;
-            cmd_motor_speed(left_units, right_units)
-        }
-        Command::Stop => cmd_motor_velocity(0, 0),
-        Command::EmergencyStop => {
-            actuators::emergency_stop(port, actuator_state)?;
-            return Ok(());
-        }
-
-        // Actuator Control
-        Command::SetActuator { ref id, value } => {
-            let speed = (value.clamp(0.0, 100.0)) as u8;
-            let Some(pkt) = actuators::actuator_command(actuator_state, id, speed) else {
-                return Ok(()); // Unknown actuator already logged
-            };
-            let bytes = pkt.to_bytes();
-            log::info!("SetActuator: {} = {}, bytes: {:02X?}", id, speed, bytes);
-            let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
-            port_guard.write_all(&bytes).map_err(Error::Io)?;
-            return Ok(());
-        }
-        Command::SetActuatorMultiple { ref actuators } => {
-            // Send multiple actuator commands
-            for (id, value) in actuators {
-                let speed = (value.clamp(0.0, 100.0)) as u8;
-                let Some(pkt) = actuators::actuator_command(actuator_state, id, speed) else {
-                    continue; // Unknown actuator already logged
-                };
-                let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
-                port_guard.write_all(&pkt.to_bytes()).map_err(Error::Io)?;
-            }
-            return Ok(());
-        }
-
-        // Sensor Configuration
-        Command::SetSensorConfig {
-            ref sensor_id,
-            ref config,
-        } => {
-            if sensor_id == "imu" {
-                // Extract payload from config, or use default
-                let payload: Vec<u8> =
-                    if let Some(crate::core::types::SensorValue::String(hex_str)) =
-                        config.get("payload")
-                    {
-                        // Parse hex string like "100E0000" to bytes
-                        hex_str
-                            .as_bytes()
-                            .chunks(2)
-                            .filter_map(|chunk| {
-                                std::str::from_utf8(chunk)
-                                    .ok()
-                                    .and_then(|s| u8::from_str_radix(s, 16).ok())
-                            })
-                            .collect()
-                    } else {
-                        IMU_DEFAULT_PAYLOAD.to_vec()
-                    };
-                return send_imu_command(port, &payload);
-            }
-            return Err(Error::NotImplemented(format!(
-                "SetSensorConfig for {}",
-                sensor_id
-            )));
-        }
-        Command::ResetSensor { ref sensor_id } => {
-            if sensor_id == "imu" {
-                return send_imu_command(port, &IMU_DEFAULT_PAYLOAD);
-            }
-            return Err(Error::NotImplemented(format!("ResetSensor {}", sensor_id)));
-        }
-        Command::EnableSensor { ref sensor_id } => {
-            if sensor_id == "wheel_motor" {
-                log::info!("Enabling wheel motor");
-                actuator_state
-                    .wheel_motor_enabled
-                    .store(true, Ordering::Relaxed);
-                return Ok(());
-            }
-            if sensor_id == "imu" {
-                return send_imu_command(port, &IMU_DEFAULT_PAYLOAD);
-            }
-            return Err(Error::NotImplemented(format!("EnableSensor {}", sensor_id)));
-        }
-        Command::DisableSensor { ref sensor_id } => {
-            if sensor_id == "wheel_motor" {
-                log::info!("Disabling wheel motor");
-                actuator_state
-                    .wheel_motor_enabled
-                    .store(false, Ordering::Relaxed);
-                // Also stop any motion
-                actuator_state.linear_velocity.store(0, Ordering::Relaxed);
-                actuator_state.angular_velocity.store(0, Ordering::Relaxed);
-
-                // Send motor mode 0x00 to exit navigation mode
-                let mode_pkt = cmd_motor_mode(0x00);
-                let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
-                port_guard
-                    .write_all(&mode_pkt.to_bytes())
-                    .map_err(Error::Io)?;
-                log::info!("Motor mode set to idle (0x00)");
-
-                return Ok(());
-            }
-            return Err(Error::NotImplemented(format!(
-                "DisableSensor {}",
-                sensor_id
-            )));
-        }
-
-        // Safety Configuration
-        Command::SetSafetyLimits { .. } => {
-            return Err(Error::NotImplemented("SetSafetyLimits".to_string()));
-        }
-        Command::ClearEmergencyStop => {
-            return Err(Error::NotImplemented("ClearEmergencyStop".to_string()));
+    match cmd {
+        // Unified Component Control
+        Command::ComponentControl { ref id, ref action } => {
+            handle_component_control(port, component_state, id, action)
         }
 
         // System Lifecycle
-        Command::Sleep => {
-            return Err(Error::NotImplemented("Sleep".to_string()));
-        }
-        Command::Wake => {
-            return Err(Error::NotImplemented("Wake".to_string()));
-        }
         Command::Shutdown => {
             shutdown.store(true, Ordering::Relaxed);
-            return Ok(());
+            Ok(())
         }
-        Command::Restart => {
-            return Err(Error::NotImplemented("Restart".to_string()));
+    }
+}
+
+/// Handle ComponentControl commands for all sensors and components
+fn handle_component_control(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    component_state: &Arc<ComponentState>,
+    id: &str,
+    action: &ComponentAction,
+) -> Result<()> {
+    match id {
+        // === DRIVE (motion control) ===
+        ID_DRIVE => handle_drive(port, component_state, action),
+
+        // === SPEED-BASED COMPONENTS (vacuum, main_brush, side_brush) ===
+        ID_VACUUM => handle_speed_component(
+            port,
+            &component_state.vacuum,
+            cmd_air_pump,
+            "Vacuum",
+            action,
+        ),
+        ID_MAIN_BRUSH => handle_speed_component(
+            port,
+            &component_state.main_brush,
+            cmd_main_brush,
+            "Main brush",
+            action,
+        ),
+        ID_SIDE_BRUSH => handle_speed_component(
+            port,
+            &component_state.side_brush,
+            cmd_side_brush,
+            "Side brush",
+            action,
+        ),
+
+        // === LED ===
+        ID_LED => handle_led(port, action),
+
+        // === LIDAR ===
+        ID_LIDAR => handle_lidar(port, component_state, action),
+
+        // === IMU ===
+        ID_IMU => handle_imu(port, action),
+
+        // === COMPASS ===
+        ID_COMPASS => handle_compass(port, action),
+
+        // === CLIFF IR ===
+        ID_CLIFF_IR => handle_cliff_ir(port, action),
+
+        // === UNSUPPORTED ===
+        _ => Err(Error::NotImplemented(format!(
+            "ComponentControl id='{}' action={:?}",
+            id, action
+        ))),
+    }
+}
+
+// ============================================================================
+// Component-specific handlers
+// ============================================================================
+
+/// Handle drive (motion control) commands
+fn handle_drive(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    component_state: &Arc<ComponentState>,
+    action: &ComponentAction,
+) -> Result<()> {
+    match action {
+        ComponentAction::Enable { ref config } => {
+            // Enable motor with mode (default 0x02 nav mode)
+            let mode = config
+                .as_ref()
+                .and_then(|c| c.get("mode"))
+                .and_then(|v| match v {
+                    SensorValue::U8(m) => Some(*m),
+                    _ => None,
+                })
+                .unwrap_or(0x02);
+            log::info!("Drive enable (mode 0x{:02X})", mode);
+            component_state
+                .wheel_motor_enabled
+                .store(true, Ordering::Relaxed);
+            send_packet(port, &cmd_motor_mode(mode))
         }
-    };
+        ComponentAction::Disable { .. } => {
+            // Stop: zero velocity and set mode 0x00
+            log::info!("Drive disable (stop + mode 0x00)");
+            component_state
+                .wheel_motor_enabled
+                .store(false, Ordering::Relaxed);
+            component_state.linear_velocity.store(0, Ordering::Relaxed);
+            component_state.angular_velocity.store(0, Ordering::Relaxed);
+            // Send velocity 0,0 then mode 0x00
+            send_packet(port, &cmd_motor_velocity(0, 0))?;
+            send_packet(port, &cmd_motor_mode(0x00))
+        }
+        ComponentAction::Reset { .. } => {
+            // Emergency stop: immediate halt, all components off
+            log::info!("Drive emergency stop");
+            emergency_stop(port, component_state)
+        }
+        ComponentAction::Configure { ref config } => {
+            // Check for velocity mode (linear + angular) - continuous
+            if let (Some(SensorValue::F32(linear)), Some(SensorValue::F32(angular))) =
+                (config.get("linear"), config.get("angular"))
+            {
+                let linear_units = (linear * VELOCITY_TO_DEVICE_UNITS) as i16;
+                let angular_units = (angular * VELOCITY_TO_DEVICE_UNITS) as i16;
+                // Store velocity for heartbeat to send continuously
+                component_state
+                    .linear_velocity
+                    .store(linear_units, Ordering::Relaxed);
+                component_state
+                    .angular_velocity
+                    .store(angular_units, Ordering::Relaxed);
+                log::info!(
+                    "Drive velocity: linear={:.3} m/s ({} units), angular={:.3} rad/s ({} units)",
+                    linear,
+                    linear_units,
+                    angular,
+                    angular_units
+                );
+                return send_packet(port, &cmd_motor_velocity(linear_units, angular_units));
+            }
+            // Check for tank drive mode (left + right) - continuous
+            if let (Some(SensorValue::F32(left)), Some(SensorValue::F32(right))) =
+                (config.get("left"), config.get("right"))
+            {
+                let left_units = (left * VELOCITY_TO_DEVICE_UNITS) as i16;
+                let right_units = (right * VELOCITY_TO_DEVICE_UNITS) as i16;
+                log::info!(
+                    "Drive tank: left={:.3} m/s ({} units), right={:.3} m/s ({} units)",
+                    left,
+                    left_units,
+                    right,
+                    right_units
+                );
+                return send_packet(port, &cmd_motor_speed(left_units, right_units));
+            }
+            Err(Error::InvalidParameter(
+                "drive Configure requires (linear, angular) or (left, right)".into(),
+            ))
+        }
+    }
+}
 
-    let bytes = packet.to_bytes();
-    let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
-    port_guard.write_all(&bytes).map_err(Error::Io)?;
+/// Handle LED commands
+fn handle_led(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+    match action {
+        ComponentAction::Configure { ref config } => {
+            if let Some(SensorValue::U8(state)) = config.get("state") {
+                log::info!("LED state={}", state);
+                send_packet(port, &cmd_led_state(*state))?;
+            }
+            Ok(())
+        }
+        _ => Err(Error::NotImplemented(format!(
+            "LED only supports Configure, got {:?}",
+            action
+        ))),
+    }
+}
 
-    Ok(())
+/// Handle lidar commands
+fn handle_lidar(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    component_state: &Arc<ComponentState>,
+    action: &ComponentAction,
+) -> Result<()> {
+    match action {
+        ComponentAction::Enable { ref config } => {
+            // Get PWM from config or use default (60%)
+            let pwm = config
+                .as_ref()
+                .and_then(|c| c.get("pwm"))
+                .and_then(|v| match v {
+                    SensorValue::U8(p) => Some(*p as i32),
+                    _ => None,
+                })
+                .unwrap_or(60);
+
+            log::info!("Lidar enable (PWM: {}%)", pwm);
+
+            // Power on first, then set PWM
+            send_packet(port, &cmd_lidar_power(true))?;
+            send_packet(port, &cmd_lidar_pwm(pwm))?;
+
+            // Update state for heartbeat
+            component_state.lidar_enabled.store(true, Ordering::Relaxed);
+            component_state
+                .lidar_pwm
+                .store(pwm as u8, Ordering::Relaxed);
+
+            Ok(())
+        }
+        ComponentAction::Disable { .. } => {
+            log::info!("Lidar disable");
+
+            // Clear state first
+            component_state
+                .lidar_enabled
+                .store(false, Ordering::Relaxed);
+            component_state.lidar_pwm.store(0, Ordering::Relaxed);
+
+            // PWM to 0 first, then power off
+            send_packet(port, &cmd_lidar_pwm(0))?;
+            send_packet(port, &cmd_lidar_power(false))
+        }
+        ComponentAction::Configure { ref config } => {
+            if let Some(SensorValue::U8(pwm)) = config.get("pwm") {
+                log::info!("Lidar PWM: {}%", pwm);
+                component_state.lidar_pwm.store(*pwm, Ordering::Relaxed);
+                send_packet(port, &cmd_lidar_pwm(*pwm as i32))?;
+            }
+            Ok(())
+        }
+        _ => Err(Error::NotImplemented(format!(
+            "Lidar does not support {:?}",
+            action
+        ))),
+    }
+}
+
+/// Handle IMU commands
+fn handle_imu(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+    match action {
+        ComponentAction::Enable { .. } => {
+            let pkt = cmd_imu_calibrate_state(IMU_DEFAULT_PAYLOAD.to_vec());
+            log::info!(
+                "IMU calibration state query (0xA2): payload={:02X?}, bytes={:02X?}",
+                IMU_DEFAULT_PAYLOAD,
+                pkt.to_bytes()
+            );
+            send_packet(port, &pkt)
+        }
+        ComponentAction::Reset { .. } => {
+            log::info!("IMU factory reset (0xA1)");
+            send_packet(port, &cmd_imu_factory_calibrate())
+        }
+        _ => Err(Error::NotImplemented(format!(
+            "IMU only supports Enable/Reset, got {:?}",
+            action
+        ))),
+    }
+}
+
+/// Handle compass commands
+fn handle_compass(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+    match action {
+        ComponentAction::Enable { .. } => {
+            log::info!("Compass calibration state query (0xA4)");
+            send_packet(port, &cmd_compass_calibration_state())
+        }
+        ComponentAction::Reset { .. } => {
+            log::info!("Compass calibration start (0xA3)");
+            send_packet(port, &cmd_compass_calibrate())
+        }
+        _ => Err(Error::NotImplemented(format!(
+            "Compass only supports Enable/Reset, got {:?}",
+            action
+        ))),
+    }
+}
+
+/// Handle cliff IR commands
+fn handle_cliff_ir(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+    match action {
+        ComponentAction::Enable { .. } => {
+            log::info!("Cliff IR enable (0x78)");
+            send_packet(port, &cmd_cliff_ir_control(true))
+        }
+        ComponentAction::Disable { .. } => {
+            log::info!("Cliff IR disable (0x78)");
+            send_packet(port, &cmd_cliff_ir_control(false))
+        }
+        ComponentAction::Configure { ref config } => {
+            if let Some(SensorValue::U8(dir)) = config.get("direction") {
+                log::info!("Cliff IR direction (0x79): {}", dir);
+                send_packet(port, &cmd_cliff_ir_direction(*dir))?;
+            }
+            Ok(())
+        }
+        _ => Err(Error::NotImplemented(format!(
+            "Cliff IR does not support {:?}",
+            action
+        ))),
+    }
 }

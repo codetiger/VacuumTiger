@@ -29,6 +29,18 @@ impl CRL200SDriver {
             lidar: None,
         })
     }
+
+    /// Shutdown all subsystems (lidar driver, GD32)
+    fn shutdown_all(&mut self) {
+        // Shutdown lidar driver first
+        if let Some(ref mut lidar) = self.lidar {
+            let _ = lidar.shutdown();
+        }
+        // Shutdown GD32 (handles lidar motor shutdown via Shutdown command)
+        if let Some(ref mut gd32) = self.gd32 {
+            let _ = gd32.shutdown();
+        }
+    }
 }
 
 impl DeviceDriver for CRL200SDriver {
@@ -67,7 +79,7 @@ impl DeviceDriver for CRL200SDriver {
             let mut lidar = Delta2DDriver::new(&self.config.hardware.lidar_port);
             lidar.start(lidar_data)?;
             self.lidar = Some(lidar);
-            log::info!("Lidar driver started (motor OFF - use EnableSensor command to start)");
+            log::info!("Lidar driver started (motor OFF - use ComponentControl to enable)");
         } else {
             log::warn!("No lidar sensor data configured, skipping lidar initialization");
         }
@@ -79,39 +91,11 @@ impl DeviceDriver for CRL200SDriver {
     fn send_command(&mut self, cmd: Command) -> Result<()> {
         // Handle shutdown command specially
         if matches!(cmd, Command::Shutdown) {
-            // Shutdown lidar first
-            if let Some(ref mut lidar) = self.lidar {
-                lidar.shutdown()?;
-            }
-            // Disable lidar motor via GD32
-            if let Some(ref gd32) = self.gd32 {
-                let _ = gd32.enable_lidar(false, 0);
-            }
-            // Shutdown GD32
-            if let Some(ref mut gd32) = self.gd32 {
-                gd32.shutdown()?;
-            }
+            self.shutdown_all();
             return Ok(());
         }
 
-        // Handle sensor enable/disable for lidar
-        match &cmd {
-            Command::EnableSensor { sensor_id } if sensor_id == "lidar" => {
-                if let Some(ref gd32) = self.gd32 {
-                    gd32.enable_lidar(true, 60)?;
-                }
-                return Ok(());
-            }
-            Command::DisableSensor { sensor_id } if sensor_id == "lidar" => {
-                if let Some(ref gd32) = self.gd32 {
-                    gd32.enable_lidar(false, 0)?;
-                }
-                return Ok(());
-            }
-            _ => {}
-        }
-
-        // Forward other commands to GD32
+        // Forward all commands to GD32 (including lidar)
         if let Some(ref gd32) = self.gd32 {
             gd32.send_command(cmd)?;
         }
@@ -122,17 +106,6 @@ impl DeviceDriver for CRL200SDriver {
 
 impl Drop for CRL200SDriver {
     fn drop(&mut self) {
-        // Shutdown lidar first
-        if let Some(ref mut lidar) = self.lidar {
-            let _ = lidar.shutdown();
-        }
-        // Disable lidar motor
-        if let Some(ref gd32) = self.gd32 {
-            let _ = gd32.enable_lidar(false, 0);
-        }
-        // Shutdown GD32
-        if let Some(ref mut gd32) = self.gd32 {
-            let _ = gd32.shutdown();
-        }
+        self.shutdown_all();
     }
 }

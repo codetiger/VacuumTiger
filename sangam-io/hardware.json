@@ -12,8 +12,6 @@
     "sensor_groups": [
       {
         "id": "gd32_version",
-        "source": "gd32",
-        "poll_interval_ms": 0,
         "sensors": [
           { "id": "version_string", "type": "String" },
           { "id": "version_code", "type": "I32" }
@@ -21,12 +19,11 @@
       },
       {
         "id": "gd32_status",
-        "source": "gd32",
         "sensors": [
           { "id": "is_charging", "type": "Bool" },
           { "id": "is_battery_connected", "type": "Bool" },
-          { "id": "wheel_left", "type": "U16", "unit": "ticks" },
-          { "id": "wheel_right", "type": "U16", "unit": "ticks" },
+          { "id": "wheel_left", "type": "U16" },
+          { "id": "wheel_right", "type": "U16" },
           { "id": "bumper_left", "type": "Bool" },
           { "id": "bumper_right", "type": "Bool" },
           { "id": "cliff_left_side", "type": "Bool" },
@@ -40,37 +37,9 @@
       },
       {
         "id": "lidar",
-        "source": "delta2d",
         "sensors": [
-          { "id": "scan", "type": "PointCloud2D", "unit": "meters" }
+          { "id": "scan", "type": "PointCloud2D" }
         ]
-      }
-    ],
-
-    "actuators": [
-      {
-        "id": "drive",
-        "type": "DifferentialDrive",
-        "modes": ["velocity", "tank"],
-        "default_mode": "velocity"
-      },
-      {
-        "id": "vacuum",
-        "type": "Pwm",
-        "min": 0,
-        "max": 100
-      },
-      {
-        "id": "brush",
-        "type": "Pwm",
-        "min": 0,
-        "max": 100
-      },
-      {
-        "id": "side_brush",
-        "type": "Pwm",
-        "min": 0,
-        "max": 100
       }
     ]
   },

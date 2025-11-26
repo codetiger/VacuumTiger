@@ -44,38 +44,24 @@ Everything is defined in `hardware.json`:
     "name": "CRL-200S Vacuum Robot",
     "hardware": {
       "gd32_port": "/dev/ttyS3",
-      "lidar_port": "/dev/ttyS1"
+      "lidar_port": "/dev/ttyS1",
+      "heartbeat_interval_ms": 20
     },
     "sensor_groups": [
       {
-        "id": "navigation",
-        "source": "gd32",
+        "id": "gd32_status",
         "sensors": [
-          { "id": "wheel_left", "type": "U16", "unit": "ticks" },
-          { "id": "wheel_right", "type": "U16", "unit": "ticks" },
-          { "id": "cliff_left", "type": "Bool" },
-          { "id": "bumper_front", "type": "Bool" }
+          { "id": "wheel_left", "type": "U16" },
+          { "id": "wheel_right", "type": "U16" },
+          { "id": "bumper_left", "type": "Bool" },
+          { "id": "cliff_left_front", "type": "Bool" }
         ]
       },
       {
         "id": "lidar",
-        "source": "delta2d",
         "sensors": [
           { "id": "scan", "type": "PointCloud2D" }
         ]
-      }
-    ],
-    "actuators": [
-      {
-        "id": "drive",
-        "type": "DifferentialDrive",
-        "modes": ["velocity", "tank"]
-      },
-      {
-        "id": "vacuum",
-        "type": "Pwm",
-        "min": 0,
-        "max": 100
       }
     ]
   },
@@ -119,26 +105,44 @@ The protocol is robot-agnostic. Any client that speaks the wire format can contr
 
 ### Commands (Client → Daemon)
 
+All commands use the unified `ComponentControl` pattern:
+
 ```json
 {
   "topic": "command",
   "payload": {
     "type": "Command",
     "command": {
-      "SetVelocity": { "linear": 0.2, "angular": 0.0 }
+      "type": "ComponentControl",
+      "id": "drive",
+      "action": {
+        "type": "Configure",
+        "config": { "linear": {"F32": 0.2}, "angular": {"F32": 0.0} }
+      }
     }
   }
 }
 ```
 
-### Available Commands
+### Component Actions
 
-| Category | Commands |
-|----------|----------|
-| Motion | `SetVelocity`, `SetTankDrive`, `Stop`, `EmergencyStop` |
-| Actuators | `SetActuator`, `SetActuatorMultiple` |
-| Sensors | `EnableSensor`, `DisableSensor`, `SetSensorConfig` |
-| System | `Sleep`, `Wake`, `Shutdown`, `Restart` |
+| Action | Description | Example |
+|--------|-------------|---------|
+| `Enable` | Activate component | `{"type": "Enable"}` |
+| `Disable` | Deactivate component | `{"type": "Disable"}` |
+| `Reset` | Emergency stop / factory reset | `{"type": "Reset"}` |
+| `Configure` | Set parameters (velocity, speed) | `{"type": "Configure", "config": {...}}` |
+
+### Supported Components
+
+| Component | Enable | Disable | Configure |
+|-----------|--------|---------|-----------|
+| `drive` | Nav mode | Stop | `{linear, angular}` or `{left, right}` |
+| `vacuum` | 100% | Off | `{speed: U8}` |
+| `main_brush` | 100% | Off | `{speed: U8}` |
+| `side_brush` | 100% | Off | `{speed: U8}` |
+| `lidar` | Power on | Power off | - |
+| `led` | - | - | `{state: U8}` |
 
 ## Adding a New Robot Platform
 
@@ -151,7 +155,8 @@ VacuumTiger is designed to support any robot hardware. Here's how to add a new p
   "device": {
     "type": "my_robot",
     "hardware": {
-      "motor_port": "/dev/ttyUSB0"
+      "motor_port": "/dev/ttyUSB0",
+      "heartbeat_interval_ms": 20
     },
     "sensor_groups": [
       {
@@ -161,10 +166,11 @@ VacuumTiger is designed to support any robot hardware. Here's how to add a new p
           { "id": "right_encoder", "type": "I32" }
         ]
       }
-    ],
-    "actuators": [
-      { "id": "drive", "type": "DifferentialDrive", "modes": ["velocity"] }
     ]
+  },
+  "network": {
+    "bind_address": "0.0.0.0:5555",
+    "wire_format": "json"
   }
 }
 ```
@@ -187,10 +193,10 @@ impl DeviceDriver for MyRobotDriver {
 
     fn send_command(&mut self, cmd: Command) -> Result<()> {
         match cmd {
-            Command::SetVelocity { linear, angular } => {
-                // Convert to your hardware protocol
+            Command::ComponentControl { id, action } => {
+                // Handle drive, vacuum, lidar, etc.
             }
-            // Handle other commands...
+            Command::Shutdown => { /* ... */ }
         }
     }
 }

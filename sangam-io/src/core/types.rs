@@ -41,56 +41,19 @@ pub enum SensorValue {
     PointCloud2D(Vec<(f32, f32, u8)>), // (angle_rad, distance_m, quality)
 }
 
-/// Actuator types
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum ActuatorType {
-    DifferentialDrive {
-        modes: Vec<String>,
-        default_mode: String,
-    },
-    Pwm {
-        min: i32,
-        max: i32,
-    },
-}
-
 /// Sensor specification from config
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorSpec {
     pub id: String,
     #[serde(rename = "type")]
     pub sensor_type: SensorType,
-    pub unit: Option<String>,
 }
 
 /// Sensor group specification from config
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorGroupSpec {
     pub id: String,
-    pub source: String,
-    #[serde(default = "default_poll_interval")]
-    pub poll_interval_ms: u64,
     pub sensors: Vec<SensorSpec>,
-}
-
-fn default_poll_interval() -> u64 {
-    10 // 100Hz default
-}
-
-/// Actuator specification from config
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActuatorSpec {
-    pub id: String,
-    #[serde(flatten)]
-    pub config: ActuatorType,
-}
-
-/// Device capabilities from config
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceCapabilities {
-    pub sensor_groups: Vec<SensorGroupSpec>,
-    pub actuators: Vec<ActuatorSpec>,
 }
 
 /// Runtime sensor group data (shared between threads)
@@ -136,55 +99,62 @@ impl SensorGroupData {
     }
 }
 
+/// Actions that can be performed on components (sensors and actuators)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ComponentAction {
+    /// Turn on/activate the component with optional config (e.g., mode)
+    Enable {
+        #[serde(default)]
+        config: Option<HashMap<String, SensorValue>>,
+    },
+    /// Turn off/deactivate the component with optional config
+    Disable {
+        #[serde(default)]
+        config: Option<HashMap<String, SensorValue>>,
+    },
+    /// Reset to factory defaults / trigger calibration with optional config
+    Reset {
+        #[serde(default)]
+        config: Option<HashMap<String, SensorValue>>,
+    },
+    /// Configure component parameters (speed, velocity - continuous updates)
+    Configure {
+        config: HashMap<String, SensorValue>,
+    },
+}
+
 /// Commands to device
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Command {
-    // Motion Control
-    /// Velocity mode: linear (m/s) + angular (rad/s)
-    SetVelocity { linear: f32, angular: f32 },
-    /// Tank mode: left/right wheel speeds (m/s)
-    SetTankDrive { left: f32, right: f32 },
-    /// Graceful deceleration to stop
-    Stop,
-    /// Immediate halt, no deceleration
-    EmergencyStop,
-
-    // Actuator Control
-    /// Single actuator control (0-100%)
-    SetActuator { id: String, value: f32 },
-    /// Atomic multi-actuator control
-    SetActuatorMultiple { actuators: Vec<(String, f32)> },
-
-    // Sensor Configuration
-    /// Configure sensor parameters at runtime
-    SetSensorConfig {
-        sensor_id: String,
-        config: std::collections::HashMap<String, SensorValue>,
+    // Unified Component Control
+    /// Control any component (sensor or actuator) with standard actions
+    ///
+    /// # Motion Control (id: "drive")
+    /// - `Configure { linear: F32, angular: F32 }` - velocity mode (m/s, rad/s)
+    /// - `Configure { left: F32, right: F32 }` - tank drive mode (m/s)
+    /// - `Disable` - stop (zero velocity)
+    /// - `Reset` - emergency stop (immediate halt, all actuators off)
+    ///
+    /// # Actuators
+    /// - `wheel_motor`: Enable/Disable motor mode
+    /// - `vacuum`, `main_brush`, `side_brush`: Enable/Disable/Configure(speed)
+    /// - `led`: Configure(state)
+    /// - `lidar`: Enable/Disable
+    ///
+    /// # Sensors
+    /// - `imu`: Enable (query state), Reset (factory calibrate)
+    /// - `compass`: Enable (query state), Reset (start calibration)
+    /// - `cliff_ir`: Enable/Disable/Configure(direction)
+    ComponentControl {
+        /// Component identifier (e.g., "drive", "vacuum", "imu", "cliff_ir")
+        id: String,
+        /// Action to perform
+        action: ComponentAction,
     },
-    /// Reset sensor to factory defaults
-    ResetSensor { sensor_id: String },
-    /// Enable a sensor
-    EnableSensor { sensor_id: String },
-    /// Disable a sensor
-    DisableSensor { sensor_id: String },
-
-    // Safety Configuration
-    /// Set velocity limits
-    SetSafetyLimits {
-        max_linear: Option<f32>,
-        max_angular: Option<f32>,
-    },
-    /// Clear emergency stop state
-    ClearEmergencyStop,
 
     // System Lifecycle
-    /// Enter low-power mode
-    Sleep,
-    /// Exit low-power mode
-    Wake,
     /// Graceful daemon shutdown
     Shutdown,
-    /// Restart device driver
-    Restart,
 }

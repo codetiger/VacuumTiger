@@ -110,7 +110,9 @@ fn main() -> Result<()> {
     let bind_addr = &config.network.bind_address;
     let listener = TcpListener::bind(bind_addr)
         .map_err(|e| error::Error::Other(format!("Failed to bind to {}: {}", bind_addr, e)))?;
-    listener.set_nonblocking(true).ok();
+    if let Err(e) = listener.set_nonblocking(true) {
+        log::warn!("Failed to set nonblocking mode: {}", e);
+    }
 
     log::info!("TCP server listening on {}", bind_addr);
     log::info!("SangamIO running. Press Ctrl-C to stop.");

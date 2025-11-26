@@ -132,43 +132,53 @@ class MainWindow(QMainWindow):
         self._send_command(command)
 
         cmd_type = command.get('type', '')
+        component_id = command.get('id', '')
+        action = command.get('action', {})
+        action_type = action.get('type', '') if isinstance(action, dict) else ''
 
-        # Handle lidar enable/disable from panel
-        if cmd_type == 'EnableSensor' and command.get('sensor_id') == 'lidar':
-            self.lidar_enabled = True
-            self.status_bar.showMessage("Lidar ENABLED", 2000)
-            return
-        elif cmd_type == 'DisableSensor' and command.get('sensor_id') == 'lidar':
-            self.lidar_enabled = False
-            self.status_bar.showMessage("Lidar DISABLED", 2000)
-            return
+        # Handle ComponentControl commands
+        if cmd_type == 'ComponentControl':
+            # Handle lidar enable/disable
+            if component_id == 'lidar':
+                if action_type == 'Enable':
+                    self.lidar_enabled = True
+                    self.status_bar.showMessage("Lidar ENABLED", 2000)
+                elif action_type == 'Disable':
+                    self.lidar_enabled = False
+                    self.status_bar.showMessage("Lidar DISABLED", 2000)
+                return
 
-        # Handle wheel motor enable/disable from panel
-        if cmd_type == 'EnableSensor' and command.get('sensor_id') == 'wheel_motor':
-            self.motor_enabled = True
-            self.status_bar.showMessage("Wheel Motor ENABLED", 2000)
-            return
-        elif cmd_type == 'DisableSensor' and command.get('sensor_id') == 'wheel_motor':
-            self.motor_enabled = False
-            self.status_bar.showMessage("Wheel Motor DISABLED", 2000)
-            return
+            # Handle drive enable/disable
+            if component_id == 'drive':
+                if action_type == 'Enable':
+                    self.motor_enabled = True
+                    self.status_bar.showMessage("Drive ENABLED", 2000)
+                elif action_type == 'Disable':
+                    self.motor_enabled = False
+                    self.status_bar.showMessage("Drive DISABLED", 2000)
+                return
 
-        # Handle actuator commands
-        actuator = command.get('id', 'unknown')
-        value = command.get('value', 0)
+            # Handle actuator commands (vacuum, main_brush, side_brush)
+            if component_id in ('vacuum', 'main_brush', 'side_brush'):
+                config = action.get('config', {})
+                speed = 0
+                if 'speed' in config:
+                    speed_val = config['speed']
+                    speed = speed_val.get('U8', 0) if isinstance(speed_val, dict) else speed_val
 
-        # Sync main window state with panel
-        if actuator == 'vacuum':
-            self.vacuum_enabled = value > 0
-        elif actuator == 'side_brush':
-            self.side_brush_enabled = value > 0
-        elif actuator == 'brush':
-            self.main_brush_enabled = value > 0
+                # Sync main window state with panel
+                if component_id == 'vacuum':
+                    self.vacuum_enabled = speed > 0
+                elif component_id == 'side_brush':
+                    self.side_brush_enabled = speed > 0
+                elif component_id == 'main_brush':
+                    self.main_brush_enabled = speed > 0
 
-        # Update robot diagram animation
-        self.robot_diagram.update_actuator(actuator, value)
-
-        self.status_bar.showMessage(f"{actuator}: {value}%", 2000)
+                # Map component_id back to actuator for robot diagram
+                actuator = component_id if component_id != 'main_brush' else 'brush'
+                self.robot_diagram.update_actuator(actuator, speed)
+                self.status_bar.showMessage(f"{component_id}: {speed}%", 2000)
+                return
 
     @pyqtSlot(bool, str)
     def _on_connection_status(self, connected: bool, message: str):
@@ -190,18 +200,37 @@ class MainWindow(QMainWindow):
             self.lidar_enabled = not self.lidar_enabled
             self.control_panel.set_lidar_enabled(self.lidar_enabled)
             if self.lidar_enabled:
-                self._send_command({"type": "EnableSensor", "sensor_id": "lidar"})
+                self._send_command({
+                    "type": "ComponentControl",
+                    "id": "lidar",
+                    "action": {"type": "Enable"}
+                })
                 self.status_bar.showMessage("Lidar ENABLED", 2000)
                 logger.info("Lidar enabled")
             else:
-                self._send_command({"type": "DisableSensor", "sensor_id": "lidar"})
+                self._send_command({
+                    "type": "ComponentControl",
+                    "id": "lidar",
+                    "action": {"type": "Disable"}
+                })
                 self.status_bar.showMessage("Lidar DISABLED", 2000)
                 logger.info("Lidar disabled")
         elif event.key() == Qt.Key_S:
             # Toggle side brush
             self.side_brush_enabled = not self.side_brush_enabled
-            speed = 100.0 if self.side_brush_enabled else 0.0
-            self._send_command({"type": "SetActuator", "id": "side_brush", "value": speed})
+            speed = 100 if self.side_brush_enabled else 0
+            if speed > 0:
+                self._send_command({
+                    "type": "ComponentControl",
+                    "id": "side_brush",
+                    "action": {"type": "Configure", "config": {"speed": {"U8": speed}}}
+                })
+            else:
+                self._send_command({
+                    "type": "ComponentControl",
+                    "id": "side_brush",
+                    "action": {"type": "Disable"}
+                })
             self.control_panel.set_actuator_state("side_brush", self.side_brush_enabled)
             state = "ON" if self.side_brush_enabled else "OFF"
             self.status_bar.showMessage(f"Side Brush {state}", 2000)
@@ -209,8 +238,19 @@ class MainWindow(QMainWindow):
         elif event.key() == Qt.Key_B:
             # Toggle main brush (rolling brush)
             self.main_brush_enabled = not self.main_brush_enabled
-            speed = 100.0 if self.main_brush_enabled else 0.0
-            self._send_command({"type": "SetActuator", "id": "brush", "value": speed})
+            speed = 100 if self.main_brush_enabled else 0
+            if speed > 0:
+                self._send_command({
+                    "type": "ComponentControl",
+                    "id": "main_brush",
+                    "action": {"type": "Configure", "config": {"speed": {"U8": speed}}}
+                })
+            else:
+                self._send_command({
+                    "type": "ComponentControl",
+                    "id": "main_brush",
+                    "action": {"type": "Disable"}
+                })
             self.control_panel.set_actuator_state("brush", self.main_brush_enabled)
             state = "ON" if self.main_brush_enabled else "OFF"
             self.status_bar.showMessage(f"Main Brush {state}", 2000)
@@ -218,24 +258,43 @@ class MainWindow(QMainWindow):
         elif event.key() == Qt.Key_V:
             # Toggle vacuum pump
             self.vacuum_enabled = not self.vacuum_enabled
-            speed = 100.0 if self.vacuum_enabled else 0.0
-            self._send_command({"type": "SetActuator", "id": "vacuum", "value": speed})
+            speed = 100 if self.vacuum_enabled else 0
+            if speed > 0:
+                self._send_command({
+                    "type": "ComponentControl",
+                    "id": "vacuum",
+                    "action": {"type": "Configure", "config": {"speed": {"U8": speed}}}
+                })
+            else:
+                self._send_command({
+                    "type": "ComponentControl",
+                    "id": "vacuum",
+                    "action": {"type": "Disable"}
+                })
             self.control_panel.set_actuator_state("vacuum", self.vacuum_enabled)
             state = "ON" if self.vacuum_enabled else "OFF"
             self.status_bar.showMessage(f"Vacuum {state}", 2000)
             logger.info(f"Vacuum {state}")
         elif event.key() == Qt.Key_M:
-            # Toggle wheel motor
+            # Toggle wheel motor (drive)
             self.motor_enabled = not self.motor_enabled
             self.control_panel.set_motor_enabled(self.motor_enabled)
             if self.motor_enabled:
-                self._send_command({"type": "EnableSensor", "sensor_id": "wheel_motor"})
-                self.status_bar.showMessage("Wheel Motor ENABLED", 2000)
-                logger.info("Wheel motor enabled")
+                self._send_command({
+                    "type": "ComponentControl",
+                    "id": "drive",
+                    "action": {"type": "Enable"}
+                })
+                self.status_bar.showMessage("Drive ENABLED", 2000)
+                logger.info("Drive enabled")
             else:
-                self._send_command({"type": "DisableSensor", "sensor_id": "wheel_motor"})
-                self.status_bar.showMessage("Wheel Motor DISABLED", 2000)
-                logger.info("Wheel motor disabled")
+                self._send_command({
+                    "type": "ComponentControl",
+                    "id": "drive",
+                    "action": {"type": "Disable"}
+                })
+                self.status_bar.showMessage("Drive DISABLED", 2000)
+                logger.info("Drive disabled")
         elif event.key() == Qt.Key_Escape:
             self.close()
         # Arrow keys for drive control (only when motor is enabled)
@@ -279,11 +338,17 @@ class MainWindow(QMainWindow):
             super().keyReleaseEvent(event)
 
     def _send_velocity(self):
-        """Send current velocity to robot."""
+        """Send current velocity to robot using ComponentControl protocol."""
         command = {
-            "type": "SetVelocity",
-            "linear": self.linear_velocity,
-            "angular": self.angular_velocity
+            "type": "ComponentControl",
+            "id": "drive",
+            "action": {
+                "type": "Configure",
+                "config": {
+                    "linear": {"F32": self.linear_velocity},
+                    "angular": {"F32": self.angular_velocity}
+                }
+            }
         }
         self._send_command(command)
         self.control_panel.set_velocity(self.linear_velocity, self.angular_velocity)

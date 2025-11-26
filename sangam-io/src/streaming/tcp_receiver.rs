@@ -36,9 +36,9 @@ impl TcpReceiver {
         log::info!("TCP receiver started for client: {:?}", stream.peer_addr());
 
         // Set read timeout so we can check shutdown flag
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
-            .ok();
+        if let Err(e) = stream.set_read_timeout(Some(std::time::Duration::from_millis(500))) {
+            log::warn!("Failed to set read timeout: {}", e);
+        }
 
         log::debug!("Entering receiver loop");
 

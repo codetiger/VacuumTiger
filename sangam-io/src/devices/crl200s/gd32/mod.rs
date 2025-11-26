@@ -1,7 +1,7 @@
 //! GD32 motor controller driver
 //!
 //! This module manages communication with the GD32F103 microcontroller that controls
-//! the CRL-200S robot's motors, actuators, and sensors.
+//! the CRL-200S robot's motors, components, and sensors.
 //!
 //! # Architecture
 //!
@@ -13,7 +13,7 @@
 //!    - Sends continuous commands to maintain GD32 watchdog timer
 //!    - Manages motor mode state machine (0x00 idle ↔ 0x02 navigation)
 //!    - Sends velocity commands when motors active
-//!    - Refreshes actuator states (vacuum, brushes, lidar PWM)
+//!    - Refreshes component states (vacuum, brushes, lidar PWM)
 //!    - Uses blocking mutex locks to guarantee timing
 //!
 //! 2. **Reader Thread** (continuous):
@@ -24,16 +24,16 @@
 //!
 //! ## Motor Mode State Machine
 //!
-//! The GD32 requires motor mode 0x02 to be set before any actuators work:
+//! The GD32 requires motor mode 0x02 to be set before any components work:
 //!
 //! ```text
-//! ┌─────────────┐  any_actuator_active  ┌──────────────────┐
+//! ┌─────────────┐  any_component_active  ┌──────────────────┐
 //! │ Mode 0x00   │ ──────────────────────▶│ Mode 0x02        │
 //! │ (Idle)      │                        │ (Navigation)     │
 //! │             │◀────────────────────── │                  │
-//! └─────────────┘  all_actuators_off     └──────────────────┘
+//! └─────────────┘  all_components_off    └──────────────────┘
 //!     • Regular heartbeat (0x06)            • Velocity (0x66)
-//!                                            • Actuators enabled
+//!                                            • Components enabled
 //! ```
 //!
 //! ## Synchronization Strategy
@@ -46,17 +46,16 @@
 //!
 //! Critical sections are kept minimal (<1ms) and released before sleeping.
 //! Atomic types (`AtomicU8`, `AtomicI16`, `AtomicBool`) handle lockless state reads
-//! for velocity/actuator values.
+//! for velocity/component values.
 //!
 //! ## Safety Properties
 //!
 //! - Heartbeat never stops while driver active (20-50ms requirement)
-//! - All velocities/actuators zeroed on shutdown
+//! - All velocities/components zeroed on shutdown
 //! - Motor mode 0x02 sent periodically to prevent timeout
 //! - Emergency stop clears all states and disables motor mode
 
 // Submodules
-mod actuators;
 mod commands;
 mod heartbeat;
 pub mod protocol;
@@ -64,7 +63,7 @@ mod reader;
 mod state;
 
 // Public re-exports
-pub use state::ActuatorState;
+pub use state::ComponentState;
 
 // Internal imports
 use crate::core::types::{Command, SensorGroupData};
@@ -85,7 +84,7 @@ pub struct GD32Driver {
     shutdown: Arc<AtomicBool>,
     heartbeat_handle: Option<JoinHandle<()>>,
     reader_handle: Option<JoinHandle<()>>,
-    actuator_state: Arc<ActuatorState>,
+    component_state: Arc<ComponentState>,
 }
 
 impl GD32Driver {
@@ -102,7 +101,7 @@ impl GD32Driver {
             shutdown: Arc::new(AtomicBool::new(false)),
             heartbeat_handle: None,
             reader_handle: None,
-            actuator_state: Arc::new(ActuatorState::default()),
+            component_state: Arc::new(ComponentState::default()),
         })
     }
 
@@ -127,16 +126,8 @@ impl GD32Driver {
             thread::sleep(Duration::from_millis(INIT_RETRY_DELAY_MS));
         }
 
-        // Initialize lidar to off state
-        actuators::enable_lidar(&self.port, &self.actuator_state, false, 0)?;
-
         log::info!("GD32 initialization sequence sent");
         Ok(())
-    }
-
-    /// Enable or disable the lidar motor via GD32
-    pub fn enable_lidar(&self, enable: bool, pwm_speed: i32) -> Result<()> {
-        actuators::enable_lidar(&self.port, &self.actuator_state, enable, pwm_speed)
     }
 
     /// Start heartbeat and reader threads
@@ -148,12 +139,12 @@ impl GD32Driver {
         let shutdown = Arc::clone(&self.shutdown);
         let port = Arc::clone(&self.port);
         let interval_ms = self.heartbeat_interval_ms;
-        let actuator_state = Arc::clone(&self.actuator_state);
+        let component_state = Arc::clone(&self.component_state);
 
         // Start heartbeat thread
         let heartbeat_shutdown = Arc::clone(&shutdown);
         let heartbeat_port = Arc::clone(&port);
-        let heartbeat_actuators = Arc::clone(&actuator_state);
+        let heartbeat_components = Arc::clone(&component_state);
         self.heartbeat_handle = Some(
             thread::Builder::new()
                 .name("gd32-heartbeat".to_string())
@@ -162,7 +153,7 @@ impl GD32Driver {
                         heartbeat_port,
                         heartbeat_shutdown,
                         interval_ms,
-                        heartbeat_actuators,
+                        heartbeat_components,
                     );
                 })
                 .map_err(|e| Error::Other(format!("Failed to spawn heartbeat thread: {}", e)))?,
@@ -186,7 +177,7 @@ impl GD32Driver {
 
     /// Send a command to the GD32
     pub fn send_command(&self, cmd: Command) -> Result<()> {
-        commands::send_command(&self.port, &self.actuator_state, &self.shutdown, cmd)
+        commands::send_command(&self.port, &self.component_state, &self.shutdown, cmd)
     }
 
     /// Shutdown the driver

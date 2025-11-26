@@ -593,20 +593,38 @@ class ControlPanel(QWidget):
         layout.addStretch()
 
     def _on_actuator_command(self, actuator_id: str, speed: float):
-        """Handle actuator control command."""
-        command = {
-            "type": "SetActuator",
-            "id": actuator_id,
-            "value": speed
-        }
+        """Handle actuator control command using ComponentControl protocol."""
+        # Map old actuator IDs to new component IDs
+        component_id = actuator_id
+        if actuator_id == "brush":
+            component_id = "main_brush"
+
+        if speed > 0:
+            command = {
+                "type": "ComponentControl",
+                "id": component_id,
+                "action": {
+                    "type": "Configure",
+                    "config": {"speed": {"U8": int(speed)}}
+                }
+            }
+        else:
+            command = {
+                "type": "ComponentControl",
+                "id": component_id,
+                "action": {"type": "Disable"}
+            }
         self.command_requested.emit(command)
 
     def _on_led_command(self, value: int):
-        """Handle LED control command."""
+        """Handle LED control command using ComponentControl protocol."""
         command = {
-            "type": "SetActuator",
+            "type": "ComponentControl",
             "id": "led",
-            "value": float(value)
+            "action": {
+                "type": "Configure",
+                "config": {"state": {"U8": value}}
+            }
         }
         self.command_requested.emit(command)
 
@@ -623,28 +641,50 @@ class ControlPanel(QWidget):
             self.lidar_control.update_status(True)
 
     def _on_lidar_toggled(self, enabled: bool):
-        """Handle lidar toggle from UI button."""
+        """Handle lidar toggle from UI button using ComponentControl protocol."""
         if enabled:
-            command = {"type": "EnableSensor", "sensor_id": "lidar"}
+            command = {
+                "type": "ComponentControl",
+                "id": "lidar",
+                "action": {"type": "Enable"}
+            }
         else:
-            command = {"type": "DisableSensor", "sensor_id": "lidar"}
+            command = {
+                "type": "ComponentControl",
+                "id": "lidar",
+                "action": {"type": "Disable"}
+            }
         self.command_requested.emit(command)
 
     def _on_velocity_changed(self, linear: float, angular: float):
-        """Handle velocity change from drive control."""
+        """Handle velocity change from drive control using ComponentControl protocol."""
         command = {
-            "type": "SetVelocity",
-            "linear": linear,
-            "angular": angular
+            "type": "ComponentControl",
+            "id": "drive",
+            "action": {
+                "type": "Configure",
+                "config": {
+                    "linear": {"F32": linear},
+                    "angular": {"F32": angular}
+                }
+            }
         }
         self.command_requested.emit(command)
 
     def _on_motor_toggled(self, enabled: bool):
-        """Handle motor toggle from drive control."""
+        """Handle motor toggle from drive control using ComponentControl protocol."""
         if enabled:
-            command = {"type": "EnableSensor", "sensor_id": "wheel_motor"}
+            command = {
+                "type": "ComponentControl",
+                "id": "drive",
+                "action": {"type": "Enable"}
+            }
         else:
-            command = {"type": "DisableSensor", "sensor_id": "wheel_motor"}
+            command = {
+                "type": "ComponentControl",
+                "id": "drive",
+                "action": {"type": "Disable"}
+            }
         self.command_requested.emit(command)
 
     def set_lidar_enabled(self, enabled: bool):

@@ -37,10 +37,14 @@ impl TcpPublisher {
         log::info!("TCP publisher started for client: {:?}", stream.peer_addr());
 
         // Set TCP_NODELAY for low latency
-        stream.set_nodelay(true).ok();
+        if let Err(e) = stream.set_nodelay(true) {
+            log::warn!("Failed to set TCP_NODELAY: {}", e);
+        }
 
         // Set write timeout to avoid blocking forever
-        stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+        if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(5))) {
+            log::warn!("Failed to set write timeout: {}", e);
+        }
 
         // Track last sent timestamps for each group
         let mut last_sent: HashMap<String, u64> = HashMap::new();
