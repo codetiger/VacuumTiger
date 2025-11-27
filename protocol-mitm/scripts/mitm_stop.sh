@@ -73,8 +73,8 @@ LATEST_LOG=$(ls -t "$LOG_DIR"/mitm_capture_run${CURRENT_RUN}_*.log 2>/dev/null |
 
 if [ -n "$LATEST_LOG" ]; then
     LOG_SIZE=$(du -h "$LATEST_LOG" | awk '{print $1}')
-    TX_PACKETS=$(grep -c "^\\[.*\\] TX " "$LATEST_LOG" 2>/dev/null || echo "?")
-    RX_PACKETS=$(grep -c "^\\[.*\\] RX " "$LATEST_LOG" 2>/dev/null || echo "?")
+    TX_PACKETS=$(grep -c ",TX," "$LATEST_LOG" 2>/dev/null || echo "?")
+    RX_PACKETS=$(grep -c ",RX," "$LATEST_LOG" 2>/dev/null || echo "?")
 
     echo ""
     echo "Capture Statistics:"

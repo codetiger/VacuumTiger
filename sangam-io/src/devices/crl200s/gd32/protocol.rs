@@ -6,9 +6,9 @@ use crate::devices::crl200s::constants::{
     CMD_COMPASS_CALIBRATE, CMD_COMPASS_CALIBRATION_STATE, CMD_HEARTBEAT, CMD_IMU_CALIBRATE_STATE,
     CMD_IMU_FACTORY_CALIBRATE, CMD_INITIALIZE, CMD_LIDAR_POWER, CMD_LIDAR_PWM,
     CMD_MAIN_BOARD_POWER, CMD_MAIN_BOARD_RESTART, CMD_MAIN_BRUSH, CMD_MCU_SLEEP, CMD_MOTOR_MODE,
-    CMD_MOTOR_SPEED, CMD_MOTOR_VELOCITY, CMD_REQUEST_STM32_DATA, CMD_RESET_ERROR_CODE,
-    CMD_SIDE_BRUSH, CMD_VERSION, CMD_WAKEUP_ACK, MAX_BUFFER_SIZE, MIN_PACKET_SIZE, SYNC_BYTE_1,
-    SYNC_BYTE_2,
+    CMD_MOTOR_SPEED, CMD_MOTOR_VELOCITY, CMD_PROTOCOL_SYNC, CMD_REQUEST_STM32_DATA,
+    CMD_RESET_ERROR_CODE, CMD_SIDE_BRUSH, CMD_VERSION, CMD_WAKEUP_ACK, MAX_BUFFER_SIZE,
+    MIN_PACKET_SIZE, SYNC_BYTE_1, SYNC_BYTE_2,
 };
 use crate::error::{Error, Result};
 use std::io::Read;
@@ -390,6 +390,17 @@ pub fn cmd_wakeup_ack() -> Packet {
 /// No payload required.
 pub fn cmd_reset_error_code() -> Packet {
     Packet::new(CMD_RESET_ERROR_CODE, vec![])
+}
+
+/// Protocol sync command (0x0C)
+///
+/// First command sent at boot to wake GD32 and synchronize protocol.
+/// This is a fire-and-forget command - AuxCtrl does not wait for ACK.
+/// GD32 echoes this command back after ~270ms.
+///
+/// Payload: `[0x01]` = enable/sync
+pub fn cmd_protocol_sync() -> Packet {
+    Packet::new(CMD_PROTOCOL_SYNC, vec![0x01])
 }
 
 #[cfg(test)]

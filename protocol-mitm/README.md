@@ -22,12 +22,11 @@ protocol-mitm/
 ├── src/
 │   └── main.rs           # Serial MITM logger binary
 ├── scripts/              # Robot-side automation scripts
-│   ├── mitm_boot_setup.sh    # Initial MITM configuration
-│   ├── mitm_cleanup.sh       # Remove MITM setup
-│   ├── mitm_disable.sh       # Temporarily disable MITM
-│   ├── mitm_enable.sh        # Re-enable MITM
-│   ├── mitm_init.sh          # Initialize MITM for new session
-│   └── mitm_stop.sh          # Stop MITM cleanly
+│   ├── mitm_boot_setup.sh    # Initial MITM configuration at boot
+│   ├── mitm_cleanup.sh       # Remove MITM setup, restore ports
+│   ├── mitm_disable.sh       # Disable MITM mode, archive logs
+│   ├── mitm_enable.sh        # Enable MITM mode for next boot
+│   └── mitm_stop.sh          # Stop current capture run
 ├── tools/                # Development machine tools
 │   ├── mitm_deploy_all.sh    # Deploy MITM to robot
 │   ├── mitm_disable.sh       # Remote disable
@@ -110,19 +109,22 @@ AuxCtrl → /dev/ttyS3 (symlink) → /tmp/ttyS3_tap (PTY slave)
 
 ### Log Format
 
-```
-[timestamp] TX <bytes> bytes
-  HEX: FA FB 07 A2 10 0E 00 00 B0 10
-  PKT: CMD=0xA2 LEN=7
-       (LIDAR_PREP - Preparation command)
+Simple CSV format for easy parsing:
 
-[timestamp] GPIO_233: 0 -> 1 (Lidar Power ON)
-
-[timestamp] RX <bytes> bytes
-  HEX: FA FB 63 15 01 00 00 00 04 00 ...
-  PKT: CMD=0x15 LEN=99
-       (STATUS - Sensor/IMU/Battery data)
 ```
+# MITM Session Run 1 - 2024-11-27T14:30:22+08:00
+# Format: timestamp_us,direction,data
+1764579266055103,TX,FA FB 07 A2 10 0E 00 00 B0 10
+1764579266100000,GPIO_INIT,0
+1764579266326787,RX,FA FB 63 15 01 00 00 00 04 00 ...
+1764579266500000,GPIO,0->1
+# Session ended - TX:15234 pkts/213276 bytes, RX:15189 pkts/1503711 bytes
+```
+
+**Columns:**
+- `timestamp_us`: Microsecond-precision Unix timestamp
+- `direction`: `TX` (AuxCtrl→GD32), `RX` (GD32→AuxCtrl), `GPIO` (state change), `GPIO_INIT` (initial state)
+- `data`: Space-separated hex bytes or GPIO state transition
 
 ## Results
 

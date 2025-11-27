@@ -28,7 +28,8 @@ use super::protocol::{
     cmd_compass_calibrate, cmd_compass_calibration_state, cmd_imu_calibrate_state,
     cmd_imu_factory_calibrate, cmd_led_state, cmd_lidar_power, cmd_lidar_pwm, cmd_main_board_power,
     cmd_main_board_restart, cmd_main_brush, cmd_mcu_sleep, cmd_motor_mode, cmd_motor_speed,
-    cmd_motor_velocity, cmd_reset_error_code, cmd_side_brush, cmd_wakeup_ack, Packet,
+    cmd_motor_velocity, cmd_protocol_sync, cmd_reset_error_code, cmd_side_brush, cmd_wakeup_ack,
+    Packet,
 };
 use super::state::ComponentState;
 use crate::core::types::{Command, ComponentAction, SensorValue};
@@ -177,6 +178,12 @@ pub(super) fn send_command(
         // Unified Component Control
         Command::ComponentControl { ref id, ref action } => {
             handle_component_control(port, component_state, id, action)
+        }
+
+        // Protocol Commands
+        Command::ProtocolSync => {
+            log::info!("Protocol sync (0x0C)");
+            send_packet(port, &cmd_protocol_sync())
         }
 
         // System Lifecycle

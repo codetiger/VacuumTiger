@@ -50,67 +50,12 @@ fn timestamp_micros() -> u128 {
         .as_micros()
 }
 
-fn format_timestamp(micros: u128) -> String {
-    format!("{}.{:06}", micros / 1_000_000, micros % 1_000_000)
-}
-
 fn log_packet(log: &mut File, direction: &str, data: &[u8]) -> io::Result<()> {
     let ts = timestamp_micros();
 
-    writeln!(
-        log,
-        "[{}] {} {} bytes",
-        format_timestamp(ts),
-        direction,
-        data.len()
-    )?;
-
-    // Hex dump
-    write!(log, "  HEX: ")?;
-    for byte in data {
-        write!(log, "{:02X} ", byte)?;
-    }
-    writeln!(log)?;
-
-    // Try to decode as GD32 packet (FA FB header)
-    if data.len() >= 4 && data[0] == 0xFA && data[1] == 0xFB {
-        let len = data[2] as usize;
-        let cmd = data[3];
-        writeln!(log, "  PKT: CMD=0x{:02X} LEN={}", cmd, len)?;
-
-        // Decode common commands
-        match cmd {
-            0x08 => writeln!(log, "       (INIT - Initialization sequence)")?,
-            0x15 => writeln!(log, "       (STATUS - Sensor/IMU/Battery data)")?,
-            0x66 => writeln!(log, "       (HEARTBEAT - Keepalive packet)")?,
-            0x06 => writeln!(log, "       (WAKE - Enable command)")?,
-            0x07 => writeln!(log, "       (SETUP - System configuration)")?,
-            0x8D => writeln!(log, "       (LED - Button LED state)")?,
-            0x97 => {
-                if data.len() >= 5 {
-                    let power_state = data[4];
-                    writeln!(
-                        log,
-                        "       (LIDAR_POWER - GPIO 233 = {})",
-                        if power_state == 1 { "ON" } else { "OFF" }
-                    )?;
-                } else {
-                    writeln!(log, "       (LIDAR_POWER - Incomplete packet)")?;
-                }
-            }
-            0x71 => {
-                if data.len() >= 8 {
-                    let pwm = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-                    writeln!(log, "       (LIDAR_PWM - Speed = {}%)", pwm)?;
-                } else {
-                    writeln!(log, "       (LIDAR_PWM - Incomplete packet)")?;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    writeln!(log)?;
+    // Simple CSV format: timestamp_us,direction,hex_bytes
+    let hex_str: String = data.iter().map(|b| format!("{:02X} ", b)).collect();
+    writeln!(log, "{},{},{}", ts, direction, hex_str.trim_end())?;
     log.flush()?;
     Ok(())
 }
@@ -175,6 +120,17 @@ fn create_pty() -> io::Result<(RawFd, String)> {
             .to_string_lossy()
             .into_owned();
 
+        // Configure slave for raw mode BEFORE closing, so when AuxCtrl opens it,
+        // binary data passes through without escape encoding
+        let mut termios: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(slave, &mut termios) == 0 {
+            libc::cfmakeraw(&mut termios);
+            // Also set 115200 baud to match expected serial settings
+            libc::cfsetispeed(&mut termios, libc::B115200);
+            libc::cfsetospeed(&mut termios, libc::B115200);
+            libc::tcsetattr(slave, libc::TCSANOW, &termios);
+        }
+
         libc::close(slave);
 
         Ok((master, slave_name))
@@ -201,15 +157,8 @@ fn read_gpio_233() -> io::Result<u8> {
 /// Log GPIO state change
 fn log_gpio_change(log: &mut File, old_state: u8, new_state: u8) -> io::Result<()> {
     let ts = timestamp_micros();
-    writeln!(
-        log,
-        "[{}] GPIO_233: {} -> {} (Lidar Power {})",
-        format_timestamp(ts),
-        old_state,
-        new_state,
-        if new_state == 1 { "ON" } else { "OFF" }
-    )?;
-    writeln!(log)?;
+    // CSV format: timestamp_us,GPIO,old->new
+    writeln!(log, "{},GPIO,{}->{}", ts, old_state, new_state)?;
     log.flush()?;
     Ok(())
 }
@@ -223,13 +172,7 @@ fn spawn_gpio_monitor(log_file: Arc<Mutex<File>>) -> std::thread::JoinHandle<()>
         {
             let ts = timestamp_micros();
             if let Ok(mut log) = log_file.lock() {
-                let _ = writeln!(
-                    log,
-                    "[{}] GPIO_233: Initial state = {}",
-                    format_timestamp(ts),
-                    last_state
-                );
-                let _ = writeln!(log);
+                let _ = writeln!(log, "{},GPIO_INIT,{}", ts, last_state);
                 let _ = log.flush();
             }
         }
@@ -289,17 +232,16 @@ fn main() -> io::Result<()> {
             .open(&log_filename)?,
     ));
 
-    // Write session header
+    // Write session header as comment (CSV compatible)
     {
         let mut log = log_file.lock().unwrap();
-        writeln!(log, "=")?;
-        writeln!(log, "=== MITM Session Started ===")?;
-        writeln!(log, "Run Number: {}", run_number)?;
-        writeln!(log, "Timestamp: {}", chrono::Local::now().to_rfc3339())?;
-        writeln!(log, "Real port: {}", REAL_PORT)?;
-        writeln!(log, "Virtual port: {}", VIRTUAL_PORT)?;
-        writeln!(log, "GPIO Monitoring: Enabled (GPIO 233)")?;
-        writeln!(log, "===\n")?;
+        writeln!(
+            log,
+            "# MITM Session Run {} - {}",
+            run_number,
+            chrono::Local::now().to_rfc3339()
+        )?;
+        writeln!(log, "# Format: timestamp_us,direction,data")?;
         log.flush()?;
     }
 
@@ -319,13 +261,9 @@ fn main() -> io::Result<()> {
     // Create pseudo-terminal
     println!("Creating virtual serial port...");
     let (pty_master, pty_slave_name) = create_pty()?;
-
-    // Configure PTY to raw mode to prevent data escaping
-    configure_serial(pty_master)?;
-    println!(
-        "✓ Virtual port created and configured at: {}",
-        pty_slave_name
-    );
+    // NOTE: Do NOT configure PTY master with termios - leave it in default state
+    // AuxCtrl will configure the slave side as it expects a serial port
+    println!("✓ Virtual port created at: {}", pty_slave_name);
 
     // Create symlink
     println!("Creating symlink {} -> {}", VIRTUAL_PORT, pty_slave_name);
@@ -413,16 +351,14 @@ fn main() -> io::Result<()> {
     let _ = gpio_thread.join();
     println!("✓ GPIO thread stopped");
 
-    // Write session footer with statistics
+    // Write session footer as comment
     {
         let mut log = log_file.lock().unwrap();
-        writeln!(log, "\n=== MITM Session Ended ===")?;
-        writeln!(log, "End Timestamp: {}", chrono::Local::now().to_rfc3339())?;
-        writeln!(log, "TX Packets: {}", tx_packets)?;
-        writeln!(log, "RX Packets: {}", rx_packets)?;
-        writeln!(log, "TX Bytes: {}", tx_bytes)?;
-        writeln!(log, "RX Bytes: {}", rx_bytes)?;
-        writeln!(log, "===\n")?;
+        writeln!(
+            log,
+            "# Session ended - TX:{} pkts/{} bytes, RX:{} pkts/{} bytes",
+            tx_packets, tx_bytes, rx_packets, rx_bytes
+        )?;
         log.flush()?;
     }
 

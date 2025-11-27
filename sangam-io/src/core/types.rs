@@ -156,6 +156,13 @@ pub enum Command {
         action: ComponentAction,
     },
 
+    // Protocol Commands
+    /// Protocol sync - first command to wake GD32 and synchronize protocol
+    ///
+    /// This is a fire-and-forget command. GD32 echoes it back after ~270ms.
+    /// Typically sent once at boot before any other commands.
+    ProtocolSync,
+
     // System Lifecycle
     /// Graceful daemon shutdown
     Shutdown,

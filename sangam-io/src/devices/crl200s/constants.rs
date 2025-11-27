@@ -42,6 +42,7 @@ pub const CMD_REQUEST_STM32_DATA: u8 = 0x0D; // Request STM32 sensor data (polle
 pub const CMD_MCU_SLEEP: u8 = 0x04; // Put GD32 MCU to sleep
 pub const CMD_WAKEUP_ACK: u8 = 0x05; // Acknowledge wakeup from sleep
 pub const CMD_RESET_ERROR_CODE: u8 = 0x0A; // Reset/clear error codes
+pub const CMD_PROTOCOL_SYNC: u8 = 0x0C; // Protocol sync - first command at boot, wakes GD32
 
 // Power management commands
 pub const CMD_MAIN_BOARD_POWER: u8 = 0x99; // Main board (A33) power control

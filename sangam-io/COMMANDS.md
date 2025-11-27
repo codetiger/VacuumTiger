@@ -21,56 +21,119 @@ All commands use the packet format: `[0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_H] [
 - **MEDIUM**: Found in reverse-engineered code OR observed in logs, but not fully tested
 - **LOW**: Single source, purpose inferred from context
 
-| Hex | Name | Payload | Implemented | R2D Usage | Confidence | Reason |
-|-----|------|---------|-------------|-----------|------------|--------|
+| Hex | Name | Payload | Implemented | MITM Usage | Confidence | Reason |
+|-----|------|---------|-------------|------------|------------|--------|
 | **Heartbeat/System** |
-| 0x06 | Heartbeat | None | ✅ | 606x | HIGH | Working in SangamIO, matches AuxCtrl `packetHeartBeat` |
-| 0x07 | Version Request | None | ✅ | 3x | HIGH | Working in SangamIO, matches AuxCtrl `packetRequireSystemVersion` |
-| 0x08 | Initialize/IMU Zero | None | ✅ | 13x | HIGH | Working in SangamIO, matches AuxCtrl `packetSetIMUZero`, no CRC |
+| 0x06 | Heartbeat | None | ✅ | 1264x | HIGH | Working in SangamIO, matches AuxCtrl `packetHeartBeat` |
+| 0x07 | Version Request | None | ✅ | 2x | HIGH | Working in SangamIO, matches AuxCtrl `packetRequireSystemVersion` |
+| 0x08 | Initialize/IMU Zero | None | ✅ | 1x | HIGH | Working in SangamIO, matches AuxCtrl `packetSetIMUZero`, no CRC |
 | 0x04 | MCU Sleep | None | ✅ | 0 | MEDIUM | `ComponentControl { id: "mcu", action: Disable }` |
 | 0x05 | Wakeup Ack | None | ✅ | 0 | MEDIUM | `ComponentControl { id: "mcu", action: Enable }` |
 | 0x0A | Reset Error Code | None | ✅ | 1x | HIGH | `ComponentControl { id: "mcu", action: Reset }` |
-| 0x0D | Request STM32 Data | None | ✅ | 98x | HIGH | Internal driver polling every ~3s in heartbeat loop |
+| 0x0C | Protocol Sync | 1 byte | ✅ | 1x | HIGH | First cmd at boot, wakes GD32, payload 0x01 |
+| 0x0D | Request STM32 Data | None | ✅ | 86x | HIGH | Internal driver polling every ~3s in heartbeat loop |
 | **Motor Control** |
-| 0x65 | Motor Mode | 1 byte | ✅ | 4x | HIGH | Working in SangamIO, 0x00=idle, 0x02=nav mode |
-| 0x66 | Motor Velocity | 8 bytes | ✅ | 6627x | HIGH | Working in SangamIO, primary motion control |
-| 0x67 | Motor Speed | 4 bytes | ✅ | 0 | MEDIUM | Implemented but not used in R2D, direct wheel control |
-| 0x68 | Air Pump (Vacuum) | 2 bytes | ✅ | 0 | HIGH | Working in SangamIO, matches AuxCtrl `packetBlowerSpeed` |
-| 0x69 | Side Brush | 1 byte | ✅ | 15x | HIGH | Working in SangamIO, matches AuxCtrl `packetBrushSpeed` |
-| 0x6A | Main Brush | 1 byte | ✅ | 18x | HIGH | Working in SangamIO, matches AuxCtrl `packetRollingSpeed` |
-| 0x6B | Unknown Actuator | 1 byte | ❌ | 2x | LOW | Only observed in R2D log with payload 0x00, purpose unknown |
+| 0x65 | Motor Mode | 1 byte | ✅ | 5x | HIGH | Working in SangamIO, 0x00=idle, 0x02=nav mode |
+| 0x66 | Motor Velocity | 8 bytes | ✅ | 11473x | HIGH | Working in SangamIO, primary motion control |
+| 0x67 | Motor Speed | 4 bytes | ✅ | 0 | MEDIUM | Implemented but not used, direct wheel control |
+| 0x68 | Air Pump (Vacuum) | 2 bytes | ✅ | 1x | HIGH | Working in SangamIO, matches AuxCtrl `packetBlowerSpeed` |
+| 0x69 | Side Brush | 1 byte | ✅ | 32x | HIGH | Working in SangamIO, matches AuxCtrl `packetBrushSpeed` |
+| 0x6A | Main Brush | 1 byte | ✅ | 31x | HIGH | Working in SangamIO, matches AuxCtrl `packetRollingSpeed` |
+| 0x6B | Motor Controller Init | 1 byte | ❌ | 95x | HIGH | Boot handshake: 0x00=off, 0x64=ready. Pulsed for 2s at startup |
 | **Lidar Control** |
-| 0x71 | Lidar PWM | 4 bytes | ✅ | 5073x | HIGH | Working in SangamIO, matches AuxCtrl `controlLidarPwm` |
-| 0x97 | Lidar Power | 1 byte | ✅ | 6x | HIGH | Working in SangamIO, matches AuxCtrl `packetLidarPower` |
+| 0x17 | Lidar Config | 4 bytes | ❌ | 1x | LOW | Init: `[0x01, 0xF0, 0xDF, 0xFA]`, response: `[0x01]` |
+| 0x18 | Lidar Query | None/8 bytes | ❌ | 1x | LOW | Request: none, Response: `[0x04, 0x00, 0x00, 0x00, 0x7F, 0x00, 0x00, 0x00]` |
+| 0x19 | Lidar Enable | 1 byte | ❌ | 1x | LOW | Init sequence, payload 0x01 |
+| 0x71 | Lidar PWM | 4 bytes | ✅ | 6971x | HIGH | Working in SangamIO, matches AuxCtrl `controlLidarPwm` |
+| 0x7C | Unknown Lidar | 3 bytes | ❌ | 1x | LOW | Init: `[0x00, 0xFF, 0xFF]`, purpose unknown |
+| 0x97 | Lidar Power | 1 byte | ✅ | 3x | HIGH | Working in SangamIO, matches AuxCtrl `packetLidarPower` |
 | **Sensor Control** |
-| 0x78 | Cliff IR Control | 1 byte | ✅ | 0 | MEDIUM | `ComponentControl { id: "cliff_ir", action: Enable/Disable }` |
-| 0x79 | Cliff IR Direction | 1 byte | ✅ | 0 | MEDIUM | `ComponentControl { id: "cliff_ir", action: Configure { direction } }` |
-| 0x86 | Unknown Sensor | 1 byte | ❌ | 2x | LOW | Only in R2D log, payload 0x10→0x00, possibly dock IR |
-| 0x9D | Unknown | 1 byte | ❌ | 1x | LOW | Only in R2D log, payload 0x01, purpose unknown |
+| 0x78 | Cliff IR Control | 1 byte | ✅ | 1x | HIGH | `ComponentControl { id: "cliff_ir", action: Enable/Disable }` |
+| 0x79 | Cliff IR Direction | 1 byte | ✅ | 1x | MEDIUM | `ComponentControl { id: "cliff_ir", action: Configure { direction } }` |
+| 0x86 | Dock IR Sensor | 1 byte | ❌ | 3x | MEDIUM | Payloads: 0x00=off, 0x41=on, dock detection sensor |
+| 0x9D | Unknown Sensor | 1 byte | ❌ | 2x | LOW | Payload 0x01, sent during init |
 | **LED/UI** |
-| 0x8D | Button LED State | 1 byte | ✅ | 7x | HIGH | Working in SangamIO, 19 modes discovered (see LED section) |
+| 0x8D | Button LED State | 1 byte | ✅ | 20x | HIGH | Working in SangamIO, 19 modes discovered (see LED section) |
 | **Power Management** |
 | 0x99 | Main Board Power | 1 byte | ✅ | 0 | MEDIUM | `ComponentControl { id: "main_board", action: Enable/Disable }` |
 | 0x9A | Main Board Restart | None | ✅ | 0 | MEDIUM | `ComponentControl { id: "main_board", action: Reset }` |
 | 0x9B | Charger Power | 1 byte | ✅ | 0 | MEDIUM | `ComponentControl { id: "charger", action: Enable/Disable }` |
 | **Calibration** |
 | 0xA1 | IMU Factory Calibrate | None | ✅ | 0 | MEDIUM | `ComponentControl { id: "imu", action: Reset }` |
-| 0xA2 | IMU Calibrate State | 0 or 4 bytes | ✅ | 2x | HIGH | `ComponentControl { id: "imu", action: Enable }` |
+| 0xA2 | IMU Calibrate State | 0 or 4 bytes | ✅ | 3x | HIGH | `ComponentControl { id: "imu", action: Enable }` |
 | 0xA3 | Compass Calibrate | None | ✅ | 0 | MEDIUM | `ComponentControl { id: "compass", action: Reset }` |
 | 0xA4 | Compass Cal State | None | ✅ | 0 | MEDIUM | `ComponentControl { id: "compass", action: Enable }` |
 
 ### Response Commands (GD32 → Host)
 
-| Hex | Name | Payload | Confidence | Reason |
-|-----|------|---------|------------|--------|
-| 0x15 | Status Packet | 96 bytes | HIGH | Continuous sensor data, fully decoded in SangamIO |
-| 0x07 | Version Response | Variable | HIGH | Response to version request |
+| Hex | Name | Payload | MITM Count | Confidence | Reason |
+|-----|------|---------|------------|------------|--------|
+| 0x06 | Heartbeat Ack | None | 130x | HIGH | Echo acknowledgment |
+| 0x07 | Version Response | Variable | 2x | HIGH | Response to version request |
+| 0x08 | Init Ack | None | 1x | HIGH | Echo acknowledgment |
+| 0x0C | Protocol Sync Ack | 1 byte | 1x | HIGH | Echo of 0x0C command (~270ms delay) |
+| 0x15 | Status Packet | 96 bytes | 12993x | HIGH | Continuous sensor data @ ~500Hz |
+| 0x17 | Lidar Config Ack | 1 byte | 1x | LOW | Response `[0x01]` |
+| 0x18 | Lidar Query Response | 8 bytes | 1x | LOW | Lidar state data |
+| 0xA2 | IMU Cal Response | 1 byte | 3x | HIGH | Response `[0x01]` |
 
 ---
 
-## Return-to-Dock Command Sequence
+## AuxCtrl Initialization Sequence (MITM Captured)
 
-From captured ~160 second operation:
+From MITM capture run10 - boot sequence analyzed in 5 phases:
+
+### Phase 1: System Init (immediate)
+```
+Step  CMD   Packet                              Purpose
+────  ────  ──────────────────────────────────  ─────────────────────────
+  1   0x0C  FA FB 04 0C 01 0C 01                System init / protocol sync
+  2   0x07  FA FB 03 07 00 07                   Request version
+  3   0x8D  FA FB 04 8D 01 8D 01                LED state 0x01 (standby blue)
+  4   0x0A  FA FB 03 0A 00 0A                   Reset error codes
+```
+
+### Phase 2: Hardware Config (within 50ms)
+```
+  5   0x07  FA FB 03 07 00 07                   Request version (retry)
+  6   0x17  FA FB 07 17 01 F0 DF FA 07 1A      Lidar motor config
+  7   0x18  FA FB 03 18 00 18                   Lidar query
+  8   0x97  FA FB 04 97 00 97 00                Lidar power OFF
+  9   0x9D  FA FB 04 9D 01 9D 01                Unknown sensor enable
+ 10   0x71  FA FB 07 71 00 00 00 00 71 00      Lidar PWM = 0
+```
+
+### Phase 3: Actuator Init (immediate)
+```
+ 11   0x65  FA FB 04 65 00 65 00                Motor mode 0x00 (idle)
+ 12   0x68  FA FB 05 68 00 00 68 00             Vacuum 0%
+ 13   0x69  FA FB 04 69 00 69 00                Side brush 0%
+ 14   0x6A  FA FB 04 6A 00 6A 00                Main brush 0%
+ 15   0x6B  FA FB 04 6B 00 6B 00                Motor controller init = OFF
+ 16   0x08  FA FB 03 08 00 08                   Initialize/IMU zero
+ 17   0x19  FA FB 04 19 01 19 01                Lidar enable
+ 18   0x7C  FA FB 06 7C 00 FF FF 7B FF          Unknown lidar config
+```
+
+### Phase 4: Motor Controller Handshake (~2 seconds)
+```
+ 19   0x8D  FA FB 04 8D 01 8D 01                LED state refresh
+ ...  0x6B  FA FB 04 6B 64 6B 64                Motor ctrl init = 100% (every ~22ms)
+ ...  0x66  FA FB 0B 66 00 00 00 00 ...         Velocity = 0 (interleaved)
+```
+**Note:** GD32 requires 2 seconds of 0x6B [64] pulses before accepting motion commands.
+Robot does NOT move during this phase (encoders unchanged).
+
+### Phase 5: Normal Operation
+```
+ ...  0x66  FA FB 0B 66 00 00 00 00 ...         Motor velocity (heartbeat continues)
+ ...  0x71  FA FB 07 71 ...                     Lidar PWM control
+```
+**Note:** 0x6B stops after handshake. Only 0x66 continues as heartbeat.
+
+## Return-to-Dock Command Sequence (Legacy)
+
+From earlier captured ~160 second operation:
 
 ```
 Phase 1: Startup
@@ -89,14 +152,14 @@ Phase 2: Navigation Active
   0x69/0x6A  → Brush activation (brief)
 
 Phase 3: Dock Approach
-  0x86       → Unknown (0x10)
-  0x6B       → Unknown (0x00)
+  0x86       → Dock IR (0x10)
+  0x6B       → Mop motor (0x00)
   0x9D       → Unknown (0x01)
 
 Phase 4: Shutdown
   0x65       → Motor mode 0x00 (idle)
   0x97       → Lidar power off
-  0x86       → Unknown (0x00)
+  0x86       → Dock IR off (0x00)
   0x0A       → Reset error codes
 ```
 
@@ -123,19 +186,32 @@ Phase 4: Shutdown
 
 | Status | Count | Commands |
 |--------|-------|----------|
-| ✅ Implemented | 25 | 0x04, 0x05, 0x06, 0x07, 0x08, 0x0A, 0x0D, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x71, 0x78, 0x79, 0x8D, 0x97, 0x99, 0x9A, 0x9B, 0xA1, 0xA2, 0xA3, 0xA4 |
-| ❌ Not Implemented | 3 | 0x6B, 0x86, 0x9D |
+| ✅ Implemented | 26 | 0x04, 0x05, 0x06, 0x07, 0x08, 0x0A, 0x0C, 0x0D, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x71, 0x78, 0x79, 0x8D, 0x97, 0x99, 0x9A, 0x9B, 0xA1, 0xA2, 0xA3, 0xA4 |
+| ❌ Not Implemented | 9 | 0x17, 0x18, 0x19, 0x6B, 0x7C, 0x86, 0x9D |
 
 ---
 
 ## Implementation Priority
 
-### Medium Priority (Used in R2D, low confidence)
-| Hex | Name | Reason |
-|-----|------|--------|
-| 0x86 | Unknown Sensor | Used during dock approach, may be dock IR |
-| 0x6B | Unknown Actuator | Brief use, may be related to docking |
-| 0x9D | Unknown | Single use, purpose unclear |
+### High Priority (Boot sequence, well understood)
+| Hex | Name | MITM Usage | Reason |
+|-----|------|------------|--------|
+| 0x0C | Protocol Sync | 1x | ✅ DONE - First boot command, wakes GD32 |
+| 0x6B | Motor Controller Init | 95x | 2-second boot handshake required before motion commands work |
+
+### Medium Priority (Init sequence, partially understood)
+| Hex | Name | MITM Usage | Reason |
+|-----|------|------------|--------|
+| 0x86 | Dock IR Sensor | 3x | Dock detection, 0x00=off, 0x41=on |
+| 0x17 | Lidar Config | 1x | Lidar init, payload `[0x01, 0xF0, 0xDF, 0xFA]` |
+| 0x18 | Lidar Query | 1x | Lidar state query, response has 8 bytes |
+| 0x19 | Lidar Enable | 1x | Lidar init, payload 0x01 |
+
+### Low Priority (Single use, unknown purpose)
+| Hex | Name | MITM Usage | Reason |
+|-----|------|------------|--------|
+| 0x7C | Unknown Lidar | 1x | Init, payload `[0x00, 0xFF, 0xFF]` |
+| 0x9D | Unknown Sensor | 2x | Init, payload 0x01 |
 
 
 ---
@@ -328,3 +404,13 @@ The `drive` component supports two configuration modes:
 ```json
 {"type": "ComponentControl", "id": "mcu", "action": {"type": "Reset"}}
 ```
+
+### Protocol Commands
+
+These are standalone commands not using ComponentControl:
+
+**Protocol Sync (wake GD32 at boot):**
+```json
+{"type": "ProtocolSync"}
+```
+This is a fire-and-forget command. GD32 echoes it back after ~270ms. Typically sent once at boot before any other commands.

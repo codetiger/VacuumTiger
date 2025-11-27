@@ -14,7 +14,7 @@ set -e  # Exit on error
 
 ROBOT_HOST="vacuum"
 ROBOT_PASS="${ROBOT_PASSWORD:-}"
-SCRIPT_DIR="scripts/robot"
+SCRIPT_DIR="scripts"
 TARGET_DIR="/mnt/UDISK"
 BINARY_DIR="/mnt/UDISK/binary"
 
@@ -93,18 +93,18 @@ done
 echo "✓ All scripts deployed"
 echo ""
 
-# Deploy init script
-echo "Installing MITM init script..."
-cat "$SCRIPT_DIR/mitm_init.sh" | \
-  sshpass -p "$ROBOT_PASS" ssh root@$ROBOT_HOST \
-  "cat > /etc/init.d/mitmLogger && chmod +x /etc/init.d/mitmLogger"
+# Check if _root.sh exists and has MITM boot hook
+echo "Checking _root.sh integration..."
+HAS_HOOK=$(sshpass -p "$ROBOT_PASS" ssh root@$ROBOT_HOST \
+  "grep -q 'mitm_boot_setup' /mnt/UDISK/_root.sh 2>/dev/null && echo yes || echo no")
 
-# Create rc.d symlink (S89 runs before Monitor at S91)
-sshpass -p "$ROBOT_PASS" ssh root@$ROBOT_HOST \
-  "ln -sf /etc/init.d/mitmLogger /etc/rc.d/S89mitmLogger 2>/dev/null || true"
-
-echo "✓ Init script installed at /etc/init.d/mitmLogger"
-echo "✓ Auto-start enabled (S89mitmLogger runs before Monitor)"
+if [ "$HAS_HOOK" = "yes" ]; then
+    echo "✓ MITM boot hook already present in _root.sh"
+else
+    echo "⚠ _root.sh does not call mitm_boot_setup.sh"
+    echo "  Add this line to /mnt/UDISK/_root.sh:"
+    echo "  [ -f /mnt/UDISK/mitm_boot_setup.sh ] && /mnt/UDISK/mitm_boot_setup.sh"
+fi
 echo ""
 
 echo "========================================="

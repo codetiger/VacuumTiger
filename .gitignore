@@ -54,3 +54,5 @@ Thumbs.db
 
 analysis/
 .claude/
+
+*.log

@@ -6,12 +6,12 @@
 use super::protocol::{cmd_version_request, PacketReader};
 use crate::core::types::{SensorGroupData, SensorValue};
 use crate::devices::crl200s::constants::{
-    BATTERY_VOLTAGE_MAX, BATTERY_VOLTAGE_MIN, CMD_STATUS, CMD_VERSION, FLAG_BUMPER_LEFT,
-    FLAG_BUMPER_RIGHT, FLAG_CHARGING, FLAG_CLIFF_LEFT_FRONT, FLAG_CLIFF_LEFT_SIDE,
-    FLAG_CLIFF_RIGHT_FRONT, FLAG_CLIFF_RIGHT_SIDE, FLAG_DOCK_CONNECTED, FLAG_DUSTBOX_ATTACHED,
-    OFFSET_BATTERY_VOLTAGE_RAW, OFFSET_BUMPER_FLAGS, OFFSET_CHARGING_FLAGS, OFFSET_CLIFF_FLAGS,
-    OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS, OFFSET_START_BUTTON, OFFSET_WHEEL_LEFT_ENCODER,
-    OFFSET_WHEEL_RIGHT_ENCODER, STATUS_PAYLOAD_MIN_SIZE,
+    BATTERY_VOLTAGE_MAX, BATTERY_VOLTAGE_MIN, CMD_PROTOCOL_SYNC, CMD_STATUS, CMD_VERSION,
+    FLAG_BUMPER_LEFT, FLAG_BUMPER_RIGHT, FLAG_CHARGING, FLAG_CLIFF_LEFT_FRONT,
+    FLAG_CLIFF_LEFT_SIDE, FLAG_CLIFF_RIGHT_FRONT, FLAG_CLIFF_RIGHT_SIDE, FLAG_DOCK_CONNECTED,
+    FLAG_DUSTBOX_ATTACHED, OFFSET_BATTERY_VOLTAGE_RAW, OFFSET_BUMPER_FLAGS, OFFSET_CHARGING_FLAGS,
+    OFFSET_CLIFF_FLAGS, OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS, OFFSET_START_BUTTON,
+    OFFSET_WHEEL_LEFT_ENCODER, OFFSET_WHEEL_RIGHT_ENCODER, STATUS_PAYLOAD_MIN_SIZE,
 };
 use serialport::SerialPort;
 use std::io::Write;
@@ -52,6 +52,7 @@ pub(super) fn reader_loop(
     let mut reader = PacketReader::new();
     let mut version_requested = false;
     let mut version_received = false;
+    let mut protocol_sync_received = false;
 
     while !shutdown.load(Ordering::Relaxed) {
         let packet_result = {
@@ -91,6 +92,15 @@ pub(super) fn reader_loop(
                 // Handle version response
                 if packet.cmd == CMD_VERSION && !version_received {
                     handle_version_packet(&packet, &version_data, &mut version_received);
+                }
+
+                // Handle protocol sync ACK (0x0C echoed back from GD32)
+                if packet.cmd == CMD_PROTOCOL_SYNC && !protocol_sync_received {
+                    protocol_sync_received = true;
+                    log::info!(
+                        "Protocol sync ACK received (payload: {:02X?})",
+                        packet.payload
+                    );
                 }
 
                 // Handle sensor status data

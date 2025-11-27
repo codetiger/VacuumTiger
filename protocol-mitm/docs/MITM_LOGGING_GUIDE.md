@@ -301,42 +301,36 @@ Choose 'y' to reboot and restore normal operation.
 
 ## Log Format
 
-Each log file contains timestamped bidirectional packet captures:
+Each log file uses simple CSV format for easy parsing with standard tools:
 
 ```
-=== MITM Session Started ===
-Run Number: 1
-Timestamp: 2023-11-01T14:30:22+00:00
-Real port: /dev/ttyS3_hardware
-Virtual port: /tmp/ttyS3_tap
-===
-
-[1698850222.946188] TX 14 bytes
-  HEX: FA FB 0B 66 00 00 00 00 00 00 00 00 66 00
-  PKT: CMD=0x66 LEN=11
-       (HEARTBEAT - Keepalive packet)
-
-[1698850222.946523] RX 102 bytes
-  HEX: FA FB 63 15 01 06 00 0F 04 00 00 01 A6 21 ...
-  PKT: CMD=0x15 LEN=99
-       (STATUS - Sensor/IMU/Battery data)
-
+# MITM Session Run 1 - 2024-11-27T14:30:22+08:00
+# Format: timestamp_us,direction,data
+1764579266055103,GPIO_INIT,0
+1764579266100000,TX,FA FB 0B 66 00 00 00 00 00 00 00 00 66 00
+1764579266150000,RX,FA FB 63 15 01 06 00 0F 04 00 00 01 A6 21 ...
+1764579266500000,GPIO,0->1
 ...
-
-=== MITM Session Ended ===
-End Timestamp: 2023-11-01T14:40:35+00:00
-TX Packets: 15234
-RX Packets: 15189
-TX Bytes: 213276
-RX Bytes: 1503711
-===
+# Session ended - TX:15234 pkts/213276 bytes, RX:15189 pkts/1503711 bytes
 ```
 
-**Packet Annotations:**
-- **TX**: AuxCtrl → GD32 (commands)
-- **RX**: GD32 → AuxCtrl (status/responses)
-- **Timestamps**: Microsecond precision
-- **CMD annotations**: Common command types decoded
+**CSV Columns:**
+| Column | Description |
+|--------|-------------|
+| `timestamp_us` | Unix timestamp in microseconds |
+| `direction` | `TX`, `RX`, `GPIO`, or `GPIO_INIT` |
+| `data` | Space-separated hex bytes or GPIO state |
+
+**Direction Values:**
+- **TX**: AuxCtrl → GD32 (commands sent to motor controller)
+- **RX**: GD32 → AuxCtrl (status/responses from motor controller)
+- **GPIO**: GPIO 233 state change (lidar power control), format: `old->new`
+- **GPIO_INIT**: Initial GPIO 233 state at session start
+
+**Notes:**
+- Lines starting with `#` are comments (session header/footer)
+- Timestamps have microsecond precision for timing analysis
+- Hex bytes are space-separated uppercase (e.g., `FA FB 03 15`)
 
 ## Troubleshooting
 
@@ -436,20 +430,25 @@ ps aux | grep serial_mitm
 ```
 /mnt/UDISK/
 ├── binary/
-│   └── serial_mitm              # MITM proxy binary (520KB)
+│   └── serial_mitm              # MITM proxy binary (~350KB)
 ├── log/
-│   ├── mitm_capture_run1_*.log  # Capture logs
+│   ├── mitm_capture_run1_*.log  # Capture logs (CSV format)
 │   ├── mitm_capture_run2_*.log
 │   └── archive/                 # Archived logs
 │       └── capture_TIMESTAMP/
 ├── mitm_enabled                 # Flag file (presence = MITM active)
-├── mitm_run_counter             # Current run number (1-5)
-├── mitm_boot_setup.sh           # Boot-time setup script
-├── mitm_stop.sh                 # Stop logging script
+├── mitm_run_counter             # Current run number
+├── mitm_boot_setup.sh           # Boot-time setup (called from _root.sh)
+├── mitm_stop.sh                 # Stop current capture run
 ├── mitm_cleanup.sh              # Restore normal operation
 ├── mitm_enable.sh               # Enable MITM mode
 ├── mitm_disable.sh              # Disable MITM mode
-└── _root.sh                     # User boot script (calls boot_setup)
+└── _root.sh                     # User boot script (add hook manually)
+```
+
+**Note:** You must manually add the boot hook to `/mnt/UDISK/_root.sh`:
+```bash
+[ -f /mnt/UDISK/mitm_boot_setup.sh ] && /mnt/UDISK/mitm_boot_setup.sh
 ```
 
 ### On Dev Machine (`protocol-mitm/`)
@@ -459,12 +458,11 @@ protocol-mitm/
 ├── src/
 │   └── main.rs                  # MITM proxy source (serial_mitm binary)
 ├── scripts/                     # Robot-side scripts (deployed)
-│   ├── mitm_boot_setup.sh
-│   ├── mitm_stop.sh
-│   ├── mitm_cleanup.sh
-│   ├── mitm_enable.sh
-│   ├── mitm_disable.sh
-│   └── mitm_init.sh
+│   ├── mitm_boot_setup.sh       # Boot-time setup (called from _root.sh)
+│   ├── mitm_stop.sh             # Stop current capture run
+│   ├── mitm_cleanup.sh          # Restore normal operation
+│   ├── mitm_enable.sh           # Enable MITM for next boot
+│   └── mitm_disable.sh          # Disable MITM and archive
 ├── tools/                       # Dev-side control scripts
 │   ├── mitm_deploy_all.sh       # Build + deploy everything
 │   ├── mitm_enable.sh           # Remote enable
@@ -489,43 +487,73 @@ protocol-mitm/
 ```bash
 cd logs/mitm_captures_*/
 
-# Find first init packets (CMD=0x08)
-grep "CMD=0x08" mitm_capture_run1_*.log | head -20
+# Find init packets (CMD=0x08) - look for "FA FB xx 08"
+grep ",TX,.*08" mitm_capture_run1_*.log | head -20
 
-# Count heartbeat frequency
-grep "CMD=0x66" mitm_capture_run1_*.log | head -100
+# Find heartbeat packets (CMD=0x66)
+grep ",TX,.*66" mitm_capture_run1_*.log | head -100
 
-# Extract all unique command types
-grep "PKT: CMD=" mitm_capture_run1_*.log | \
-  awk '{print $3}' | sort | uniq -c
+# Extract all unique TX commands (4th byte is CMD)
+grep ",TX," mitm_capture_run1_*.log | \
+  awk -F',' '{print $3}' | \
+  awk '{print $4}' | sort | uniq -c | sort -rn
 ```
 
 ### Compare Runs for Consistency
 
 ```bash
-# Extract command sequences from each run
+# Extract TX command bytes from each run
 for log in mitm_capture_run*.log; do
     echo "=== $log ==="
-    grep "PKT: CMD=" "$log" | awk '{print $3}' | uniq -c
+    grep ",TX," "$log" | awk -F',' '{print $3}' | awk '{print $4}' | sort | uniq -c
 done
 ```
 
 ### Timing Analysis
 
 ```bash
-# Calculate heartbeat intervals
-grep "CMD=0x66" mitm_capture_run1_*.log | \
-  awk -F'[\\[\\]]' '{print $2}' | \
+# Extract timestamps for TX packets containing 0x66 (heartbeat)
+grep ",TX,.*66" mitm_capture_run1_*.log | \
+  awk -F',' '{print $1}' | \
   head -100 > heartbeat_timestamps.txt
 
-# Use a script to calculate intervals
+# Calculate intervals (timestamps are in microseconds)
 python3 -c "
-import sys
-times = [float(line.strip()) for line in open('heartbeat_timestamps.txt')]
-intervals = [times[i+1] - times[i] for i in range(len(times)-1)]
+times = [int(line.strip()) for line in open('heartbeat_timestamps.txt')]
+intervals = [(times[i+1] - times[i]) / 1e6 for i in range(len(times)-1)]
 print(f'Avg interval: {sum(intervals)/len(intervals):.6f}s')
 print(f'Min: {min(intervals):.6f}s, Max: {max(intervals):.6f}s')
 "
+```
+
+### Parse Packets with Python
+
+```python
+import csv
+
+def parse_mitm_log(filename):
+    """Parse MITM CSV log file."""
+    packets = []
+    with open(filename) as f:
+        for line in f:
+            if line.startswith('#'):
+                continue  # Skip comments
+            parts = line.strip().split(',', 2)
+            if len(parts) == 3:
+                ts_us, direction, data = parts
+                hex_bytes = bytes.fromhex(data.replace(' ', ''))
+                packets.append({
+                    'timestamp_us': int(ts_us),
+                    'direction': direction,
+                    'raw': hex_bytes,
+                    'cmd': hex_bytes[3] if len(hex_bytes) > 3 else None
+                })
+    return packets
+
+# Example: Find all unique commands
+packets = parse_mitm_log('mitm_capture_run1_*.log')
+tx_cmds = set(p['cmd'] for p in packets if p['direction'] == 'TX' and p['cmd'])
+print(f"TX commands: {[hex(c) for c in sorted(tx_cmds)]}")
 ```
 
 ## Best Practices
