@@ -6,11 +6,12 @@
 use super::protocol::{cmd_version_request, PacketReader};
 use crate::core::types::{SensorGroupData, SensorValue};
 use crate::devices::crl200s::constants::{
-    CMD_STATUS, CMD_VERSION, FLAG_BUMPER_LEFT, FLAG_BUMPER_RIGHT, FLAG_CHARGING,
-    FLAG_CLIFF_LEFT_FRONT, FLAG_CLIFF_LEFT_SIDE, FLAG_CLIFF_RIGHT_FRONT, FLAG_CLIFF_RIGHT_SIDE,
-    FLAG_DOCK_CONNECTED, FLAG_DUSTBOX_ATTACHED, OFFSET_BUMPER_FLAGS, OFFSET_CHARGING_FLAGS,
-    OFFSET_CLIFF_FLAGS, OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS, OFFSET_START_BUTTON,
-    OFFSET_WHEEL_LEFT_ENCODER, OFFSET_WHEEL_RIGHT_ENCODER, STATUS_PAYLOAD_MIN_SIZE,
+    BATTERY_VOLTAGE_MAX, BATTERY_VOLTAGE_MIN, CMD_STATUS, CMD_VERSION, FLAG_BUMPER_LEFT,
+    FLAG_BUMPER_RIGHT, FLAG_CHARGING, FLAG_CLIFF_LEFT_FRONT, FLAG_CLIFF_LEFT_SIDE,
+    FLAG_CLIFF_RIGHT_FRONT, FLAG_CLIFF_RIGHT_SIDE, FLAG_DOCK_CONNECTED, FLAG_DUSTBOX_ATTACHED,
+    OFFSET_BATTERY_VOLTAGE_RAW, OFFSET_BUMPER_FLAGS, OFFSET_CHARGING_FLAGS, OFFSET_CLIFF_FLAGS,
+    OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS, OFFSET_START_BUTTON, OFFSET_WHEEL_LEFT_ENCODER,
+    OFFSET_WHEEL_RIGHT_ENCODER, STATUS_PAYLOAD_MIN_SIZE,
 };
 use serialport::SerialPort;
 use std::io::Write;
@@ -192,6 +193,19 @@ fn handle_status_packet(
         "is_dock_connected",
         SensorValue::Bool((payload[OFFSET_CHARGING_FLAGS] & FLAG_DOCK_CONNECTED) != 0),
     );
+
+    // Battery voltage and level
+    // Raw byte at offset 0x08 is voltage * 10 (e.g., 155 = 15.5V)
+    let voltage_raw = payload[OFFSET_BATTERY_VOLTAGE_RAW];
+    let voltage = voltage_raw as f32 / 10.0;
+
+    // Calculate percentage using linear interpolation between min/max voltage
+    let battery_level =
+        ((voltage - BATTERY_VOLTAGE_MIN) / (BATTERY_VOLTAGE_MAX - BATTERY_VOLTAGE_MIN) * 100.0)
+            .clamp(0.0, 100.0) as u8;
+
+    data.update("battery_voltage", SensorValue::F32(voltage));
+    data.update("battery_level", SensorValue::U8(battery_level));
 
     // Buttons
     data.update(

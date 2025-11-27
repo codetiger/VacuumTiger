@@ -25,9 +25,9 @@ class RobotDiagram(QWidget):
     ROBOT_DIAMETER = 350.0
     ROBOT_RADIUS = ROBOT_DIAMETER / 2
 
-    # Bumper - front arc
-    BUMPER_ARC_ANGLE = 200  # degrees, centered on front
-    BUMPER_WIDTH = 8  # mm thickness
+    # Bumper - thin front arc (like the real robot)
+    BUMPER_ARC_ANGLE = 220  # degrees, centered on front
+    BUMPER_WIDTH = 6  # mm thickness (thin like real robot)
 
     # Lidar turret - at rear/top of robot
     LIDAR_RADIUS = 35.0
@@ -58,10 +58,10 @@ class RobotDiagram(QWidget):
         'right_side': (130.0, 60.0),      # mid-right side
     }
 
-    # Buttons - pill-shaped panel at front of robot
-    BUTTON_PANEL_WIDTH = 15.0
-    BUTTON_PANEL_HEIGHT = 30.0
-    BUTTON_Y_OFFSET = 120.0  # toward front (positive Y = bottom of screen)
+    # Buttons - vertical pill-shaped panel at front of robot (like real robot)
+    BUTTON_PANEL_WIDTH = 20.0
+    BUTTON_PANEL_HEIGHT = 50.0
+    BUTTON_Y_OFFSET = 100.0  # toward front (positive Y = bottom of screen)
 
     # Caster wheel - at front
     CASTER_RADIUS = 12.0
@@ -100,6 +100,8 @@ class RobotDiagram(QWidget):
         self.sensor_data = {
             'is_charging': False,
             'is_battery_connected': True,
+            'battery_level': 0,
+            'battery_voltage': 0.0,
             'wheel_left': 0,
             'wheel_right': 0,
             'bumper_left': False,
@@ -230,72 +232,63 @@ class RobotDiagram(QWidget):
         self._draw_battery_indicator(painter)
 
     def _draw_body(self, painter):
-        """Draw robot circular body."""
-        painter.setPen(QPen(self.COLOR_BODY_BORDER, 2))
-        painter.setBrush(QBrush(self.COLOR_BODY))
+        """Draw robot circular body with clean white design."""
+        # Main body - white with subtle gradient
+        gradient = QRadialGradient(0, -50, self.ROBOT_RADIUS * 1.2)
+        gradient.setColorAt(0, QColor(255, 255, 255))
+        gradient.setColorAt(1, QColor(245, 245, 245))
+
+        painter.setPen(QPen(self.COLOR_BODY_BORDER, 1.5))
+        painter.setBrush(QBrush(gradient))
         painter.drawEllipse(QPointF(0, 0), self.ROBOT_RADIUS, self.ROBOT_RADIUS)
 
     def _draw_bumper(self, painter):
-        """Draw front bumper arc with left/right sections."""
+        """Draw front bumper arc with left/right sections using simple arc stroke."""
         bumper_left = self.sensor_data.get('bumper_left', False)
         bumper_right = self.sensor_data.get('bumper_right', False)
 
         # Bumper arc parameters
-        outer_radius = self.ROBOT_RADIUS
-        inner_radius = self.ROBOT_RADIUS - self.BUMPER_WIDTH
+        radius = self.ROBOT_RADIUS - self.BUMPER_WIDTH / 2  # Center of bumper thickness
         half_angle = self.BUMPER_ARC_ANGLE / 2
 
-        # Front is at bottom (270° or -90° in Qt coordinates)
-        # Left half: from 270° going counterclockwise (increasing angle)
-        color_left = self.COLOR_BUMPER_TRIGGERED if bumper_left else self.COLOR_BUMPER_OK
-        self._draw_arc_section(painter, outer_radius, inner_radius,
-                               270, half_angle, color_left)
+        # Create rect for arc drawing
+        rect = QRectF(-radius, -radius, radius * 2, radius * 2)
 
-        # Right half: from 270-half_angle to 270°
+        # Draw as thick stroked arcs (much simpler and cleaner)
+        painter.setBrush(Qt.NoBrush)
+
+        # Right half: from (270 - half_angle) to 270, draw as arc
         color_right = self.COLOR_BUMPER_TRIGGERED if bumper_right else self.COLOR_BUMPER_OK
-        self._draw_arc_section(painter, outer_radius, inner_radius,
-                               270 - half_angle, half_angle, color_right)
+        pen_right = QPen(color_right, self.BUMPER_WIDTH)
+        pen_right.setCapStyle(Qt.FlatCap)
+        painter.setPen(pen_right)
+        # Qt drawArc uses 1/16th of a degree, and positive angles go counter-clockwise
+        start_angle_right = int((270 - half_angle) * 16)
+        span_angle_right = int(half_angle * 16)
+        painter.drawArc(rect, start_angle_right, span_angle_right)
 
-    def _draw_arc_section(self, painter, outer_r, inner_r, start_deg, span_deg, color):
-        """Draw an arc section (like bumper segment)."""
-        path = QPainterPath()
-
-        # Outer arc
-        outer_rect = QRectF(-outer_r, -outer_r, outer_r * 2, outer_r * 2)
-        inner_rect = QRectF(-inner_r, -inner_r, inner_r * 2, inner_r * 2)
-
-        # Start point on outer arc
-        start_rad = math.radians(start_deg)
-        path.moveTo(outer_r * math.cos(start_rad), outer_r * math.sin(start_rad))
-
-        # Outer arc
-        path.arcTo(outer_rect, start_deg, span_deg)
-
-        # Line to inner arc
-        end_rad = math.radians(start_deg + span_deg)
-        path.lineTo(inner_r * math.cos(end_rad), inner_r * math.sin(end_rad))
-
-        # Inner arc (reverse)
-        path.arcTo(inner_rect, start_deg + span_deg, -span_deg)
-
-        path.closeSubpath()
-
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(color))
-        painter.drawPath(path)
+        # Left half: from 270 to (270 + half_angle)
+        color_left = self.COLOR_BUMPER_TRIGGERED if bumper_left else self.COLOR_BUMPER_OK
+        pen_left = QPen(color_left, self.BUMPER_WIDTH)
+        pen_left.setCapStyle(Qt.FlatCap)
+        painter.setPen(pen_left)
+        start_angle_left = int(270 * 16)
+        span_angle_left = int(half_angle * 16)
+        painter.drawArc(rect, start_angle_left, span_angle_left)
 
     def _draw_lidar(self, painter):
         """Draw lidar turret."""
-        painter.setPen(QPen(QColor(40, 40, 40), 1))
+        # Outer ring
+        painter.setPen(QPen(QColor(80, 80, 80), 2))
         painter.setBrush(QBrush(self.COLOR_LIDAR))
         painter.drawEllipse(QPointF(0, self.LIDAR_Y_OFFSET),
                            self.LIDAR_RADIUS, self.LIDAR_RADIUS)
 
-        # MI logo indicator
-        painter.setPen(QPen(QColor(200, 200, 200), 1))
-        painter.setBrush(Qt.NoBrush)
+        # Inner circle (slightly lighter)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor(75, 75, 75)))
         painter.drawEllipse(QPointF(0, self.LIDAR_Y_OFFSET),
-                           self.LIDAR_RADIUS * 0.5, self.LIDAR_RADIUS * 0.5)
+                           self.LIDAR_RADIUS * 0.6, self.LIDAR_RADIUS * 0.6)
 
     def _draw_wheels(self, painter):
         """Draw drive wheels with animation."""
@@ -421,7 +414,7 @@ class RobotDiagram(QWidget):
                            QPointF(20, self.DUSTBOX_Y_OFFSET - 15))
 
     def _draw_buttons(self, painter):
-        """Draw start and dock buttons in pill-shaped panel."""
+        """Draw start and dock buttons in vertical pill-shaped panel (like real robot)."""
         start_value = self.sensor_data.get('start_button', 0)
         dock_value = self.sensor_data.get('dock_button', 0)
 
@@ -430,37 +423,66 @@ class RobotDiagram(QWidget):
         w = self.BUTTON_PANEL_WIDTH
         h = self.BUTTON_PANEL_HEIGHT
 
-        # Draw pill-shaped panel background
-        painter.setPen(QPen(QColor(180, 180, 180), 1))
-        painter.setBrush(QBrush(QColor(240, 240, 240)))
+        start_pressed = start_value > 100
+        dock_pressed = dock_value > 100
+
+        # Draw pill-shaped panel background (vertical orientation like real robot)
+        painter.setPen(QPen(QColor(200, 200, 200), 1))
+        painter.setBrush(QBrush(QColor(250, 250, 250)))
         panel_rect = QRectF(x - w/2, y - h/2, w, h)
         painter.drawRoundedRect(panel_rect, w/2, w/2)
 
-        # Dock button (top half - home symbol)
-        dock_y = y - h/4
-        dock_pressed = dock_value > 100
+        # Dock button (top - home/charging icon)
+        dock_y = y - h/4 - 2
+
+        # Draw glow effect when dock button is pressed
+        if dock_pressed:
+            glow = QRadialGradient(x, dock_y, 12)
+            glow.setColorAt(0, QColor(60, 200, 60, 200))
+            glow.setColorAt(0.5, QColor(60, 200, 60, 100))
+            glow.setColorAt(1, QColor(60, 200, 60, 0))
+            painter.setBrush(QBrush(glow))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QPointF(x, dock_y), 12, 12)
+
         color = self.COLOR_BUTTON_ON if dock_pressed else self.COLOR_BUTTON_OFF
+        line_width = 2.0 if dock_pressed else 1.5
 
-        # Draw home icon (simple house shape)
-        painter.setPen(QPen(color, 1.5))
+        # Draw home/dock icon (house shape with base)
+        painter.setPen(QPen(color, line_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         painter.setBrush(Qt.NoBrush)
-        # House outline
-        painter.drawLine(QPointF(x - 3, dock_y), QPointF(x, dock_y - 3))
-        painter.drawLine(QPointF(x, dock_y - 3), QPointF(x + 3, dock_y))
-        painter.drawLine(QPointF(x - 2, dock_y), QPointF(x - 2, dock_y + 2.5))
-        painter.drawLine(QPointF(x + 2, dock_y), QPointF(x + 2, dock_y + 2.5))
-        painter.drawLine(QPointF(x - 2, dock_y + 2.5), QPointF(x + 2, dock_y + 2.5))
+        # Roof
+        painter.drawLine(QPointF(x - 5, dock_y), QPointF(x, dock_y - 5))
+        painter.drawLine(QPointF(x, dock_y - 5), QPointF(x + 5, dock_y))
+        # Walls
+        painter.drawLine(QPointF(x - 4, dock_y), QPointF(x - 4, dock_y + 4))
+        painter.drawLine(QPointF(x + 4, dock_y), QPointF(x + 4, dock_y + 4))
+        # Base
+        painter.drawLine(QPointF(x - 4, dock_y + 4), QPointF(x + 4, dock_y + 4))
 
-        # Start button (bottom half - power symbol)
-        start_y = y + h/4
-        start_pressed = start_value > 100
+        # Start button (bottom - power symbol)
+        start_y = y + h/4 + 2
+
+        # Draw glow effect when start button is pressed
+        if start_pressed:
+            glow = QRadialGradient(x, start_y, 12)
+            glow.setColorAt(0, QColor(60, 200, 60, 200))
+            glow.setColorAt(0.5, QColor(60, 200, 60, 100))
+            glow.setColorAt(1, QColor(60, 200, 60, 0))
+            painter.setBrush(QBrush(glow))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QPointF(x, start_y), 12, 12)
+
         color = self.COLOR_BUTTON_ON if start_pressed else self.COLOR_BUTTON_OFF
+        line_width = 2.0 if start_pressed else 1.5
 
-        # Draw power icon (circle with line)
-        painter.setPen(QPen(color, 1.5))
+        # Draw power icon (circle with vertical line at top)
+        painter.setPen(QPen(color, line_width, Qt.SolidLine, Qt.RoundCap))
         painter.setBrush(Qt.NoBrush)
-        painter.drawArc(QRectF(x - 3, start_y - 3, 6, 6), 30 * 16, 300 * 16)
-        painter.drawLine(QPointF(x, start_y - 3.5), QPointF(x, start_y - 1))
+        # Arc (open at top)
+        painter.drawArc(QRectF(x - 5, start_y - 5, 10, 10), 50 * 16, 260 * 16)
+        # Vertical line
+        painter.drawLine(QPointF(x, start_y - 6), QPointF(x, start_y - 1))
 
     def _draw_battery_indicator(self, painter):
         """Draw battery/charging indicator in top-right corner of widget."""
@@ -469,7 +491,8 @@ class RobotDiagram(QWidget):
 
         # Use debounced charging state for stable display
         is_charging = self.charging_debounce_count >= 25
-        battery_level = self.sensor_data.get('battery_level', 45)  # Default 45% for now
+        battery_level = self.sensor_data.get('battery_level', 0)
+        battery_voltage = self.sensor_data.get('battery_voltage', 0.0)
 
         # Position at top-right corner of widget
         x = self.width() - 60
@@ -528,12 +551,12 @@ class RobotDiagram(QWidget):
             bolt.closeSubpath()
             painter.drawPath(bolt)
 
-        # Battery percentage text below
+        # Battery percentage and voltage text below
         painter.setPen(QColor(80, 80, 80))
         font = QFont('Arial', 8)
         painter.setFont(font)
-        text = f"{battery_level}%"
-        painter.drawText(QRectF(x - 25, y + h/2 + 2, 50, 15),
+        text = f"{battery_level}% ({battery_voltage:.1f}V)"
+        painter.drawText(QRectF(x - 40, y + h/2 + 2, 80, 15),
                         Qt.AlignCenter, text)
 
     def _draw_labels(self, painter, scale):

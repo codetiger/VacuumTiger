@@ -58,14 +58,19 @@ pub const STATUS_PAYLOAD_MIN_SIZE: usize = 80;
 pub const MAX_BUFFER_SIZE: usize = 1024;
 
 // Sensor data offsets in status packet
-pub const OFFSET_CHARGING_FLAGS: usize = 7;
-pub const OFFSET_BUMPER_FLAGS: usize = 1;
-pub const OFFSET_CLIFF_FLAGS: usize = 3;
-pub const OFFSET_DUSTBOX_FLAGS: usize = 4;
+pub const OFFSET_CHARGING_FLAGS: usize = 0x07;
+pub const OFFSET_BATTERY_VOLTAGE_RAW: usize = 0x08; // Raw voltage byte (divide by 10 for volts)
+pub const OFFSET_BUMPER_FLAGS: usize = 0x01;
+pub const OFFSET_CLIFF_FLAGS: usize = 0x03;
+pub const OFFSET_DUSTBOX_FLAGS: usize = 0x04;
 pub const OFFSET_WHEEL_RIGHT_ENCODER: usize = 0x10;
 pub const OFFSET_WHEEL_LEFT_ENCODER: usize = 0x18;
 pub const OFFSET_START_BUTTON: usize = 0x3A;
 pub const OFFSET_DOCK_BUTTON: usize = 0x3E;
+
+// Battery voltage thresholds (from CFactoryBatteryControl)
+pub const BATTERY_VOLTAGE_MIN: f32 = 13.5; // Critical low (0%)
+pub const BATTERY_VOLTAGE_MAX: f32 = 15.5; // Fully charged (100%)
 
 // Flag masks
 pub const FLAG_CHARGING: u8 = 0x02;

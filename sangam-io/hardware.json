@@ -21,7 +21,9 @@
         "id": "gd32_status",
         "sensors": [
           { "id": "is_charging", "type": "Bool" },
-          { "id": "is_battery_connected", "type": "Bool" },
+          { "id": "is_dock_connected", "type": "Bool" },
+          { "id": "battery_voltage", "type": "F32" },
+          { "id": "battery_level", "type": "U8" },
           { "id": "wheel_left", "type": "U16" },
           { "id": "wheel_right", "type": "U16" },
           { "id": "bumper_left", "type": "Bool" },

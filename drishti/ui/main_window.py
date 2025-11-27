@@ -4,7 +4,7 @@ Main window for Drishti robot visualization application.
 Single full-screen widget showing robot diagram with sensor overlays.
 """
 
-from PyQt5.QtCore import Qt, pyqtSlot
+from PyQt5.QtCore import Qt, pyqtSlot, QEvent
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStatusBar)
 from PyQt5.QtGui import QFont, QKeyEvent
 import logging
@@ -58,15 +58,15 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
-        # Robot diagram (left side, 80%)
+        # Robot diagram (left side, takes remaining space)
         self.robot_diagram = RobotDiagram()
-        content_layout.addWidget(self.robot_diagram, 4)  # Stretch factor 4
+        content_layout.addWidget(self.robot_diagram, 1)  # Stretch factor 1 (expands)
 
-        # Control panel (right side, 20%)
+        # Control panel (right side, fixed width) - dark theme
         self.control_panel = ControlPanel()
-        self.control_panel.setStyleSheet("background-color: #e8e8e8;")
+        self.control_panel.setStyleSheet("background-color: #2d2d2d;")
         self.control_panel.command_requested.connect(self._on_panel_command)
-        content_layout.addWidget(self.control_panel, 1)  # Stretch factor 1
+        content_layout.addWidget(self.control_panel, 0)  # Stretch factor 0 (fixed)
 
         main_layout.addLayout(content_layout, 1)
 
@@ -77,6 +77,10 @@ class MainWindow(QMainWindow):
         self.connection_status_label = QLabel("Connecting...")
         self.connection_status_label.setStyleSheet("color: #666; font-weight: bold;")
         self.status_bar.addPermanentWidget(self.connection_status_label)
+
+        # Ensure arrow keys go to main window for robot control
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.installEventFilter(self)
 
         # Connect to robot
         self._start_telemetry()
@@ -195,6 +199,20 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage(message, 3000)
         logger.info(message)
+
+    def eventFilter(self, obj, event):
+        """Intercept arrow keys to ensure they control robot movement."""
+        if event.type() == QEvent.KeyPress:
+            key = event.key()
+            if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+                self.keyPressEvent(event)
+                return True  # Event handled, don't propagate to widgets
+        elif event.type() == QEvent.KeyRelease:
+            key = event.key()
+            if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+                self.keyReleaseEvent(event)
+                return True
+        return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event: QKeyEvent):
         """Handle key press events."""
