@@ -19,11 +19,12 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     """Main application window with full-screen robot diagram."""
 
-    def __init__(self, robot_ip="192.168.68.101", port=5555):
+    def __init__(self, robot_ip="192.168.68.101", port=5555, log_raw_packets=False):
         super().__init__()
 
         self.robot_ip = robot_ip
         self.port = port
+        self.log_raw_packets = log_raw_packets
         self.telemetry_thread = None
         self.lidar_enabled = False  # Lidar starts disabled
         self.side_brush_enabled = False
@@ -101,7 +102,9 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Connecting to robot...")
 
             # Create and start telemetry thread
-            self.telemetry_thread = TelemetryThread(self.robot_ip, self.port)
+            self.telemetry_thread = TelemetryThread(
+                self.robot_ip, self.port, log_raw_packets=self.log_raw_packets
+            )
             self.telemetry_thread.sensor_data_received.connect(self._on_sensor_data)
             self.telemetry_thread.connection_status.connect(self._on_connection_status)
             self.telemetry_thread.start()

@@ -6,9 +6,9 @@
 use super::protocol::{cmd_version_request, PacketReader};
 use crate::core::types::{SensorGroupData, SensorValue};
 use crate::devices::crl200s::constants::{
-    CMD_STATUS, CMD_VERSION, FLAG_BATTERY_CONNECTED, FLAG_BUMPER_LEFT, FLAG_BUMPER_RIGHT,
-    FLAG_CHARGING, FLAG_CLIFF_LEFT_FRONT, FLAG_CLIFF_LEFT_SIDE, FLAG_CLIFF_RIGHT_FRONT,
-    FLAG_CLIFF_RIGHT_SIDE, FLAG_DUSTBOX_ATTACHED, OFFSET_BUMPER_FLAGS, OFFSET_CHARGING_FLAGS,
+    CMD_STATUS, CMD_VERSION, FLAG_BUMPER_LEFT, FLAG_BUMPER_RIGHT, FLAG_CHARGING,
+    FLAG_CLIFF_LEFT_FRONT, FLAG_CLIFF_LEFT_SIDE, FLAG_CLIFF_RIGHT_FRONT, FLAG_CLIFF_RIGHT_SIDE,
+    FLAG_DOCK_CONNECTED, FLAG_DUSTBOX_ATTACHED, OFFSET_BUMPER_FLAGS, OFFSET_CHARGING_FLAGS,
     OFFSET_CLIFF_FLAGS, OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS, OFFSET_START_BUTTON,
     OFFSET_WHEEL_LEFT_ENCODER, OFFSET_WHEEL_RIGHT_ENCODER, STATUS_PAYLOAD_MIN_SIZE,
 };
@@ -189,8 +189,8 @@ fn handle_status_packet(
         SensorValue::Bool((payload[OFFSET_CHARGING_FLAGS] & FLAG_CHARGING) != 0),
     );
     data.update(
-        "is_battery_connected",
-        SensorValue::Bool((payload[OFFSET_CHARGING_FLAGS] & FLAG_BATTERY_CONNECTED) != 0),
+        "is_dock_connected",
+        SensorValue::Bool((payload[OFFSET_CHARGING_FLAGS] & FLAG_DOCK_CONNECTED) != 0),
     );
 
     // Buttons
@@ -258,4 +258,7 @@ fn handle_status_packet(
         "dustbox_attached",
         SensorValue::Bool((payload[OFFSET_DUSTBOX_FLAGS] & FLAG_DUSTBOX_ATTACHED) != 0),
     );
+
+    // Raw packet bytes for debugging/reverse engineering
+    data.update("raw_packet", SensorValue::Bytes(payload.to_vec()));
 }

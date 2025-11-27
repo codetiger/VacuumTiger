@@ -32,7 +32,8 @@
           { "id": "cliff_right_side", "type": "Bool" },
           { "id": "dustbox_attached", "type": "Bool" },
           { "id": "start_button", "type": "U16" },
-          { "id": "dock_button", "type": "U16" }
+          { "id": "dock_button", "type": "U16" },
+          { "id": "raw_packet", "type": "Bytes" }
         ]
       },
       {

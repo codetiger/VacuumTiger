@@ -27,9 +27,9 @@ All commands use the packet format: `[0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_H] [
 | 0x06 | Heartbeat | None | ✅ | 606x | HIGH | Working in SangamIO, matches AuxCtrl `packetHeartBeat` |
 | 0x07 | Version Request | None | ✅ | 3x | HIGH | Working in SangamIO, matches AuxCtrl `packetRequireSystemVersion` |
 | 0x08 | Initialize/IMU Zero | None | ✅ | 13x | HIGH | Working in SangamIO, matches AuxCtrl `packetSetIMUZero`, no CRC |
-| 0x04 | MCU Sleep | None | ❌ | 0 | MEDIUM | Found in AuxCtrl `packetStm32Sleep`, not observed in logs |
-| 0x05 | Wakeup Ack | None | ❌ | 0 | MEDIUM | Found in AuxCtrl `packetWakeupAck`, not observed in logs |
-| 0x0A | Reset Error Code | None | ❌ | 1x | HIGH | Found in AuxCtrl `packetResetErrorCode`, used at end of R2D |
+| 0x04 | MCU Sleep | None | ✅ | 0 | MEDIUM | `ComponentControl { id: "mcu", action: Disable }` |
+| 0x05 | Wakeup Ack | None | ✅ | 0 | MEDIUM | `ComponentControl { id: "mcu", action: Enable }` |
+| 0x0A | Reset Error Code | None | ✅ | 1x | HIGH | `ComponentControl { id: "mcu", action: Reset }` |
 | 0x0D | Request STM32 Data | None | ✅ | 98x | HIGH | Internal driver polling every ~3s in heartbeat loop |
 | **Motor Control** |
 | 0x65 | Motor Mode | 1 byte | ✅ | 4x | HIGH | Working in SangamIO, 0x00=idle, 0x02=nav mode |
@@ -50,9 +50,9 @@ All commands use the packet format: `[0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_H] [
 | **LED/UI** |
 | 0x8D | Button LED State | 1 byte | ✅ | 7x | HIGH | Working in SangamIO, 19 modes discovered (see LED section) |
 | **Power Management** |
-| 0x99 | R16 Power | 1 byte | ❌ | 0 | MEDIUM | Found in AuxCtrl `packetR16Power` |
-| 0x9A | Restart R16 | None | ❌ | 0 | MEDIUM | Found in AuxCtrl `packetRestartR16System` |
-| 0x9B | Charger Power | 1 byte | ❌ | 0 | MEDIUM | Found in AuxCtrl `packetChargerPower` |
+| 0x99 | Main Board Power | 1 byte | ✅ | 0 | MEDIUM | `ComponentControl { id: "main_board", action: Enable/Disable }` |
+| 0x9A | Main Board Restart | None | ✅ | 0 | MEDIUM | `ComponentControl { id: "main_board", action: Reset }` |
+| 0x9B | Charger Power | 1 byte | ✅ | 0 | MEDIUM | `ComponentControl { id: "charger", action: Enable/Disable }` |
 | **Calibration** |
 | 0xA1 | IMU Factory Calibrate | None | ✅ | 0 | MEDIUM | `ComponentControl { id: "imu", action: Reset }` |
 | 0xA2 | IMU Calibrate State | 0 or 4 bytes | ✅ | 2x | HIGH | `ComponentControl { id: "imu", action: Enable }` |
@@ -123,17 +123,12 @@ Phase 4: Shutdown
 
 | Status | Count | Commands |
 |--------|-------|----------|
-| ✅ Implemented | 19 | 0x06, 0x07, 0x08, 0x0D, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x71, 0x78, 0x79, 0x8D, 0x97, 0xA1, 0xA2, 0xA3, 0xA4 |
-| ❌ Not Implemented | 7 | 0x04, 0x05, 0x0A, 0x6B, 0x86, 0x99, 0x9A, 0x9B, 0x9D |
+| ✅ Implemented | 25 | 0x04, 0x05, 0x06, 0x07, 0x08, 0x0A, 0x0D, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x71, 0x78, 0x79, 0x8D, 0x97, 0x99, 0x9A, 0x9B, 0xA1, 0xA2, 0xA3, 0xA4 |
+| ❌ Not Implemented | 3 | 0x6B, 0x86, 0x9D |
 
 ---
 
 ## Implementation Priority
-
-### High Priority (Used in R2D, high confidence)
-| Hex | Name | Reason |
-|-----|------|--------|
-| 0x0A | Reset Error Code | Called at end of every operation |
 
 ### Medium Priority (Used in R2D, low confidence)
 | Hex | Name | Reason |
@@ -142,11 +137,6 @@ Phase 4: Shutdown
 | 0x6B | Unknown Actuator | Brief use, may be related to docking |
 | 0x9D | Unknown | Single use, purpose unclear |
 
-### Lower Priority (Not used in R2D)
-| Hex | Name | Reason |
-|-----|------|--------|
-| 0x04/0x05 | Sleep/Wake | Power management |
-| 0x99/0x9A/0x9B | R16/Charger Power | Advanced power control |
 
 ---
 
@@ -236,6 +226,9 @@ All sensors and actuators are controlled via the unified `ComponentControl` comm
 | `imu` | Query state (0xA2) | - | Factory calibrate (0xA1) | - |
 | `compass` | Query state (0xA4) | - | Start calibration (0xA3) | - |
 | `cliff_ir` | Enable (0x78) | Disable (0x78) | - | `{ "direction": U8 }` (0x79) |
+| `main_board` | Power on (0x99) | Power off (0x99) ⚠️ | Restart (0x9A) ⚠️ | - |
+| `charger` | Enable (0x9B) | Disable (0x9B) | - | - |
+| `mcu` | Wakeup ack (0x05) | Sleep (0x04) | Reset error code (0x0A) | - |
 
 ### Drive Configuration Modes
 
@@ -299,4 +292,39 @@ The `drive` component supports two configuration modes:
 **Set LED to charging animation (mode 4):**
 ```json
 {"type": "ComponentControl", "id": "led", "action": {"type": "Configure", "config": {"state": {"U8": 4}}}}
+```
+
+**Power on main board (A33):**
+```json
+{"type": "ComponentControl", "id": "main_board", "action": {"type": "Enable"}}
+```
+
+**Restart main board (⚠️ daemon will terminate!):**
+```json
+{"type": "ComponentControl", "id": "main_board", "action": {"type": "Reset"}}
+```
+
+**Enable charger power:**
+```json
+{"type": "ComponentControl", "id": "charger", "action": {"type": "Enable"}}
+```
+
+**Disable charger power:**
+```json
+{"type": "ComponentControl", "id": "charger", "action": {"type": "Disable"}}
+```
+
+**Put MCU to sleep:**
+```json
+{"type": "ComponentControl", "id": "mcu", "action": {"type": "Disable"}}
+```
+
+**Wake MCU (acknowledge wakeup):**
+```json
+{"type": "ComponentControl", "id": "mcu", "action": {"type": "Enable"}}
+```
+
+**Reset MCU error codes:**
+```json
+{"type": "ComponentControl", "id": "mcu", "action": {"type": "Reset"}}
 ```

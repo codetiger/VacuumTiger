@@ -18,6 +18,7 @@ pub enum SensorType {
     F32,
     F64,
     String,
+    Bytes,
     Vector3,
     PointCloud2D,
 }
@@ -37,6 +38,7 @@ pub enum SensorValue {
     F32(f32),
     F64(f64),
     String(String),
+    Bytes(Vec<u8>),
     Vector3([f32; 3]),
     PointCloud2D(Vec<(f32, f32, u8)>), // (angle_rad, distance_m, quality)
 }

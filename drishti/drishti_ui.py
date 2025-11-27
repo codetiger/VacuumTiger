@@ -41,6 +41,11 @@ def main():
         action="store_true",
         help="Enable verbose logging"
     )
+    parser.add_argument(
+        "--log-raw-packets",
+        action="store_true",
+        help="Log raw GD32 status packets to file for debugging"
+    )
 
     args = parser.parse_args()
 
@@ -49,6 +54,8 @@ def main():
 
     logger.info("Drishti - CRL-200S Robot Visualization")
     logger.info(f"Connecting to {args.robot}:{args.port}")
+    if args.log_raw_packets:
+        logger.info("Raw packet logging ENABLED")
 
     # Create Qt application
     app = QApplication(sys.argv)
@@ -56,7 +63,11 @@ def main():
 
     # Create and show main window
     try:
-        window = MainWindow(robot_ip=args.robot, port=args.port)
+        window = MainWindow(
+            robot_ip=args.robot,
+            port=args.port,
+            log_raw_packets=args.log_raw_packets
+        )
         window.show()
 
         logger.info("Application started")

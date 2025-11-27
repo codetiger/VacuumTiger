@@ -65,6 +65,7 @@ fn main() -> Result<()> {
                     crate::core::types::SensorType::F32 => SensorValue::F32(0.0),
                     crate::core::types::SensorType::F64 => SensorValue::F64(0.0),
                     crate::core::types::SensorType::String => SensorValue::String(String::new()),
+                    crate::core::types::SensorType::Bytes => SensorValue::Bytes(vec![]),
                     crate::core::types::SensorType::Vector3 => {
                         SensorValue::Vector3([0.0, 0.0, 0.0])
                     }

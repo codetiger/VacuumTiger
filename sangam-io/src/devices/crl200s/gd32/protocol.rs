@@ -2,11 +2,13 @@
 //! Packet format: [0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_H] [CRC_L]
 
 use crate::devices::crl200s::constants::{
-    CMD_AIR_PUMP, CMD_BUTTON_LED, CMD_CLIFF_IR_CONTROL, CMD_CLIFF_IR_DIRECTION,
+    CMD_AIR_PUMP, CMD_BUTTON_LED, CMD_CHARGER_POWER, CMD_CLIFF_IR_CONTROL, CMD_CLIFF_IR_DIRECTION,
     CMD_COMPASS_CALIBRATE, CMD_COMPASS_CALIBRATION_STATE, CMD_HEARTBEAT, CMD_IMU_CALIBRATE_STATE,
-    CMD_IMU_FACTORY_CALIBRATE, CMD_INITIALIZE, CMD_LIDAR_POWER, CMD_LIDAR_PWM, CMD_MAIN_BRUSH,
-    CMD_MOTOR_MODE, CMD_MOTOR_SPEED, CMD_MOTOR_VELOCITY, CMD_REQUEST_STM32_DATA, CMD_SIDE_BRUSH,
-    CMD_VERSION, MAX_BUFFER_SIZE, MIN_PACKET_SIZE, SYNC_BYTE_1, SYNC_BYTE_2,
+    CMD_IMU_FACTORY_CALIBRATE, CMD_INITIALIZE, CMD_LIDAR_POWER, CMD_LIDAR_PWM,
+    CMD_MAIN_BOARD_POWER, CMD_MAIN_BOARD_RESTART, CMD_MAIN_BRUSH, CMD_MCU_SLEEP, CMD_MOTOR_MODE,
+    CMD_MOTOR_SPEED, CMD_MOTOR_VELOCITY, CMD_REQUEST_STM32_DATA, CMD_RESET_ERROR_CODE,
+    CMD_SIDE_BRUSH, CMD_VERSION, CMD_WAKEUP_ACK, MAX_BUFFER_SIZE, MIN_PACKET_SIZE, SYNC_BYTE_1,
+    SYNC_BYTE_2,
 };
 use crate::error::{Error, Result};
 use std::io::Read;
@@ -330,6 +332,64 @@ pub fn cmd_cliff_ir_direction(direction: u8) -> Packet {
 /// Polls sensor status from STM32. Called internally by driver every ~3 seconds.
 pub fn cmd_request_stm32_data() -> Packet {
     Packet::new(CMD_REQUEST_STM32_DATA, vec![])
+}
+
+// Power management commands
+
+/// Main board (A33) power control command (0x99)
+///
+/// Controls power to the A33 main application board running Linux.
+/// - `on = true`: Power on main board
+/// - `on = false`: Power off main board
+///
+/// **WARNING**: Powering off will terminate the daemon and lose connectivity!
+pub fn cmd_main_board_power(on: bool) -> Packet {
+    Packet::new(CMD_MAIN_BOARD_POWER, vec![if on { 0x01 } else { 0x00 }])
+}
+
+/// Restart main board command (0x9A)
+///
+/// Triggers a full restart of the A33 Linux system. No payload required.
+///
+/// **WARNING**: This will terminate the daemon and require reconnection!
+pub fn cmd_main_board_restart() -> Packet {
+    Packet::new(CMD_MAIN_BOARD_RESTART, vec![])
+}
+
+/// Charger power control command (0x9B)
+///
+/// Controls the charger power rail.
+/// - `on = true`: Enable charger power
+/// - `on = false`: Disable charger power
+pub fn cmd_charger_power(on: bool) -> Packet {
+    Packet::new(CMD_CHARGER_POWER, vec![if on { 0x01 } else { 0x00 }])
+}
+
+// MCU control commands
+
+/// MCU sleep command (0x04)
+///
+/// Puts the GD32 MCU into sleep/low-power mode.
+/// Found in AuxCtrl as `packetStm32Sleep`. No payload required.
+pub fn cmd_mcu_sleep() -> Packet {
+    Packet::new(CMD_MCU_SLEEP, vec![])
+}
+
+/// Wakeup acknowledge command (0x05)
+///
+/// Acknowledges wakeup from sleep mode.
+/// Found in AuxCtrl as `packetWakeupAck`. No payload required.
+pub fn cmd_wakeup_ack() -> Packet {
+    Packet::new(CMD_WAKEUP_ACK, vec![])
+}
+
+/// Reset error code command (0x0A)
+///
+/// Clears/resets error codes on the GD32.
+/// Found in AuxCtrl as `packetResetErrorCode`. Typically called at end of operations.
+/// No payload required.
+pub fn cmd_reset_error_code() -> Packet {
+    Packet::new(CMD_RESET_ERROR_CODE, vec![])
 }
 
 #[cfg(test)]

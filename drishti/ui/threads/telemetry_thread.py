@@ -7,6 +7,8 @@ import socket
 import struct
 import json
 import logging
+import os
+from datetime import datetime
 from PyQt5.QtCore import QThread, pyqtSignal
 
 logger = logging.getLogger(__name__)
@@ -21,16 +23,26 @@ class TelemetryThread(QThread):
     # Signal for connection status
     connection_status = pyqtSignal(bool, str)
 
-    def __init__(self, host: str, port: int = 5555, parent=None):
+    def __init__(self, host: str, port: int = 5555, log_raw_packets: bool = False, parent=None):
         super().__init__(parent)
         self.host = host
         self.port = port
         self._running = True
         self.socket = None
+        self.log_raw_packets = log_raw_packets
+        self.raw_packet_file = None
+        self._packet_count = 0
 
     def run(self):
         """Main thread loop - connect and receive data."""
         logger.info(f"Telemetry thread starting, connecting to {self.host}:{self.port}")
+
+        # Open raw packet log file if enabled
+        if self.log_raw_packets:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_filename = f"raw_packets_{timestamp}.log"
+            self.raw_packet_file = open(log_filename, 'w')
+            logger.info(f"Raw packet logging enabled: {log_filename}")
 
         while self._running:
             try:
@@ -79,6 +91,12 @@ class TelemetryThread(QThread):
         if self.socket:
             try:
                 self.socket.close()
+            except:
+                pass
+        if self.raw_packet_file:
+            try:
+                self.raw_packet_file.close()
+                logger.info(f"Raw packet log closed ({self._packet_count} packets logged)")
             except:
                 pass
         self.wait()
@@ -166,6 +184,12 @@ class TelemetryThread(QThread):
             group_id = payload.get('group_id', '')
             values = payload.get('values', {})
 
+            # Log raw_packet if enabled and present
+            if self.raw_packet_file and 'raw_packet' in values:
+                raw_packet = self._extract_value(values['raw_packet'])
+                if raw_packet:
+                    self._log_raw_packet(raw_packet, payload.get('timestamp_us', 0))
+
             # Convert sensor values from tagged format to simple values
             sensor_data = {}
             for key, value in values.items():
@@ -176,6 +200,23 @@ class TelemetryThread(QThread):
             sensor_data['_timestamp_us'] = payload.get('timestamp_us', 0)
 
             self.sensor_data_received.emit(sensor_data)
+
+    def _log_raw_packet(self, raw_packet: list, timestamp_us: int):
+        """Log raw packet bytes to file.
+
+        Format: timestamp_us,hex_bytes
+        Example: 1234567890,FA FB 03 15 00 01 02 ...
+        """
+        try:
+            hex_str = ' '.join(f'{b:02X}' for b in raw_packet)
+            self.raw_packet_file.write(f"{timestamp_us},{hex_str}\n")
+            self._packet_count += 1
+
+            # Flush every 100 packets to ensure data is written
+            if self._packet_count % 100 == 0:
+                self.raw_packet_file.flush()
+        except Exception as e:
+            logger.error(f"Failed to log raw packet: {e}")
 
     def _extract_value(self, tagged_value):
         """Extract value from tagged SensorValue format.

@@ -38,6 +38,16 @@ pub const CMD_COMPASS_CALIBRATION_STATE: u8 = 0xA4; // Query compass calibration
 // System polling commands
 pub const CMD_REQUEST_STM32_DATA: u8 = 0x0D; // Request STM32 sensor data (polled every ~3s)
 
+// MCU control commands
+pub const CMD_MCU_SLEEP: u8 = 0x04; // Put GD32 MCU to sleep
+pub const CMD_WAKEUP_ACK: u8 = 0x05; // Acknowledge wakeup from sleep
+pub const CMD_RESET_ERROR_CODE: u8 = 0x0A; // Reset/clear error codes
+
+// Power management commands
+pub const CMD_MAIN_BOARD_POWER: u8 = 0x99; // Main board (A33) power control
+pub const CMD_MAIN_BOARD_RESTART: u8 = 0x9A; // Restart main board (A33 Linux system)
+pub const CMD_CHARGER_POWER: u8 = 0x9B; // Charger power control
+
 // Timing constants
 pub const SERIAL_READ_TIMEOUT_MS: u64 = 50;
 pub const INIT_RETRY_DELAY_MS: u64 = 100;
@@ -59,7 +69,7 @@ pub const OFFSET_DOCK_BUTTON: usize = 0x3E;
 
 // Flag masks
 pub const FLAG_CHARGING: u8 = 0x02;
-pub const FLAG_BATTERY_CONNECTED: u8 = 0x01;
+pub const FLAG_DOCK_CONNECTED: u8 = 0x01;
 pub const FLAG_BUMPER_RIGHT: u8 = 0x02;
 pub const FLAG_BUMPER_LEFT: u8 = 0x04;
 pub const FLAG_CLIFF_LEFT_SIDE: u8 = 0x01;

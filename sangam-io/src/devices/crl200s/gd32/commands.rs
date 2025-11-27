@@ -24,10 +24,11 @@
 //! These conversions are defined by the GD32F103 firmware protocol.
 
 use super::protocol::{
-    cmd_air_pump, cmd_cliff_ir_control, cmd_cliff_ir_direction, cmd_compass_calibrate,
-    cmd_compass_calibration_state, cmd_imu_calibrate_state, cmd_imu_factory_calibrate,
-    cmd_led_state, cmd_lidar_power, cmd_lidar_pwm, cmd_main_brush, cmd_motor_mode, cmd_motor_speed,
-    cmd_motor_velocity, cmd_side_brush, Packet,
+    cmd_air_pump, cmd_charger_power, cmd_cliff_ir_control, cmd_cliff_ir_direction,
+    cmd_compass_calibrate, cmd_compass_calibration_state, cmd_imu_calibrate_state,
+    cmd_imu_factory_calibrate, cmd_led_state, cmd_lidar_power, cmd_lidar_pwm, cmd_main_board_power,
+    cmd_main_board_restart, cmd_main_brush, cmd_mcu_sleep, cmd_motor_mode, cmd_motor_speed,
+    cmd_motor_velocity, cmd_reset_error_code, cmd_side_brush, cmd_wakeup_ack, Packet,
 };
 use super::state::ComponentState;
 use crate::core::types::{Command, ComponentAction, SensorValue};
@@ -57,6 +58,9 @@ const ID_LIDAR: &str = "lidar";
 const ID_IMU: &str = "imu";
 const ID_COMPASS: &str = "compass";
 const ID_CLIFF_IR: &str = "cliff_ir";
+const ID_MAIN_BOARD: &str = "main_board";
+const ID_CHARGER: &str = "charger";
+const ID_MCU: &str = "mcu";
 
 // ============================================================================
 // Helpers
@@ -231,6 +235,11 @@ fn handle_component_control(
 
         // === CLIFF IR ===
         ID_CLIFF_IR => handle_cliff_ir(port, action),
+
+        // === POWER MANAGEMENT ===
+        ID_MAIN_BOARD => handle_main_board(port, action),
+        ID_CHARGER => handle_charger(port, action),
+        ID_MCU => handle_mcu(port, action),
 
         // === UNSUPPORTED ===
         _ => Err(Error::NotImplemented(format!(
@@ -467,6 +476,85 @@ fn handle_cliff_ir(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAct
         }
         _ => Err(Error::NotImplemented(format!(
             "Cliff IR does not support {:?}",
+            action
+        ))),
+    }
+}
+
+/// Handle main board (A33) power commands
+///
+/// Controls power to the A33 main application board running Linux.
+/// - Enable: Power on main board
+/// - Disable: Power off main board (WARNING: terminates daemon!)
+/// - Reset: Restart main board (WARNING: terminates daemon!)
+fn handle_main_board(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    action: &ComponentAction,
+) -> Result<()> {
+    match action {
+        ComponentAction::Enable { .. } => {
+            log::info!("Main board power on (0x99)");
+            send_packet(port, &cmd_main_board_power(true))
+        }
+        ComponentAction::Disable { .. } => {
+            log::warn!("Main board power off (0x99) - daemon will terminate!");
+            send_packet(port, &cmd_main_board_power(false))
+        }
+        ComponentAction::Reset { .. } => {
+            log::warn!("Main board restart (0x9A) - daemon will terminate!");
+            send_packet(port, &cmd_main_board_restart())
+        }
+        _ => Err(Error::NotImplemented(format!(
+            "Main board only supports Enable/Disable/Reset, got {:?}",
+            action
+        ))),
+    }
+}
+
+/// Handle charger power commands
+///
+/// Controls the charger power rail.
+/// - Enable: Enable charger power
+/// - Disable: Disable charger power
+fn handle_charger(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+    match action {
+        ComponentAction::Enable { .. } => {
+            log::info!("Charger power enable (0x9B)");
+            send_packet(port, &cmd_charger_power(true))
+        }
+        ComponentAction::Disable { .. } => {
+            log::info!("Charger power disable (0x9B)");
+            send_packet(port, &cmd_charger_power(false))
+        }
+        _ => Err(Error::NotImplemented(format!(
+            "Charger only supports Enable/Disable, got {:?}",
+            action
+        ))),
+    }
+}
+
+/// Handle MCU control commands
+///
+/// Controls the GD32 MCU power state and error codes:
+/// - Disable: Put MCU to sleep (0x04)
+/// - Enable: Acknowledge wakeup from sleep (0x05)
+/// - Reset: Clear/reset error codes (0x0A)
+fn handle_mcu(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+    match action {
+        ComponentAction::Disable { .. } => {
+            log::info!("MCU sleep (0x04)");
+            send_packet(port, &cmd_mcu_sleep())
+        }
+        ComponentAction::Enable { .. } => {
+            log::info!("MCU wakeup ack (0x05)");
+            send_packet(port, &cmd_wakeup_ack())
+        }
+        ComponentAction::Reset { .. } => {
+            log::info!("MCU reset error code (0x0A)");
+            send_packet(port, &cmd_reset_error_code())
+        }
+        _ => Err(Error::NotImplemented(format!(
+            "MCU only supports Enable/Disable/Reset, got {:?}",
             action
         ))),
     }
