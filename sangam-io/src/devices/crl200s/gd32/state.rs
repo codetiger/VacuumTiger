@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU8, Ordering};
 /// - `vacuum`: Air pump speed (0-100)
 /// - `main_brush`: Main roller brush speed (0-100)
 /// - `side_brush`: Side brush speed (0-100)
+/// - `water_pump`: Water pump speed for 2-in-1 mop box (0-100)
 /// - `motor_mode_set`: Whether motor mode 0x02 (navigation) is currently active
 /// - `lidar_enabled`: Whether lidar motor should be spinning
 /// - `lidar_pwm`: Lidar motor PWM percentage (0-100)
@@ -26,6 +27,7 @@ pub struct ComponentState {
     pub vacuum: AtomicU8,
     pub main_brush: AtomicU8,
     pub side_brush: AtomicU8,
+    pub water_pump: AtomicU8,
     pub motor_mode_set: AtomicBool,
     pub lidar_enabled: AtomicBool,
     pub lidar_pwm: AtomicU8,
@@ -40,6 +42,7 @@ impl ComponentState {
         self.vacuum.store(0, Ordering::Relaxed);
         self.main_brush.store(0, Ordering::Relaxed);
         self.side_brush.store(0, Ordering::Relaxed);
+        self.water_pump.store(0, Ordering::Relaxed);
         self.lidar_enabled.store(false, Ordering::Relaxed);
         self.lidar_pwm.store(0, Ordering::Relaxed);
         self.linear_velocity.store(0, Ordering::Relaxed);
@@ -53,6 +56,7 @@ impl ComponentState {
         self.vacuum.load(Ordering::Relaxed) > 0
             || self.main_brush.load(Ordering::Relaxed) > 0
             || self.side_brush.load(Ordering::Relaxed) > 0
+            || self.water_pump.load(Ordering::Relaxed) > 0
             || self.lidar_enabled.load(Ordering::Relaxed)
             || self.wheel_motor_enabled.load(Ordering::Relaxed)
     }
@@ -65,12 +69,13 @@ impl ComponentState {
         )
     }
 
-    /// Get component speeds (vacuum, main_brush, side_brush)
-    pub fn get_component_speeds(&self) -> (u8, u8, u8) {
+    /// Get component speeds (vacuum, main_brush, side_brush, water_pump)
+    pub fn get_component_speeds(&self) -> (u8, u8, u8, u8) {
         (
             self.vacuum.load(Ordering::Relaxed),
             self.main_brush.load(Ordering::Relaxed),
             self.side_brush.load(Ordering::Relaxed),
+            self.water_pump.load(Ordering::Relaxed),
         )
     }
 }

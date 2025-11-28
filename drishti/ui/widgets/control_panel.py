@@ -232,10 +232,16 @@ class LidarControl(QWidget):
 
 
 class DustboxStatus(QWidget):
-    """Widget showing dustbox status as info display."""
+    """Widget showing dustbox status with water level and pump control for 2-in-1 box."""
+
+    # Signal: (speed_percent)
+    water_pump_changed = pyqtSignal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.is_2in1 = False
+        self.water_pump_enabled = False
+        self.water_pump_speed = 0
         self._setup_ui()
 
     def _setup_ui(self):
@@ -269,17 +275,136 @@ class DustboxStatus(QWidget):
         status_layout.addStretch()
         layout.addLayout(status_layout)
 
-        # Type indicator (placeholder - needs protocol support)
+        # Type indicator
         self.type_label = QLabel("Type: Unknown")
         self.type_label.setStyleSheet("color: #777; font-size: 9px;")
         layout.addWidget(self.type_label)
 
-    def update_status(self, attached: bool, dustbox_type: str = None):
+        # Water tank level (only shown for 2-in-1 box)
+        self.water_level_layout = QHBoxLayout()
+        self.water_level_layout.setSpacing(8)
+
+        self.water_dot = QLabel()
+        self.water_dot.setFixedSize(12, 12)
+        self.water_dot.setStyleSheet(
+            "background-color: #666; border-radius: 6px;"
+        )
+        self.water_level_layout.addWidget(self.water_dot)
+
+        self.water_level_label = QLabel("Tank: --")
+        self.water_level_label.setStyleSheet("color: #777;")
+        self.water_level_layout.addWidget(self.water_level_label)
+
+        self.water_level_layout.addStretch()
+        layout.addLayout(self.water_level_layout)
+
+        # Water pump control (only shown for 2-in-1 box)
+        self.pump_widget = QWidget()
+        pump_layout = QVBoxLayout(self.pump_widget)
+        pump_layout.setContentsMargins(0, 5, 0, 0)
+        pump_layout.setSpacing(3)
+
+        # Pump header with toggle
+        pump_header = QHBoxLayout()
+        pump_label = QLabel("Water Pump")
+        pump_label.setStyleSheet("color: #aaa; font-size: 9px;")
+        pump_header.addWidget(pump_label)
+
+        pump_header.addStretch()
+
+        self.pump_toggle = QPushButton("OFF")
+        self.pump_toggle.setCheckable(True)
+        self.pump_toggle.setFixedWidth(40)
+        self.pump_toggle.setFixedHeight(20)
+        self.pump_toggle.clicked.connect(self._on_pump_toggle)
+        self._update_pump_style()
+        pump_header.addWidget(self.pump_toggle)
+
+        pump_layout.addLayout(pump_header)
+
+        # Pump speed slider
+        slider_layout = QHBoxLayout()
+
+        self.pump_slider = QSlider(Qt.Horizontal)
+        self.pump_slider.setMinimum(0)
+        self.pump_slider.setMaximum(4)  # 0, 25, 50, 75, 100
+        self.pump_slider.setValue(0)
+        self.pump_slider.setTickPosition(QSlider.TicksBelow)
+        self.pump_slider.setTickInterval(1)
+        self.pump_slider.setFocusPolicy(Qt.NoFocus)
+        self.pump_slider.valueChanged.connect(self._on_pump_slider_changed)
+        slider_layout.addWidget(self.pump_slider)
+
+        self.pump_speed_label = QLabel("0%")
+        self.pump_speed_label.setFixedWidth(30)
+        self.pump_speed_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.pump_speed_label.setStyleSheet("color: #aaa; font-size: 9px;")
+        slider_layout.addWidget(self.pump_speed_label)
+
+        pump_layout.addLayout(slider_layout)
+
+        layout.addWidget(self.pump_widget)
+
+        # Initially hide water controls
+        self._set_water_controls_visible(False)
+
+    def _set_water_controls_visible(self, visible: bool):
+        """Show or hide water-related controls."""
+        self.water_dot.setVisible(visible)
+        self.water_level_label.setVisible(visible)
+        self.pump_widget.setVisible(visible)
+
+    def _on_pump_toggle(self):
+        self.water_pump_enabled = self.pump_toggle.isChecked()
+        self._update_pump_style()
+
+        # When toggling ON with slider at 0, set to 100%
+        if self.water_pump_enabled and self.water_pump_speed == 0:
+            self.water_pump_speed = 100
+            self.pump_slider.setValue(4)
+            self.pump_speed_label.setText("100%")
+
+        self._emit_pump_command()
+
+    def _on_pump_slider_changed(self, value):
+        self.water_pump_speed = value * 25
+        self.pump_speed_label.setText(f"{self.water_pump_speed}%")
+
+        # If slider moved above 0, enable; if moved to 0, disable
+        if self.water_pump_speed > 0 and not self.water_pump_enabled:
+            self.water_pump_enabled = True
+            self.pump_toggle.setChecked(True)
+            self._update_pump_style()
+        elif self.water_pump_speed == 0 and self.water_pump_enabled:
+            self.water_pump_enabled = False
+            self.pump_toggle.setChecked(False)
+            self._update_pump_style()
+
+        self._emit_pump_command()
+
+    def _update_pump_style(self):
+        if self.water_pump_enabled:
+            self.pump_toggle.setText("ON")
+            self.pump_toggle.setStyleSheet(
+                "background-color: #2196F3; color: white; font-weight: bold; font-size: 9px;"
+            )
+        else:
+            self.pump_toggle.setText("OFF")
+            self.pump_toggle.setStyleSheet(
+                "background-color: #555; color: #ccc; font-size: 9px;"
+            )
+
+    def _emit_pump_command(self):
+        actual_speed = float(self.water_pump_speed) if self.water_pump_enabled else 0.0
+        self.water_pump_changed.emit(actual_speed)
+
+    def update_status(self, attached: bool, dustbox_type: str = None, water_level: int = None):
         """Update dustbox status display.
 
         Args:
             attached: Whether dustbox is present
             dustbox_type: "dry" or "2in1" (optional, may not be available)
+            water_level: Water tank level 0-100 (only for 2-in-1 box)
         """
         if attached:
             self.status_label.setText("Present")
@@ -294,14 +419,42 @@ class DustboxStatus(QWidget):
                 "background-color: #f44336; border-radius: 6px;"
             )
 
-        # Update type if available
-        if dustbox_type:
-            if dustbox_type == "2in1":
-                self.type_label.setText("Type: 2-in-1 (Wet/Dry)")
-            else:
-                self.type_label.setText("Type: Dry Only")
+        # Detect 2-in-1 box if water level > 0 (pump was activated and water detected)
+        if water_level is not None and water_level > 0:
+            self.is_2in1 = True
+
+        # Update type label
+        if self.is_2in1:
+            self.type_label.setText("Type: 2-in-1 (Wet/Dry)")
+        elif dustbox_type == "dry":
+            self.type_label.setText("Type: Dry Only")
         else:
             self.type_label.setText("Type: Unknown")
+
+        # Always show water pump controls when dustbox is attached
+        # (user can test if it's a 2-in-1 box by activating pump)
+        self._set_water_controls_visible(attached)
+
+        # Update water level display
+        if water_level is not None:
+            if water_level > 0:
+                self.water_level_label.setText(f"Tank: {water_level}%")
+                self.water_level_label.setStyleSheet("color: #00BCD4; font-weight: bold;")
+                self.water_dot.setStyleSheet(
+                    "background-color: #00BCD4; border-radius: 6px;"
+                )
+            else:
+                self.water_level_label.setText("Tank: 0%")
+                self.water_level_label.setStyleSheet("color: #777;")
+                self.water_dot.setStyleSheet(
+                    "background-color: #666; border-radius: 6px;"
+                )
+        else:
+            self.water_level_label.setText("Tank: --")
+            self.water_level_label.setStyleSheet("color: #777;")
+            self.water_dot.setStyleSheet(
+                "background-color: #666; border-radius: 6px;"
+            )
 
 
 class LEDControl(QWidget):
@@ -881,6 +1034,7 @@ class ControlPanel(QWidget):
 
         # Dustbox status
         self.dustbox_status = DustboxStatus()
+        self.dustbox_status.water_pump_changed.connect(self._on_water_pump_command)
         layout.addWidget(self.dustbox_status)
 
         # Lidar control
@@ -973,13 +1127,35 @@ class ControlPanel(QWidget):
         }
         self.command_requested.emit(command)
 
+    def _on_water_pump_command(self, speed: float):
+        """Handle water pump control command using ComponentControl protocol."""
+        if speed > 0:
+            command = {
+                "type": "ComponentControl",
+                "id": "water_pump",
+                "action": {
+                    "type": "Configure",
+                    "config": {"speed": {"U8": int(speed)}}
+                }
+            }
+        else:
+            command = {
+                "type": "ComponentControl",
+                "id": "water_pump",
+                "action": {"type": "Disable"}
+            }
+        self.command_requested.emit(command)
+
     def update_sensors(self, data: dict):
         """Update control panel with sensor data."""
         # Update dustbox status
         dustbox_attached = data.get('dustbox_attached', True)
-        # dustbox_type would come from protocol if available
-        dustbox_type = data.get('dustbox_type', None)
-        self.dustbox_status.update_status(dustbox_attached, dustbox_type)
+        # Water tank level from status offset 0x46 (0 or 100)
+        water_level = data.get('water_tank_level', None)
+        # Derive box type: if water_tank_level > 0, it's a 2-in-1 mop box
+        # (water level is only reported when 2-in-1 box is attached)
+        dustbox_type = "2in1" if water_level is not None and water_level > 0 else None
+        self.dustbox_status.update_status(dustbox_attached, dustbox_type, water_level)
 
         # Update lidar status if scan data present
         if 'scan' in data:

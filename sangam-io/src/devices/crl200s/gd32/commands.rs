@@ -29,7 +29,7 @@ use super::protocol::{
     cmd_imu_factory_calibrate, cmd_led_state, cmd_lidar_power, cmd_lidar_pwm, cmd_main_board_power,
     cmd_main_board_restart, cmd_main_brush, cmd_mcu_sleep, cmd_motor_mode, cmd_motor_speed,
     cmd_motor_velocity, cmd_protocol_sync, cmd_reset_error_code, cmd_side_brush, cmd_wakeup_ack,
-    Packet,
+    cmd_water_pump, Packet,
 };
 use super::state::ComponentState;
 use crate::core::types::{Command, ComponentAction, SensorValue};
@@ -54,6 +54,7 @@ const ID_DRIVE: &str = "drive";
 const ID_VACUUM: &str = "vacuum";
 const ID_MAIN_BRUSH: &str = "main_brush";
 const ID_SIDE_BRUSH: &str = "side_brush";
+const ID_WATER_PUMP: &str = "water_pump";
 const ID_LED: &str = "led";
 const ID_LIDAR: &str = "lidar";
 const ID_IMU: &str = "imu";
@@ -136,6 +137,7 @@ fn emergency_stop(
     let _ = port_guard.write_all(&cmd_air_pump(0).to_bytes());
     let _ = port_guard.write_all(&cmd_main_brush(0).to_bytes());
     let _ = port_guard.write_all(&cmd_side_brush(0).to_bytes());
+    let _ = port_guard.write_all(&cmd_water_pump(0).to_bytes());
     let _ = port_guard.write_all(&cmd_lidar_pwm(0).to_bytes());
     let _ = port_guard.write_all(&cmd_lidar_power(false).to_bytes());
 
@@ -225,6 +227,13 @@ fn handle_component_control(
             &component_state.side_brush,
             cmd_side_brush,
             "Side brush",
+            action,
+        ),
+        ID_WATER_PUMP => handle_speed_component(
+            port,
+            &component_state.water_pump,
+            cmd_water_pump,
+            "Water pump",
             action,
         ),
 

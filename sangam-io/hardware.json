@@ -33,6 +33,7 @@
           { "id": "cliff_right_front", "type": "Bool" },
           { "id": "cliff_right_side", "type": "Bool" },
           { "id": "dustbox_attached", "type": "Bool" },
+          { "id": "water_tank_level", "type": "U8" },
           { "id": "start_button", "type": "U16" },
           { "id": "dock_button", "type": "U16" },
           { "id": "raw_packet", "type": "Bytes" }

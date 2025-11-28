@@ -11,7 +11,8 @@ use crate::devices::crl200s::constants::{
     FLAG_CLIFF_LEFT_SIDE, FLAG_CLIFF_RIGHT_FRONT, FLAG_CLIFF_RIGHT_SIDE, FLAG_DOCK_CONNECTED,
     FLAG_DUSTBOX_ATTACHED, OFFSET_BATTERY_VOLTAGE_RAW, OFFSET_BUMPER_FLAGS, OFFSET_CHARGING_FLAGS,
     OFFSET_CLIFF_FLAGS, OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS, OFFSET_START_BUTTON,
-    OFFSET_WHEEL_LEFT_ENCODER, OFFSET_WHEEL_RIGHT_ENCODER, STATUS_PAYLOAD_MIN_SIZE,
+    OFFSET_WATER_TANK_LEVEL, OFFSET_WHEEL_LEFT_ENCODER, OFFSET_WHEEL_RIGHT_ENCODER,
+    STATUS_PAYLOAD_MIN_SIZE,
 };
 use serialport::SerialPort;
 use std::io::Write;
@@ -282,6 +283,15 @@ fn handle_status_packet(
         "dustbox_attached",
         SensorValue::Bool((payload[OFFSET_DUSTBOX_FLAGS] & FLAG_DUSTBOX_ATTACHED) != 0),
     );
+
+    // Water tank level (for 2-in-1 mop box)
+    // Returns 0 (no water/pump off) or 100 (water detected/pump on)
+    if payload.len() > OFFSET_WATER_TANK_LEVEL {
+        data.update(
+            "water_tank_level",
+            SensorValue::U8(payload[OFFSET_WATER_TANK_LEVEL]),
+        );
+    }
 
     // Raw packet bytes for debugging/reverse engineering
     data.update("raw_packet", SensorValue::Bytes(payload.to_vec()));

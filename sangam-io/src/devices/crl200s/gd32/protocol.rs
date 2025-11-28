@@ -7,8 +7,8 @@ use crate::devices::crl200s::constants::{
     CMD_IMU_FACTORY_CALIBRATE, CMD_INITIALIZE, CMD_LIDAR_POWER, CMD_LIDAR_PWM,
     CMD_MAIN_BOARD_POWER, CMD_MAIN_BOARD_RESTART, CMD_MAIN_BRUSH, CMD_MCU_SLEEP, CMD_MOTOR_MODE,
     CMD_MOTOR_SPEED, CMD_MOTOR_VELOCITY, CMD_PROTOCOL_SYNC, CMD_REQUEST_STM32_DATA,
-    CMD_RESET_ERROR_CODE, CMD_SIDE_BRUSH, CMD_VERSION, CMD_WAKEUP_ACK, MAX_BUFFER_SIZE,
-    MIN_PACKET_SIZE, SYNC_BYTE_1, SYNC_BYTE_2,
+    CMD_RESET_ERROR_CODE, CMD_SIDE_BRUSH, CMD_VERSION, CMD_WAKEUP_ACK, CMD_WATER_PUMP,
+    MAX_BUFFER_SIZE, MIN_PACKET_SIZE, SYNC_BYTE_1, SYNC_BYTE_2,
 };
 use crate::error::{Error, Result};
 use std::io::Read;
@@ -250,6 +250,18 @@ pub fn cmd_main_brush(speed: u8) -> Packet {
 
 pub fn cmd_side_brush(speed: u8) -> Packet {
     Packet::new(CMD_SIDE_BRUSH, vec![speed])
+}
+
+/// Water pump control command (0x6B)
+///
+/// Controls the water pump for 2-in-1 mop box.
+/// - `speed`: 0-100% (0x00-0x64)
+///
+/// This command is dual-use:
+/// - At boot: Sent as motor controller init handshake (2s pulse of 0x64)
+/// - During operation: Controls water pump for mopping
+pub fn cmd_water_pump(speed: u8) -> Packet {
+    Packet::new(CMD_WATER_PUMP, vec![speed])
 }
 
 /// Build LED state command packet (0x8D)

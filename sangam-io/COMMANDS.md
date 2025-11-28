@@ -39,7 +39,7 @@ All commands use the packet format: `[0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_H] [
 | 0x68 | Air Pump (Vacuum) | 2 bytes | ✅ | 1x | HIGH | Working in SangamIO, matches AuxCtrl `packetBlowerSpeed` |
 | 0x69 | Side Brush | 1 byte | ✅ | 32x | HIGH | Working in SangamIO, matches AuxCtrl `packetBrushSpeed` |
 | 0x6A | Main Brush | 1 byte | ✅ | 31x | HIGH | Working in SangamIO, matches AuxCtrl `packetRollingSpeed` |
-| 0x6B | Motor Controller Init | 1 byte | ❌ | 95x | HIGH | Boot handshake: 0x00=off, 0x64=ready. Pulsed for 2s at startup |
+| 0x6B | Water Pump / Motor Init | 1 byte | ✅ | 95x | HIGH | Dual-use: boot handshake (2s pulse) + water pump for 2-in-1 mop box (0-100%) |
 | **Lidar Control** |
 | 0x17 | Lidar Config | 4 bytes | ❌ | 1x | LOW | Init: `[0x01, 0xF0, 0xDF, 0xFA]`, response: `[0x01]` |
 | 0x18 | Lidar Query | None/8 bytes | ❌ | 1x | LOW | Request: none, Response: `[0x04, 0x00, 0x00, 0x00, 0x7F, 0x00, 0x00, 0x00]` |
@@ -177,8 +177,10 @@ Phase 4: Shutdown
 | 0x07 | 1 | Charging flags | Bit 0: battery, Bit 1: charging |
 | 0x10 | 8 | Right encoder | u64 LE tick count |
 | 0x18 | 8 | Left encoder | u64 LE tick count |
+| 0x2A | 1 | Box type | 0x00=normal dustbox, 0x04=2-in-1 mop box |
 | 0x3A | 4 | Start button | u32 LE press state |
 | 0x3E | 4 | Dock button | u32 LE press state |
+| 0x46 | 1 | Water tank level | 0=empty/pump off, 100=full/water present (2-in-1 only) |
 
 ---
 
@@ -186,8 +188,8 @@ Phase 4: Shutdown
 
 | Status | Count | Commands |
 |--------|-------|----------|
-| ✅ Implemented | 26 | 0x04, 0x05, 0x06, 0x07, 0x08, 0x0A, 0x0C, 0x0D, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x71, 0x78, 0x79, 0x8D, 0x97, 0x99, 0x9A, 0x9B, 0xA1, 0xA2, 0xA3, 0xA4 |
-| ❌ Not Implemented | 9 | 0x17, 0x18, 0x19, 0x6B, 0x7C, 0x86, 0x9D |
+| ✅ Implemented | 27 | 0x04, 0x05, 0x06, 0x07, 0x08, 0x0A, 0x0C, 0x0D, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x71, 0x78, 0x79, 0x8D, 0x97, 0x99, 0x9A, 0x9B, 0xA1, 0xA2, 0xA3, 0xA4 |
+| ❌ Not Implemented | 8 | 0x17, 0x18, 0x19, 0x7C, 0x86, 0x9D |
 
 ---
 
@@ -197,7 +199,7 @@ Phase 4: Shutdown
 | Hex | Name | MITM Usage | Reason |
 |-----|------|------------|--------|
 | 0x0C | Protocol Sync | 1x | ✅ DONE - First boot command, wakes GD32 |
-| 0x6B | Motor Controller Init | 95x | 2-second boot handshake required before motion commands work |
+| 0x6B | Water Pump / Motor Init | 95x | ✅ DONE - Dual-use: boot handshake + water pump control for 2-in-1 mop box |
 
 ### Medium Priority (Init sequence, partially understood)
 | Hex | Name | MITM Usage | Reason |
@@ -297,6 +299,7 @@ All sensors and actuators are controlled via the unified `ComponentControl` comm
 | `vacuum` | 100% speed | 0% speed | - | `{ "speed": U8 }` |
 | `main_brush` | 100% speed | 0% speed | - | `{ "speed": U8 }` |
 | `side_brush` | 100% speed | 0% speed | - | `{ "speed": U8 }` |
+| `water_pump` | 100% speed | 0% speed | - | `{ "speed": U8 }` (2-in-1 mop box only) |
 | `led` | - | - | - | `{ "state": U8 }` |
 | `lidar` | Power on + PWM | Power off | - | - |
 | `imu` | Query state (0xA2) | - | Factory calibrate (0xA1) | - |
@@ -358,6 +361,11 @@ The `drive` component supports two configuration modes:
 **Set vacuum to 75% speed:**
 ```json
 {"type": "ComponentControl", "id": "vacuum", "action": {"type": "Configure", "config": {"speed": {"U8": 75}}}}
+```
+
+**Set water pump to 50% (2-in-1 mop box):**
+```json
+{"type": "ComponentControl", "id": "water_pump", "action": {"type": "Configure", "config": {"speed": {"U8": 50}}}}
 ```
 
 **Trigger IMU factory calibration:**

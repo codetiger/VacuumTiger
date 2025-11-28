@@ -34,7 +34,7 @@
 
 use super::protocol::{
     cmd_air_pump, cmd_heartbeat, cmd_lidar_pwm, cmd_main_brush, cmd_motor_mode, cmd_motor_velocity,
-    cmd_request_stm32_data, cmd_side_brush,
+    cmd_request_stm32_data, cmd_side_brush, cmd_water_pump,
 };
 use super::state::ComponentState;
 use serialport::SerialPort;
@@ -93,7 +93,7 @@ pub(super) fn heartbeat_loop(
         };
 
         // Check component states
-        let (vacuum, main_brush, side_brush) = component_state.get_component_speeds();
+        let (vacuum, main_brush, side_brush, water_pump) = component_state.get_component_speeds();
         let lidar_enabled = component_state.lidar_enabled.load(Ordering::Relaxed);
         let (linear, angular) = component_state.get_velocities();
 
@@ -153,6 +153,11 @@ pub(super) fn heartbeat_loop(
 
             if side_brush > 0 {
                 let pkt = cmd_side_brush(side_brush);
+                let _ = port.write_all(&pkt.to_bytes());
+            }
+
+            if water_pump > 0 {
+                let pkt = cmd_water_pump(water_pump);
                 let _ = port.write_all(&pkt.to_bytes());
             }
 
