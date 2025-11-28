@@ -10,5 +10,8 @@ PyQt5>=5.15.0
 # High-performance plotting for real-time data
 pyqtgraph>=0.13.0
 
+# OpenGL for 3D visualization
+PyOpenGL>=3.1.6
+
 # Numerical computations
 numpy>=1.21.0

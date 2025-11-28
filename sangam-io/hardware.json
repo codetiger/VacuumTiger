@@ -33,9 +33,17 @@
           { "id": "cliff_right_front", "type": "Bool" },
           { "id": "cliff_right_side", "type": "Bool" },
           { "id": "dustbox_attached", "type": "Bool" },
-          { "id": "water_tank_level", "type": "U8" },
           { "id": "start_button", "type": "U16" },
           { "id": "dock_button", "type": "U16" },
+          { "id": "gyro_x", "type": "I16" },
+          { "id": "gyro_y", "type": "I16" },
+          { "id": "gyro_z", "type": "I16" },
+          { "id": "accel_x", "type": "I16" },
+          { "id": "accel_y", "type": "I16" },
+          { "id": "accel_z", "type": "I16" },
+          { "id": "tilt_x", "type": "I16" },
+          { "id": "tilt_y", "type": "I16" },
+          { "id": "tilt_z", "type": "I16" },
           { "id": "raw_packet", "type": "Bytes" }
         ]
       },

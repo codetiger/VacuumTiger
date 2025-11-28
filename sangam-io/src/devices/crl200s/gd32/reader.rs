@@ -9,10 +9,11 @@ use crate::devices::crl200s::constants::{
     BATTERY_VOLTAGE_MAX, BATTERY_VOLTAGE_MIN, CMD_PROTOCOL_SYNC, CMD_STATUS, CMD_VERSION,
     FLAG_BUMPER_LEFT, FLAG_BUMPER_RIGHT, FLAG_CHARGING, FLAG_CLIFF_LEFT_FRONT,
     FLAG_CLIFF_LEFT_SIDE, FLAG_CLIFF_RIGHT_FRONT, FLAG_CLIFF_RIGHT_SIDE, FLAG_DOCK_CONNECTED,
-    FLAG_DUSTBOX_ATTACHED, OFFSET_BATTERY_VOLTAGE_RAW, OFFSET_BUMPER_FLAGS, OFFSET_CHARGING_FLAGS,
-    OFFSET_CLIFF_FLAGS, OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS, OFFSET_START_BUTTON,
-    OFFSET_WATER_TANK_LEVEL, OFFSET_WHEEL_LEFT_ENCODER, OFFSET_WHEEL_RIGHT_ENCODER,
-    STATUS_PAYLOAD_MIN_SIZE,
+    FLAG_DUSTBOX_ATTACHED, OFFSET_ACCEL_X, OFFSET_ACCEL_Y, OFFSET_ACCEL_Z,
+    OFFSET_BATTERY_VOLTAGE_RAW, OFFSET_BUMPER_FLAGS, OFFSET_CHARGING_FLAGS, OFFSET_CLIFF_FLAGS,
+    OFFSET_DOCK_BUTTON, OFFSET_DUSTBOX_FLAGS, OFFSET_GYRO_X, OFFSET_GYRO_Y, OFFSET_GYRO_Z,
+    OFFSET_START_BUTTON, OFFSET_TILT_X, OFFSET_TILT_Y, OFFSET_TILT_Z, OFFSET_WHEEL_LEFT_ENCODER,
+    OFFSET_WHEEL_RIGHT_ENCODER, STATUS_PAYLOAD_MIN_SIZE,
 };
 use serialport::SerialPort;
 use std::io::Write;
@@ -284,14 +285,74 @@ fn handle_status_packet(
         SensorValue::Bool((payload[OFFSET_DUSTBOX_FLAGS] & FLAG_DUSTBOX_ATTACHED) != 0),
     );
 
-    // Water tank level (for 2-in-1 mop box)
-    // Returns 0 (no water/pump off) or 100 (water detected/pump on)
-    if payload.len() > OFFSET_WATER_TANK_LEVEL {
-        data.update(
-            "water_tank_level",
-            SensorValue::U8(payload[OFFSET_WATER_TANK_LEVEL]),
-        );
-    }
+    // IMU: Gyroscope raw values (i16 LE)
+    data.update(
+        "gyro_x",
+        SensorValue::I16(i16::from_le_bytes([
+            payload[OFFSET_GYRO_X],
+            payload[OFFSET_GYRO_X + 1],
+        ])),
+    );
+    data.update(
+        "gyro_y",
+        SensorValue::I16(i16::from_le_bytes([
+            payload[OFFSET_GYRO_Y],
+            payload[OFFSET_GYRO_Y + 1],
+        ])),
+    );
+    data.update(
+        "gyro_z",
+        SensorValue::I16(i16::from_le_bytes([
+            payload[OFFSET_GYRO_Z],
+            payload[OFFSET_GYRO_Z + 1],
+        ])),
+    );
+
+    // IMU: Accelerometer raw values (i16 LE)
+    data.update(
+        "accel_x",
+        SensorValue::I16(i16::from_le_bytes([
+            payload[OFFSET_ACCEL_X],
+            payload[OFFSET_ACCEL_X + 1],
+        ])),
+    );
+    data.update(
+        "accel_y",
+        SensorValue::I16(i16::from_le_bytes([
+            payload[OFFSET_ACCEL_Y],
+            payload[OFFSET_ACCEL_Y + 1],
+        ])),
+    );
+    data.update(
+        "accel_z",
+        SensorValue::I16(i16::from_le_bytes([
+            payload[OFFSET_ACCEL_Z],
+            payload[OFFSET_ACCEL_Z + 1],
+        ])),
+    );
+
+    // IMU: Low-pass filtered tilt vector (gravity direction, i16 LE)
+    data.update(
+        "tilt_x",
+        SensorValue::I16(i16::from_le_bytes([
+            payload[OFFSET_TILT_X],
+            payload[OFFSET_TILT_X + 1],
+        ])),
+    );
+    data.update(
+        "tilt_y",
+        SensorValue::I16(i16::from_le_bytes([
+            payload[OFFSET_TILT_Y],
+            payload[OFFSET_TILT_Y + 1],
+        ])),
+    );
+    data.update(
+        "tilt_z",
+        SensorValue::I16(i16::from_le_bytes([
+            payload[OFFSET_TILT_Z],
+            payload[OFFSET_TILT_Z + 1],
+        ])),
+    );
 
     // Raw packet bytes for debugging/reverse engineering
     data.update("raw_packet", SensorValue::Bytes(payload.to_vec()));

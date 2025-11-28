@@ -69,7 +69,19 @@ pub const OFFSET_WHEEL_RIGHT_ENCODER: usize = 0x10;
 pub const OFFSET_WHEEL_LEFT_ENCODER: usize = 0x18;
 pub const OFFSET_START_BUTTON: usize = 0x3A;
 pub const OFFSET_DOCK_BUTTON: usize = 0x3E;
-pub const OFFSET_WATER_TANK_LEVEL: usize = 0x46; // Water tank level (0 or 100) for 2-in-1 box
+
+// IMU data offsets (interleaved gyro/accel pairs)
+pub const OFFSET_GYRO_X: usize = 0x28; // B40-41: Gyro X raw (i16 LE)
+pub const OFFSET_ACCEL_X: usize = 0x2A; // B42-43: Accel X raw (i16 LE)
+pub const OFFSET_GYRO_Y: usize = 0x2C; // B44-45: Gyro Y raw (i16 LE)
+pub const OFFSET_ACCEL_Y: usize = 0x2E; // B46-47: Accel Y raw (i16 LE)
+pub const OFFSET_GYRO_Z: usize = 0x30; // B48-49: Gyro Z raw (i16 LE)
+pub const OFFSET_ACCEL_Z: usize = 0x32; // B50-51: Accel Z raw (i16 LE)
+
+// Low-pass filtered tilt vector (gravity direction)
+pub const OFFSET_TILT_X: usize = 0x34; // B52-53: LP_AccX tilt vector X (i16 LE)
+pub const OFFSET_TILT_Y: usize = 0x36; // B54-55: LP_AccY tilt vector Y (i16 LE)
+pub const OFFSET_TILT_Z: usize = 0x38; // B56-57: LP_AccZ tilt vector Z (i16 LE)
 
 // Battery voltage thresholds (from CFactoryBatteryControl)
 pub const BATTERY_VOLTAGE_MIN: f32 = 13.5; // Critical low (0%)

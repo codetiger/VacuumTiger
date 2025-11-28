@@ -12,6 +12,7 @@ import logging
 from ui.threads.telemetry_thread import TelemetryThread
 from ui.widgets.robot_diagram import RobotDiagram
 from ui.widgets.control_panel import ControlPanel
+from ui.widgets.imu_3d_view import IMU3DView
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,12 @@ class MainWindow(QMainWindow):
         # Robot diagram (left side, takes remaining space)
         self.robot_diagram = RobotDiagram()
         content_layout.addWidget(self.robot_diagram, 1)  # Stretch factor 1 (expands)
+
+        # IMU 3D view overlay (top-left corner of robot diagram)
+        self.imu_3d_view = IMU3DView()
+        self.imu_3d_view.setParent(self.robot_diagram)
+        self.imu_3d_view.setGeometry(10, 10, 200, 220)
+        self.imu_3d_view.raise_()  # Ensure it's on top
 
         # Control panel (right side, fixed width) - dark theme
         self.control_panel = ControlPanel()
@@ -127,6 +134,31 @@ class MainWindow(QMainWindow):
 
         # Update control panel with sensor data
         self.control_panel.update_sensors(data)
+
+        # Forward IMU data to 3D view
+        imu_keys = ['gyro_x', 'gyro_y', 'gyro_z', 'tilt_x', 'tilt_y', 'tilt_z']
+        if all(k in data for k in imu_keys):
+            # Debug: log IMU values periodically
+            if hasattr(self, '_imu_debug_counter'):
+                self._imu_debug_counter += 1
+            else:
+                self._imu_debug_counter = 0
+            if self._imu_debug_counter % 500 == 0:
+                logger.info(f"IMU data: gyro=({data['gyro_x']}, {data['gyro_y']}, {data['gyro_z']}), "
+                           f"tilt=({data['tilt_x']}, {data['tilt_y']}, {data['tilt_z']})")
+
+            self.imu_3d_view.update_orientation(
+                data['gyro_x'], data['gyro_y'], data['gyro_z'],
+                data['tilt_x'], data['tilt_y'], data['tilt_z']
+            )
+        else:
+            # Debug: log which keys are missing
+            if hasattr(self, '_imu_missing_logged'):
+                pass
+            else:
+                self._imu_missing_logged = True
+                missing = [k for k in imu_keys if k not in data]
+                logger.warning(f"IMU keys missing from data: {missing}. Available keys: {list(data.keys())}")
 
         # Update status bar with timestamp
         timestamp = data.get('_timestamp_us', 0)
