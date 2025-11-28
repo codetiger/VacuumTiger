@@ -1,7 +1,8 @@
 """
 Main window for Drishti robot visualization application.
 
-Single full-screen widget showing robot diagram with sensor overlays.
+Full-screen 3D wireframe robot visualization with real-time sensor overlays
+and IMU-based orientation display.
 """
 
 from PyQt5.QtCore import Qt, pyqtSlot, QEvent
@@ -10,9 +11,8 @@ from PyQt5.QtGui import QFont, QKeyEvent
 import logging
 
 from ui.threads.telemetry_thread import TelemetryThread
-from ui.widgets.robot_diagram import RobotDiagram
+from ui.widgets.robot_3d_view import Robot3DView
 from ui.widgets.control_panel import ControlPanel
-from ui.widgets.imu_3d_view import IMU3DView
 
 logger = logging.getLogger(__name__)
 
@@ -59,15 +59,9 @@ class MainWindow(QMainWindow):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
-        # Robot diagram (left side, takes remaining space)
-        self.robot_diagram = RobotDiagram()
-        content_layout.addWidget(self.robot_diagram, 1)  # Stretch factor 1 (expands)
-
-        # IMU 3D view overlay (top-left corner of robot diagram)
-        self.imu_3d_view = IMU3DView()
-        self.imu_3d_view.setParent(self.robot_diagram)
-        self.imu_3d_view.setGeometry(10, 10, 200, 220)
-        self.imu_3d_view.raise_()  # Ensure it's on top
+        # 3D robot view (left side, takes remaining space)
+        self.robot_3d_view = Robot3DView()
+        content_layout.addWidget(self.robot_3d_view, 1)  # Stretch factor 1 (expands)
 
         # Control panel (right side, fixed width) - dark theme
         self.control_panel = ControlPanel()
@@ -129,33 +123,22 @@ class MainWindow(QMainWindow):
     @pyqtSlot(dict)
     def _on_sensor_data(self, data: dict):
         """Handle sensor data from telemetry thread."""
-        # Update robot diagram with new sensor values
-        self.robot_diagram.update_sensors(data)
+        # Update 3D robot view with new sensor values
+        self.robot_3d_view.update_sensors(data)
 
         # Update control panel with sensor data
         self.control_panel.update_sensors(data)
 
-        # Forward IMU data to 3D view
+        # Forward IMU data to 3D view for orientation
         imu_keys = ['gyro_x', 'gyro_y', 'gyro_z', 'tilt_x', 'tilt_y', 'tilt_z']
         if all(k in data for k in imu_keys):
-            # Debug: log IMU values periodically
-            if hasattr(self, '_imu_debug_counter'):
-                self._imu_debug_counter += 1
-            else:
-                self._imu_debug_counter = 0
-            if self._imu_debug_counter % 500 == 0:
-                logger.info(f"IMU data: gyro=({data['gyro_x']}, {data['gyro_y']}, {data['gyro_z']}), "
-                           f"tilt=({data['tilt_x']}, {data['tilt_y']}, {data['tilt_z']})")
-
-            self.imu_3d_view.update_orientation(
+            self.robot_3d_view.update_orientation(
                 data['gyro_x'], data['gyro_y'], data['gyro_z'],
                 data['tilt_x'], data['tilt_y'], data['tilt_z']
             )
         else:
-            # Debug: log which keys are missing
-            if hasattr(self, '_imu_missing_logged'):
-                pass
-            else:
+            # Debug: log which keys are missing (once)
+            if not hasattr(self, '_imu_missing_logged'):
                 self._imu_missing_logged = True
                 missing = [k for k in imu_keys if k not in data]
                 logger.warning(f"IMU keys missing from data: {missing}. Available keys: {list(data.keys())}")
@@ -181,9 +164,11 @@ class MainWindow(QMainWindow):
             if component_id == 'lidar':
                 if action_type == 'Enable':
                     self.lidar_enabled = True
+                    self.robot_3d_view.set_lidar_enabled(True)
                     self.status_bar.showMessage("Lidar ENABLED", 2000)
                 elif action_type == 'Disable':
                     self.lidar_enabled = False
+                    self.robot_3d_view.set_lidar_enabled(False)
                     self.status_bar.showMessage("Lidar DISABLED", 2000)
                 return
 
@@ -213,9 +198,9 @@ class MainWindow(QMainWindow):
                 elif component_id == 'main_brush':
                     self.main_brush_enabled = speed > 0
 
-                # Map component_id back to actuator for robot diagram
+                # Map component_id back to actuator for 3D view
                 actuator = component_id if component_id != 'main_brush' else 'brush'
-                self.robot_diagram.update_actuator(actuator, speed)
+                self.robot_3d_view.update_actuator(actuator, speed)
                 self.status_bar.showMessage(f"{component_id}: {speed}%", 2000)
                 return
 
@@ -252,6 +237,7 @@ class MainWindow(QMainWindow):
             # Toggle lidar
             self.lidar_enabled = not self.lidar_enabled
             self.control_panel.set_lidar_enabled(self.lidar_enabled)
+            self.robot_3d_view.set_lidar_enabled(self.lidar_enabled)
             if self.lidar_enabled:
                 self._send_command({
                     "type": "ComponentControl",
@@ -285,6 +271,7 @@ class MainWindow(QMainWindow):
                     "action": {"type": "Disable"}
                 })
             self.control_panel.set_actuator_state("side_brush", self.side_brush_enabled)
+            self.robot_3d_view.update_actuator("side_brush", speed)
             state = "ON" if self.side_brush_enabled else "OFF"
             self.status_bar.showMessage(f"Side Brush {state}", 2000)
             logger.info(f"Side brush {state}")
@@ -305,6 +292,7 @@ class MainWindow(QMainWindow):
                     "action": {"type": "Disable"}
                 })
             self.control_panel.set_actuator_state("brush", self.main_brush_enabled)
+            self.robot_3d_view.update_actuator("brush", speed)
             state = "ON" if self.main_brush_enabled else "OFF"
             self.status_bar.showMessage(f"Main Brush {state}", 2000)
             logger.info(f"Main brush {state}")
@@ -325,6 +313,7 @@ class MainWindow(QMainWindow):
                     "action": {"type": "Disable"}
                 })
             self.control_panel.set_actuator_state("vacuum", self.vacuum_enabled)
+            self.robot_3d_view.update_actuator("vacuum", speed)
             state = "ON" if self.vacuum_enabled else "OFF"
             self.status_bar.showMessage(f"Vacuum {state}", 2000)
             logger.info(f"Vacuum {state}")
@@ -372,11 +361,17 @@ class MainWindow(QMainWindow):
                 self.angular_velocity = -self.angular_step
                 self._send_velocity()
         elif event.key() == Qt.Key_Space:
-            # Emergency stop
+            # Emergency stop - send Reset command to immediately halt
             self.linear_velocity = 0.0
             self.angular_velocity = 0.0
-            self._send_velocity()
-            self.status_bar.showMessage("STOP", 2000)
+            self._send_command({
+                "type": "ComponentControl",
+                "id": "drive",
+                "action": {"type": "Reset"}
+            })
+            self.control_panel.set_velocity(0.0, 0.0)
+            self.status_bar.showMessage("E-STOP", 2000)
+            logger.info("Emergency stop triggered")
         else:
             super().keyPressEvent(event)
 

@@ -1,24 +1,22 @@
 """
-IMU Processor - Orientation estimation from tilt vector and gyroscope.
+IMU Processor - Orientation estimation from gyroscope integration.
 
-The tilt vector from GD32 is already low-pass filtered, so we use it
-directly for roll/pitch. Gyroscope is integrated for yaw (which will drift).
+Integrates all three gyroscope axes for real-time responsive rotation.
+Note: Will drift over time without absolute reference (accelerometer/magnetometer).
 """
-
-import math
 
 
 class IMUProcessor:
     """
-    IMU orientation processor.
+    IMU orientation processor using pure gyroscope integration.
 
-    Uses the pre-filtered tilt vector directly for roll/pitch angles.
-    Integrates gyroscope for yaw (no absolute reference without magnetometer).
+    Integrates gyroscope for all axes (roll, pitch, yaw) at 500Hz.
+    Provides smooth real-time orientation but will drift over time.
     """
 
-    # Scale factor for raw gyro I16 values to degrees/sec
-    # Typical MPU6050: 131 LSB/(deg/s) at ±250 deg/s range
-    GYRO_SCALE = 1.0 / 131.0  # degrees/sec per LSB
+    # Scale factor: raw gyro I16 values to degrees/sec
+    # Empirically tuned to match physical rotation on CRL-200S
+    GYRO_SCALE = 1.0 / 10.0
 
     def __init__(self, sample_rate_hz: float = 500.0):
         """
@@ -34,7 +32,7 @@ class IMUProcessor:
         self.pitch = 0.0  # Y-axis rotation (tilt forward/back)
         self.yaw = 0.0    # Z-axis rotation (heading)
 
-        # Decimation for UI updates (500Hz -> 100Hz for smoother response)
+        # Decimation for UI updates (500Hz -> 100Hz for label updates)
         self._counter = 0
         self._decimation = 5  # Update every 5th sample = 100Hz
 
@@ -45,31 +43,24 @@ class IMUProcessor:
 
         Args:
             gyro_x, gyro_y, gyro_z: Raw gyroscope values (i16)
-            tilt_x, tilt_y, tilt_z: Low-pass filtered gravity vector (i16)
+            tilt_x, tilt_y, tilt_z: Filtered tilt values (unused, for API compat)
 
         Returns:
             Tuple of (roll, pitch, yaw) in degrees
         """
-        # Calculate magnitude of tilt vector
-        magnitude = math.sqrt(tilt_x**2 + tilt_y**2 + tilt_z**2)
-        if magnitude < 100:  # Near zero, sensor error
-            return (self.roll, self.pitch, self.yaw)
-
-        # Roll and Pitch directly from tilt vector (already filtered by GD32)
-        # Roll: rotation around X-axis (left/right tilt)
-        self.roll = math.degrees(
-            math.atan2(tilt_y, math.sqrt(tilt_x**2 + tilt_z**2))
-        )
-
-        # Pitch: rotation around Y-axis (forward/back tilt)
-        self.pitch = math.degrees(
-            math.atan2(-tilt_x, math.sqrt(tilt_y**2 + tilt_z**2))
-        )
-
-        # Yaw: integrate gyroscope Z (will drift without magnetometer)
+        # Convert raw gyro to degrees/sec and integrate
+        # Axis mapping tuned for CRL-200S physical orientation
+        gx = gyro_x * self.GYRO_SCALE
+        gy = gyro_y * self.GYRO_SCALE
         gz = gyro_z * self.GYRO_SCALE
-        self.yaw += gz * self.dt
+
+        self.roll += gz * self.dt    # Z gyro -> roll
+        self.pitch += gy * self.dt   # Y gyro -> pitch
+        self.yaw += gx * self.dt     # X gyro -> yaw
+
         # Normalize to -180 to +180 range
+        self.roll = ((self.roll + 180) % 360) - 180
+        self.pitch = ((self.pitch + 180) % 360) - 180
         self.yaw = ((self.yaw + 180) % 360) - 180
 
         return (self.roll, self.pitch, self.yaw)

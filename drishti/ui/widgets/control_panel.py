@@ -1,127 +1,30 @@
 """
 Control panel widget for Drishti robot visualization.
-Provides UI controls for vacuum, side brush, and main brush with speed control.
+
+Provides UI controls organized in collapsible groups:
+- Motion Control (drive, e-stop)
+- Cleaning Systems (vacuum, brushes, water pump)
+- Sensors (lidar, cliff IR)
+- System (LED, dustbox status)
+- Calibration (IMU, compass)
+- Power Management (MCU, charger, main board)
 """
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QSlider, QPushButton, QGroupBox, QFrame, QGridLayout, QSpinBox,
+    QSlider, QPushButton, QFrame, QGridLayout, QSpinBox,
     QScrollArea
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QKeyEvent
+from PyQt5.QtGui import QFont
 
-
-class ActuatorControl(QWidget):
-    """Individual actuator control with ON/OFF toggle and speed slider."""
-
-    # Signal: (actuator_id, speed_percent)
-    command_changed = pyqtSignal(str, float)
-
-    def __init__(self, name: str, actuator_id: str, parent=None):
-        super().__init__(parent)
-        self.name = name
-        self.actuator_id = actuator_id
-        self.enabled = False
-        self.speed = 0  # 0, 25, 50, 75, 100
-
-        self._setup_ui()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
-
-        # Header with name and toggle button
-        header = QHBoxLayout()
-
-        name_label = QLabel(self.name)
-        name_label.setFont(QFont("Arial", 10, QFont.Bold))
-        name_label.setStyleSheet("color: #e0e0e0;")
-        header.addWidget(name_label)
-
-        header.addStretch()
-
-        self.toggle_btn = QPushButton("OFF")
-        self.toggle_btn.setCheckable(True)
-        self.toggle_btn.setFixedWidth(50)
-        self.toggle_btn.clicked.connect(self._on_toggle)
-        self._update_toggle_style()
-        header.addWidget(self.toggle_btn)
-
-        layout.addLayout(header)
-
-        # Speed slider (snapped to 25% increments)
-        slider_layout = QHBoxLayout()
-
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.setMinimum(0)
-        self.slider.setMaximum(4)  # 0, 1, 2, 3, 4 -> 0%, 25%, 50%, 75%, 100%
-        self.slider.setValue(0)
-        self.slider.setTickPosition(QSlider.TicksBelow)
-        self.slider.setTickInterval(1)
-        self.slider.setFocusPolicy(Qt.NoFocus)  # Don't steal arrow keys
-        self.slider.valueChanged.connect(self._on_slider_changed)
-        slider_layout.addWidget(self.slider)
-
-        self.speed_label = QLabel("0%")
-        self.speed_label.setFixedWidth(35)
-        self.speed_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.speed_label.setStyleSheet("color: #aaa;")
-        slider_layout.addWidget(self.speed_label)
-
-        layout.addLayout(slider_layout)
-
-    def _on_toggle(self):
-        self.enabled = self.toggle_btn.isChecked()
-        self._update_toggle_style()
-
-        # When toggling ON with slider at 0, set to 100%
-        if self.enabled and self.speed == 0:
-            self.speed = 100
-            self.slider.setValue(4)  # 4 * 25 = 100%
-            self.speed_label.setText("100%")
-
-        self._emit_command()
-
-    def _on_slider_changed(self, value):
-        self.speed = value * 25
-        self.speed_label.setText(f"{self.speed}%")
-
-        # If slider is moved above 0, enable; if moved to 0, disable
-        if self.speed > 0 and not self.enabled:
-            self.enabled = True
-            self.toggle_btn.setChecked(True)
-            self._update_toggle_style()
-        elif self.speed == 0 and self.enabled:
-            self.enabled = False
-            self.toggle_btn.setChecked(False)
-            self._update_toggle_style()
-
-        self._emit_command()
-
-    def _update_toggle_style(self):
-        if self.enabled:
-            self.toggle_btn.setText("ON")
-            self.toggle_btn.setStyleSheet(
-                "background-color: #4CAF50; color: white; font-weight: bold;"
-            )
-        else:
-            self.toggle_btn.setText("OFF")
-            self.toggle_btn.setStyleSheet(
-                "background-color: #555; color: #ccc;"
-            )
-
-    def _emit_command(self):
-        # Emit actual speed: if disabled, send 0; otherwise send the speed
-        actual_speed = float(self.speed) if self.enabled else 0.0
-        self.command_changed.emit(self.actuator_id, actual_speed)
+from .collapsible_group import CollapsibleGroup
+from .compact_actuator import CompactActuatorRow
 
 
 class LidarControl(QWidget):
     """Widget for lidar control with toggle button and packet count."""
 
-    # Signal: (enabled)
     lidar_toggled = pyqtSignal(bool)
 
     def __init__(self, parent=None):
@@ -130,59 +33,36 @@ class LidarControl(QWidget):
         self.enabled = False
         self._setup_ui()
 
-        # Timeout timer for data freshness
         self.timeout_timer = QTimer(self)
         self.timeout_timer.timeout.connect(self._on_timeout)
         self.timeout_timer.setSingleShot(True)
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(3)
-
-        # Header with name and toggle button
-        header = QHBoxLayout()
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
         title = QLabel("Lidar")
-        title.setFont(QFont("Arial", 10, QFont.Bold))
-        title.setStyleSheet("color: #e0e0e0;")
-        header.addWidget(title)
-
-        header.addStretch()
+        title.setStyleSheet("color: #aaa;")
+        layout.addWidget(title)
 
         self.toggle_btn = QPushButton("OFF")
         self.toggle_btn.setCheckable(True)
-        self.toggle_btn.setFixedWidth(50)
+        self.toggle_btn.setFixedWidth(45)
         self.toggle_btn.clicked.connect(self._on_toggle)
         self._update_toggle_style()
-        header.addWidget(self.toggle_btn)
+        layout.addWidget(self.toggle_btn)
 
-        layout.addLayout(header)
-
-        # Status row with icon indicator
-        status_layout = QHBoxLayout()
-        status_layout.setSpacing(8)
-
-        # Status indicator dot
         self.status_dot = QLabel()
-        self.status_dot.setFixedSize(12, 12)
-        self.status_dot.setStyleSheet(
-            "background-color: #666; border-radius: 6px;"
-        )
-        status_layout.addWidget(self.status_dot)
+        self.status_dot.setFixedSize(10, 10)
+        self.status_dot.setStyleSheet("background-color: #666; border-radius: 5px;")
+        layout.addWidget(self.status_dot)
 
-        # Status text
-        self.status_label = QLabel("No data")
-        self.status_label.setStyleSheet("color: #777;")
-        status_layout.addWidget(self.status_label)
+        self.status_label = QLabel("--")
+        self.status_label.setStyleSheet("color: #777; font-size: 9px;")
+        layout.addWidget(self.status_label)
 
-        status_layout.addStretch()
-        layout.addLayout(status_layout)
-
-        # Packet count
-        self.count_label = QLabel("Packets: 0")
-        self.count_label.setStyleSheet("color: #777; font-size: 9px;")
-        layout.addWidget(self.count_label)
+        layout.addStretch()
 
     def _on_toggle(self):
         self.enabled = self.toggle_btn.isChecked()
@@ -197,44 +77,108 @@ class LidarControl(QWidget):
             )
         else:
             self.toggle_btn.setText("OFF")
-            self.toggle_btn.setStyleSheet(
-                "background-color: #555; color: #ccc;"
-            )
+            self.toggle_btn.setStyleSheet("background-color: #555; color: #ccc;")
 
     def set_enabled(self, enabled: bool):
-        """Set lidar enabled state (from keyboard shortcut)."""
         self.enabled = enabled
         self.toggle_btn.setChecked(enabled)
         self._update_toggle_style()
 
     def update_status(self, scan_received: bool):
-        """Update lidar status when scan data is received."""
         if scan_received:
             self.packet_count += 1
-            self.status_label.setText("Active")
-            self.status_label.setStyleSheet("color: #e0e0e0; font-weight: bold;")
-            self.status_dot.setStyleSheet(
-                "background-color: #4CAF50; border-radius: 6px;"
-            )
-            self.count_label.setText(f"Packets: {self.packet_count}")
-            self.count_label.setStyleSheet("color: #aaa; font-size: 9px;")
-
-            # Reset timeout timer (2 seconds)
+            self.status_label.setText(f"{self.packet_count}")
+            self.status_label.setStyleSheet("color: #4CAF50; font-size: 9px;")
+            self.status_dot.setStyleSheet("background-color: #4CAF50; border-radius: 5px;")
             self.timeout_timer.start(2000)
 
     def _on_timeout(self):
-        """Called when no data received for 2 seconds."""
-        self.status_label.setText("No data")
-        self.status_label.setStyleSheet("color: #777;")
-        self.status_dot.setStyleSheet(
-            "background-color: #555; border-radius: 6px;"
+        self.status_label.setText("--")
+        self.status_label.setStyleSheet("color: #777; font-size: 9px;")
+        self.status_dot.setStyleSheet("background-color: #555; border-radius: 5px;")
+
+
+class CliffIRControl(QWidget):
+    """Cliff IR sensor control."""
+
+    command_requested = pyqtSignal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.enabled = False
+        self._setup_ui()
+
+    def _setup_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        title = QLabel("Cliff IR")
+        title.setStyleSheet("color: #aaa;")
+        layout.addWidget(title)
+
+        self.toggle_btn = QPushButton("OFF")
+        self.toggle_btn.setCheckable(True)
+        self.toggle_btn.setFixedWidth(45)
+        self.toggle_btn.clicked.connect(self._on_toggle)
+        self._update_toggle_style()
+        layout.addWidget(self.toggle_btn)
+
+        layout.addStretch()
+
+        dir_label = QLabel("Dir:")
+        dir_label.setStyleSheet("color: #777; font-size: 9px;")
+        layout.addWidget(dir_label)
+
+        self.dir_spinbox = QSpinBox()
+        self.dir_spinbox.setRange(0, 255)
+        self.dir_spinbox.setFixedWidth(50)
+        self.dir_spinbox.setFocusPolicy(Qt.ClickFocus)
+        self.dir_spinbox.setStyleSheet(
+            "QSpinBox { background-color: #3a3a3a; color: #e0e0e0; border: 1px solid #555; }"
         )
+        layout.addWidget(self.dir_spinbox)
+
+        self.set_btn = QPushButton("Set")
+        self.set_btn.setFixedWidth(35)
+        self.set_btn.setStyleSheet("background-color: #555; color: #e0e0e0;")
+        self.set_btn.clicked.connect(self._on_set_direction)
+        layout.addWidget(self.set_btn)
+
+    def _on_toggle(self):
+        self.enabled = self.toggle_btn.isChecked()
+        self._update_toggle_style()
+        action = "Enable" if self.enabled else "Disable"
+        self.command_requested.emit({
+            "type": "ComponentControl",
+            "id": "cliff_ir",
+            "action": {"type": action}
+        })
+
+    def _update_toggle_style(self):
+        if self.enabled:
+            self.toggle_btn.setText("ON")
+            self.toggle_btn.setStyleSheet(
+                "background-color: #4CAF50; color: white; font-weight: bold;"
+            )
+        else:
+            self.toggle_btn.setText("OFF")
+            self.toggle_btn.setStyleSheet("background-color: #555; color: #ccc;")
+
+    def _on_set_direction(self):
+        self.command_requested.emit({
+            "type": "ComponentControl",
+            "id": "cliff_ir",
+            "action": {
+                "type": "Configure",
+                "config": {"direction": {"U8": self.dir_spinbox.value()}}
+            }
+        })
 
 
 class DustboxStatus(QWidget):
-    """Widget showing dustbox status with water level and pump control for 2-in-1 box."""
+    """Widget showing dustbox status with water level and pump control."""
 
-    # Signal: (speed_percent)
     water_pump_changed = pyqtSignal(float)
 
     def __init__(self, parent=None):
@@ -246,140 +190,101 @@ class DustboxStatus(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(3)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
-        # Title
-        title = QLabel("Dustbox")
-        title.setFont(QFont("Arial", 10, QFont.Bold))
-        title.setStyleSheet("color: #e0e0e0;")
-        layout.addWidget(title)
+        # Status row
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
 
-        # Status row with icon indicator
-        status_layout = QHBoxLayout()
-        status_layout.setSpacing(8)
-
-        # Status indicator dot
         self.status_dot = QLabel()
-        self.status_dot.setFixedSize(12, 12)
-        self.status_dot.setStyleSheet(
-            "background-color: #4CAF50; border-radius: 6px;"
-        )
-        status_layout.addWidget(self.status_dot)
+        self.status_dot.setFixedSize(10, 10)
+        self.status_dot.setStyleSheet("background-color: #4CAF50; border-radius: 5px;")
+        status_row.addWidget(self.status_dot)
 
-        # Status text
         self.status_label = QLabel("Present")
-        self.status_label.setStyleSheet("color: #e0e0e0; font-weight: bold;")
-        status_layout.addWidget(self.status_label)
+        self.status_label.setStyleSheet("color: #e0e0e0;")
+        status_row.addWidget(self.status_label)
 
-        status_layout.addStretch()
-        layout.addLayout(status_layout)
-
-        # Type indicator
-        self.type_label = QLabel("Type: Unknown")
+        self.type_label = QLabel("Unknown")
         self.type_label.setStyleSheet("color: #777; font-size: 9px;")
-        layout.addWidget(self.type_label)
+        status_row.addWidget(self.type_label)
 
-        # Water tank level (only shown for 2-in-1 box)
-        self.water_level_layout = QHBoxLayout()
-        self.water_level_layout.setSpacing(8)
+        status_row.addStretch()
+        layout.addLayout(status_row)
+
+        # Water level row
+        self.water_row = QWidget()
+        water_layout = QHBoxLayout(self.water_row)
+        water_layout.setContentsMargins(0, 0, 0, 0)
+        water_layout.setSpacing(8)
 
         self.water_dot = QLabel()
-        self.water_dot.setFixedSize(12, 12)
-        self.water_dot.setStyleSheet(
-            "background-color: #666; border-radius: 6px;"
-        )
-        self.water_level_layout.addWidget(self.water_dot)
+        self.water_dot.setFixedSize(10, 10)
+        self.water_dot.setStyleSheet("background-color: #666; border-radius: 5px;")
+        water_layout.addWidget(self.water_dot)
 
-        self.water_level_label = QLabel("Tank: --")
-        self.water_level_label.setStyleSheet("color: #777;")
-        self.water_level_layout.addWidget(self.water_level_label)
+        self.water_label = QLabel("Tank: --")
+        self.water_label.setStyleSheet("color: #777;")
+        water_layout.addWidget(self.water_label)
 
-        self.water_level_layout.addStretch()
-        layout.addLayout(self.water_level_layout)
+        water_layout.addStretch()
+        layout.addWidget(self.water_row)
 
-        # Water pump control (only shown for 2-in-1 box)
-        self.pump_widget = QWidget()
-        pump_layout = QVBoxLayout(self.pump_widget)
-        pump_layout.setContentsMargins(0, 5, 0, 0)
-        pump_layout.setSpacing(3)
+        # Water pump control
+        self.pump_row = QWidget()
+        pump_layout = QHBoxLayout(self.pump_row)
+        pump_layout.setContentsMargins(0, 0, 0, 0)
+        pump_layout.setSpacing(6)
 
-        # Pump header with toggle
-        pump_header = QHBoxLayout()
-        pump_label = QLabel("Water Pump")
-        pump_label.setStyleSheet("color: #aaa; font-size: 9px;")
-        pump_header.addWidget(pump_label)
-
-        pump_header.addStretch()
+        pump_label = QLabel("Pump:")
+        pump_label.setStyleSheet("color: #777; font-size: 9px;")
+        pump_layout.addWidget(pump_label)
 
         self.pump_toggle = QPushButton("OFF")
         self.pump_toggle.setCheckable(True)
-        self.pump_toggle.setFixedWidth(40)
-        self.pump_toggle.setFixedHeight(20)
+        self.pump_toggle.setFixedSize(40, 20)
         self.pump_toggle.clicked.connect(self._on_pump_toggle)
         self._update_pump_style()
-        pump_header.addWidget(self.pump_toggle)
-
-        pump_layout.addLayout(pump_header)
-
-        # Pump speed slider
-        slider_layout = QHBoxLayout()
+        pump_layout.addWidget(self.pump_toggle)
 
         self.pump_slider = QSlider(Qt.Horizontal)
-        self.pump_slider.setMinimum(0)
-        self.pump_slider.setMaximum(4)  # 0, 25, 50, 75, 100
-        self.pump_slider.setValue(0)
-        self.pump_slider.setTickPosition(QSlider.TicksBelow)
-        self.pump_slider.setTickInterval(1)
+        self.pump_slider.setRange(0, 4)
         self.pump_slider.setFocusPolicy(Qt.NoFocus)
-        self.pump_slider.valueChanged.connect(self._on_pump_slider_changed)
-        slider_layout.addWidget(self.pump_slider)
+        self.pump_slider.valueChanged.connect(self._on_pump_slider)
+        pump_layout.addWidget(self.pump_slider)
 
         self.pump_speed_label = QLabel("0%")
-        self.pump_speed_label.setFixedWidth(30)
-        self.pump_speed_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.pump_speed_label.setFixedWidth(25)
         self.pump_speed_label.setStyleSheet("color: #aaa; font-size: 9px;")
-        slider_layout.addWidget(self.pump_speed_label)
+        pump_layout.addWidget(self.pump_speed_label)
 
-        pump_layout.addLayout(slider_layout)
-
-        layout.addWidget(self.pump_widget)
+        layout.addWidget(self.pump_row)
 
         # Initially hide water controls
-        self._set_water_controls_visible(False)
-
-    def _set_water_controls_visible(self, visible: bool):
-        """Show or hide water-related controls."""
-        self.water_dot.setVisible(visible)
-        self.water_level_label.setVisible(visible)
-        self.pump_widget.setVisible(visible)
+        self.water_row.setVisible(False)
+        self.pump_row.setVisible(False)
 
     def _on_pump_toggle(self):
         self.water_pump_enabled = self.pump_toggle.isChecked()
         self._update_pump_style()
-
-        # When toggling ON with slider at 0, set to 100%
         if self.water_pump_enabled and self.water_pump_speed == 0:
             self.water_pump_speed = 100
             self.pump_slider.setValue(4)
             self.pump_speed_label.setText("100%")
-
         self._emit_pump_command()
 
-    def _on_pump_slider_changed(self, value):
+    def _on_pump_slider(self, value):
         self.water_pump_speed = value * 25
         self.pump_speed_label.setText(f"{self.water_pump_speed}%")
-
-        # If slider moved above 0, enable; if moved to 0, disable
-        if self.water_pump_speed > 0 and not self.water_pump_enabled:
+        if value > 0 and not self.water_pump_enabled:
             self.water_pump_enabled = True
             self.pump_toggle.setChecked(True)
             self._update_pump_style()
-        elif self.water_pump_speed == 0 and self.water_pump_enabled:
+        elif value == 0 and self.water_pump_enabled:
             self.water_pump_enabled = False
             self.pump_toggle.setChecked(False)
             self._update_pump_style()
-
         self._emit_pump_command()
 
     def _update_pump_style(self):
@@ -395,72 +300,45 @@ class DustboxStatus(QWidget):
             )
 
     def _emit_pump_command(self):
-        actual_speed = float(self.water_pump_speed) if self.water_pump_enabled else 0.0
-        self.water_pump_changed.emit(actual_speed)
+        speed = float(self.water_pump_speed) if self.water_pump_enabled else 0.0
+        self.water_pump_changed.emit(speed)
 
     def update_status(self, attached: bool, dustbox_type: str = None, water_level: int = None):
-        """Update dustbox status display.
-
-        Args:
-            attached: Whether dustbox is present
-            dustbox_type: "dry" or "2in1" (optional, may not be available)
-            water_level: Water tank level 0-100 (only for 2-in-1 box)
-        """
         if attached:
             self.status_label.setText("Present")
-            self.status_label.setStyleSheet("color: #e0e0e0; font-weight: bold;")
-            self.status_dot.setStyleSheet(
-                "background-color: #4CAF50; border-radius: 6px;"
-            )
+            self.status_label.setStyleSheet("color: #e0e0e0;")
+            self.status_dot.setStyleSheet("background-color: #4CAF50; border-radius: 5px;")
         else:
             self.status_label.setText("Missing")
-            self.status_label.setStyleSheet("color: #ff6b6b; font-weight: bold;")
-            self.status_dot.setStyleSheet(
-                "background-color: #f44336; border-radius: 6px;"
-            )
+            self.status_label.setStyleSheet("color: #ff6b6b;")
+            self.status_dot.setStyleSheet("background-color: #f44336; border-radius: 5px;")
 
-        # Detect 2-in-1 box if water level > 0 (pump was activated and water detected)
         if water_level is not None and water_level > 0:
             self.is_2in1 = True
 
-        # Update type label
         if self.is_2in1:
-            self.type_label.setText("Type: 2-in-1 (Wet/Dry)")
+            self.type_label.setText("2-in-1")
         elif dustbox_type == "dry":
-            self.type_label.setText("Type: Dry Only")
+            self.type_label.setText("Dry")
         else:
-            self.type_label.setText("Type: Unknown")
+            self.type_label.setText("")
 
-        # Always show water pump controls when dustbox is attached
-        # (user can test if it's a 2-in-1 box by activating pump)
-        self._set_water_controls_visible(attached)
+        self.water_row.setVisible(attached)
+        self.pump_row.setVisible(attached)
 
-        # Update water level display
-        if water_level is not None:
-            if water_level > 0:
-                self.water_level_label.setText(f"Tank: {water_level}%")
-                self.water_level_label.setStyleSheet("color: #00BCD4; font-weight: bold;")
-                self.water_dot.setStyleSheet(
-                    "background-color: #00BCD4; border-radius: 6px;"
-                )
-            else:
-                self.water_level_label.setText("Tank: 0%")
-                self.water_level_label.setStyleSheet("color: #777;")
-                self.water_dot.setStyleSheet(
-                    "background-color: #666; border-radius: 6px;"
-                )
+        if water_level is not None and water_level > 0:
+            self.water_label.setText(f"Tank: {water_level}%")
+            self.water_label.setStyleSheet("color: #00BCD4;")
+            self.water_dot.setStyleSheet("background-color: #00BCD4; border-radius: 5px;")
         else:
-            self.water_level_label.setText("Tank: --")
-            self.water_level_label.setStyleSheet("color: #777;")
-            self.water_dot.setStyleSheet(
-                "background-color: #666; border-radius: 6px;"
-            )
+            self.water_label.setText("Tank: --")
+            self.water_label.setStyleSheet("color: #777;")
+            self.water_dot.setStyleSheet("background-color: #666; border-radius: 5px;")
 
 
 class LEDControl(QWidget):
-    """LED mode control with spinbox for 0-255 value selection."""
+    """LED mode control."""
 
-    # Signal: (led_value)
     command_changed = pyqtSignal(int)
 
     def __init__(self, parent=None):
@@ -468,156 +346,34 @@ class LEDControl(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
-        # Header
-        title = QLabel("LED Mode")
-        title.setFont(QFont("Arial", 10, QFont.Bold))
-        title.setStyleSheet("color: #e0e0e0;")
+        title = QLabel("LED")
+        title.setStyleSheet("color: #aaa;")
         layout.addWidget(title)
 
-        # Spinbox row
-        spinbox_layout = QHBoxLayout()
-
         self.spinbox = QSpinBox()
-        self.spinbox.setMinimum(0)
-        self.spinbox.setMaximum(20)
-        self.spinbox.setValue(0)
-        self.spinbox.setFocusPolicy(Qt.ClickFocus)  # Only focus on click
+        self.spinbox.setRange(0, 20)
+        self.spinbox.setFixedWidth(50)
+        self.spinbox.setFocusPolicy(Qt.ClickFocus)
         self.spinbox.setStyleSheet(
             "QSpinBox { background-color: #3a3a3a; color: #e0e0e0; border: 1px solid #555; }"
         )
-        self.spinbox.valueChanged.connect(self._on_value_changed)
-        spinbox_layout.addWidget(self.spinbox)
+        layout.addWidget(self.spinbox)
 
         self.send_btn = QPushButton("Set")
-        self.send_btn.setFixedWidth(40)
+        self.send_btn.setFixedWidth(35)
         self.send_btn.setStyleSheet("background-color: #555; color: #e0e0e0;")
-        self.send_btn.clicked.connect(self._on_send_clicked)
-        spinbox_layout.addWidget(self.send_btn)
+        self.send_btn.clicked.connect(lambda: self.command_changed.emit(self.spinbox.value()))
+        layout.addWidget(self.send_btn)
 
-        layout.addLayout(spinbox_layout)
-
-        # Hint label
-        hint = QLabel("0=Off, 1=Blue, 7=Red, 17=Purple")
-        hint.setStyleSheet("color: #777; font-size: 9px;")
-        hint.setWordWrap(True)
+        hint = QLabel("0=Off 1=Blue 7=Red")
+        hint.setStyleSheet("color: #666; font-size: 8px;")
         layout.addWidget(hint)
 
-    def _on_value_changed(self, value: int):
-        # Don't auto-send on value change, wait for button click
-        pass
-
-    def _on_send_clicked(self):
-        self.command_changed.emit(self.spinbox.value())
-
-
-class PowerControl(QWidget):
-    """Power management controls for MCU, charger, and main board."""
-
-    command_requested = pyqtSignal(dict)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._setup_ui()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
-
-        # Title
-        title = QLabel("Power")
-        title.setFont(QFont("Arial", 10, QFont.Bold))
-        title.setStyleSheet("color: #e0e0e0;")
-        layout.addWidget(title)
-
-        # MCU row
-        mcu_layout = QHBoxLayout()
-        mcu_label = QLabel("MCU")
-        mcu_label.setStyleSheet("color: #aaa;")
-        mcu_label.setFixedWidth(50)
-        mcu_layout.addWidget(mcu_label)
-
-        btn_style = "background-color: #555; color: #e0e0e0; padding: 3px 6px;"
-        btn_style_warn = "background-color: #8B4513; color: #e0e0e0; padding: 3px 6px;"
-
-        self.mcu_wake_btn = QPushButton("Wake")
-        self.mcu_wake_btn.setStyleSheet(btn_style)
-        self.mcu_wake_btn.clicked.connect(lambda: self._send_command("mcu", "Enable"))
-        mcu_layout.addWidget(self.mcu_wake_btn)
-
-        self.mcu_sleep_btn = QPushButton("Sleep")
-        self.mcu_sleep_btn.setStyleSheet(btn_style)
-        self.mcu_sleep_btn.clicked.connect(lambda: self._send_command("mcu", "Disable"))
-        mcu_layout.addWidget(self.mcu_sleep_btn)
-
-        self.mcu_reset_btn = QPushButton("Reset Err")
-        self.mcu_reset_btn.setStyleSheet(btn_style)
-        self.mcu_reset_btn.clicked.connect(lambda: self._send_command("mcu", "Reset"))
-        mcu_layout.addWidget(self.mcu_reset_btn)
-
-        layout.addLayout(mcu_layout)
-
-        # Charger row
-        charger_layout = QHBoxLayout()
-        charger_label = QLabel("Charger")
-        charger_label.setStyleSheet("color: #aaa;")
-        charger_label.setFixedWidth(50)
-        charger_layout.addWidget(charger_label)
-
-        self.charger_on_btn = QPushButton("ON")
-        self.charger_on_btn.setStyleSheet(btn_style)
-        self.charger_on_btn.clicked.connect(lambda: self._send_command("charger", "Enable"))
-        charger_layout.addWidget(self.charger_on_btn)
-
-        self.charger_off_btn = QPushButton("OFF")
-        self.charger_off_btn.setStyleSheet(btn_style)
-        self.charger_off_btn.clicked.connect(lambda: self._send_command("charger", "Disable"))
-        charger_layout.addWidget(self.charger_off_btn)
-
-        charger_layout.addStretch()
-        layout.addLayout(charger_layout)
-
-        # Main Board row
-        board_layout = QHBoxLayout()
-        board_label = QLabel("Board")
-        board_label.setStyleSheet("color: #aaa;")
-        board_label.setFixedWidth(50)
-        board_layout.addWidget(board_label)
-
-        self.board_on_btn = QPushButton("ON")
-        self.board_on_btn.setStyleSheet(btn_style)
-        self.board_on_btn.clicked.connect(lambda: self._send_command("main_board", "Enable"))
-        board_layout.addWidget(self.board_on_btn)
-
-        self.board_off_btn = QPushButton("OFF")
-        self.board_off_btn.setStyleSheet(btn_style_warn)
-        self.board_off_btn.clicked.connect(lambda: self._send_command("main_board", "Disable"))
-        board_layout.addWidget(self.board_off_btn)
-
-        self.board_restart_btn = QPushButton("Restart")
-        self.board_restart_btn.setStyleSheet(btn_style_warn)
-        self.board_restart_btn.clicked.connect(lambda: self._send_command("main_board", "Reset"))
-        board_layout.addWidget(self.board_restart_btn)
-
-        layout.addLayout(board_layout)
-
-        # Warning label
-        warn_label = QLabel("Board OFF/Restart will terminate daemon!")
-        warn_label.setStyleSheet("color: #ff6b6b; font-size: 8px;")
-        warn_label.setWordWrap(True)
-        layout.addWidget(warn_label)
-
-    def _send_command(self, component_id: str, action_type: str):
-        command = {
-            "type": "ComponentControl",
-            "id": component_id,
-            "action": {"type": action_type}
-        }
-        self.command_requested.emit(command)
+        layout.addStretch()
 
 
 class CalibrationControl(QWidget):
@@ -631,279 +387,294 @@ class CalibrationControl(QWidget):
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
-
-        # Title
-        title = QLabel("Calibration")
-        title.setFont(QFont("Arial", 10, QFont.Bold))
-        title.setStyleSheet("color: #e0e0e0;")
-        layout.addWidget(title)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
         btn_style = "background-color: #555; color: #e0e0e0; padding: 3px 6px;"
 
         # IMU row
-        imu_layout = QHBoxLayout()
+        imu_row = QHBoxLayout()
         imu_label = QLabel("IMU")
         imu_label.setStyleSheet("color: #aaa;")
-        imu_label.setFixedWidth(55)
-        imu_layout.addWidget(imu_label)
+        imu_label.setFixedWidth(50)
+        imu_row.addWidget(imu_label)
 
-        self.imu_factory_btn = QPushButton("Factory Cal")
-        self.imu_factory_btn.setStyleSheet(btn_style)
-        self.imu_factory_btn.clicked.connect(lambda: self._send_command("imu", "Reset"))
-        imu_layout.addWidget(self.imu_factory_btn)
+        imu_factory = QPushButton("Factory")
+        imu_factory.setStyleSheet(btn_style)
+        imu_factory.clicked.connect(lambda: self._send("imu", "Reset"))
+        imu_row.addWidget(imu_factory)
 
-        self.imu_query_btn = QPushButton("Query")
-        self.imu_query_btn.setStyleSheet(btn_style)
-        self.imu_query_btn.clicked.connect(lambda: self._send_command("imu", "Enable"))
-        imu_layout.addWidget(self.imu_query_btn)
+        imu_query = QPushButton("Query")
+        imu_query.setStyleSheet(btn_style)
+        imu_query.clicked.connect(lambda: self._send("imu", "Enable"))
+        imu_row.addWidget(imu_query)
 
-        layout.addLayout(imu_layout)
+        imu_row.addStretch()
+        layout.addLayout(imu_row)
 
         # Compass row
-        compass_layout = QHBoxLayout()
+        compass_row = QHBoxLayout()
         compass_label = QLabel("Compass")
         compass_label.setStyleSheet("color: #aaa;")
-        compass_label.setFixedWidth(55)
-        compass_layout.addWidget(compass_label)
+        compass_label.setFixedWidth(50)
+        compass_row.addWidget(compass_label)
 
-        self.compass_cal_btn = QPushButton("Start Cal")
-        self.compass_cal_btn.setStyleSheet(btn_style)
-        self.compass_cal_btn.clicked.connect(lambda: self._send_command("compass", "Reset"))
-        compass_layout.addWidget(self.compass_cal_btn)
+        compass_cal = QPushButton("Start Cal")
+        compass_cal.setStyleSheet(btn_style)
+        compass_cal.clicked.connect(lambda: self._send("compass", "Reset"))
+        compass_row.addWidget(compass_cal)
 
-        self.compass_query_btn = QPushButton("Query")
-        self.compass_query_btn.setStyleSheet(btn_style)
-        self.compass_query_btn.clicked.connect(lambda: self._send_command("compass", "Enable"))
-        compass_layout.addWidget(self.compass_query_btn)
+        compass_query = QPushButton("Query")
+        compass_query.setStyleSheet(btn_style)
+        compass_query.clicked.connect(lambda: self._send("compass", "Enable"))
+        compass_row.addWidget(compass_query)
 
-        layout.addLayout(compass_layout)
+        compass_row.addStretch()
+        layout.addLayout(compass_row)
 
-    def _send_command(self, component_id: str, action_type: str):
-        command = {
+    def _send(self, component_id: str, action_type: str):
+        self.command_requested.emit({
             "type": "ComponentControl",
             "id": component_id,
             "action": {"type": action_type}
-        }
-        self.command_requested.emit(command)
+        })
 
 
-class CliffIRControl(QWidget):
-    """Cliff IR sensor control."""
+class PowerControl(QWidget):
+    """Power management controls."""
 
     command_requested = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.enabled = False
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
-        # Header with title and toggle
-        header = QHBoxLayout()
+        btn_style = "background-color: #555; color: #e0e0e0; padding: 3px 6px;"
+        btn_warn = "background-color: #8B4513; color: #e0e0e0; padding: 3px 6px;"
 
-        title = QLabel("Cliff Sensors")
-        title.setFont(QFont("Arial", 10, QFont.Bold))
-        title.setStyleSheet("color: #e0e0e0;")
-        header.addWidget(title)
+        # MCU row
+        mcu_row = QHBoxLayout()
+        mcu_label = QLabel("MCU")
+        mcu_label.setStyleSheet("color: #aaa;")
+        mcu_label.setFixedWidth(45)
+        mcu_row.addWidget(mcu_label)
 
-        header.addStretch()
+        mcu_wake = QPushButton("Wake")
+        mcu_wake.setStyleSheet(btn_style)
+        mcu_wake.clicked.connect(lambda: self._send("mcu", "Enable"))
+        mcu_row.addWidget(mcu_wake)
 
-        self.toggle_btn = QPushButton("OFF")
-        self.toggle_btn.setCheckable(True)
-        self.toggle_btn.setFixedWidth(50)
-        self.toggle_btn.clicked.connect(self._on_toggle)
-        self._update_toggle_style()
-        header.addWidget(self.toggle_btn)
+        mcu_sleep = QPushButton("Sleep")
+        mcu_sleep.setStyleSheet(btn_style)
+        mcu_sleep.clicked.connect(lambda: self._send("mcu", "Disable"))
+        mcu_row.addWidget(mcu_sleep)
 
-        layout.addLayout(header)
+        mcu_reset = QPushButton("Rst Err")
+        mcu_reset.setStyleSheet(btn_style)
+        mcu_reset.clicked.connect(lambda: self._send("mcu", "Reset"))
+        mcu_row.addWidget(mcu_reset)
 
-        # Direction control row
-        dir_layout = QHBoxLayout()
-        dir_label = QLabel("Direction")
-        dir_label.setStyleSheet("color: #aaa;")
-        dir_layout.addWidget(dir_label)
+        layout.addLayout(mcu_row)
 
-        self.dir_spinbox = QSpinBox()
-        self.dir_spinbox.setMinimum(0)
-        self.dir_spinbox.setMaximum(255)
-        self.dir_spinbox.setValue(0)
-        self.dir_spinbox.setFocusPolicy(Qt.ClickFocus)
-        self.dir_spinbox.setStyleSheet(
-            "QSpinBox { background-color: #3a3a3a; color: #e0e0e0; border: 1px solid #555; }"
-        )
-        dir_layout.addWidget(self.dir_spinbox)
+        # Charger row
+        charger_row = QHBoxLayout()
+        charger_label = QLabel("Charger")
+        charger_label.setStyleSheet("color: #aaa;")
+        charger_label.setFixedWidth(45)
+        charger_row.addWidget(charger_label)
 
-        self.dir_set_btn = QPushButton("Set")
-        self.dir_set_btn.setFixedWidth(40)
-        self.dir_set_btn.setStyleSheet("background-color: #555; color: #e0e0e0;")
-        self.dir_set_btn.clicked.connect(self._on_set_direction)
-        dir_layout.addWidget(self.dir_set_btn)
+        charger_on = QPushButton("ON")
+        charger_on.setStyleSheet(btn_style)
+        charger_on.clicked.connect(lambda: self._send("charger", "Enable"))
+        charger_row.addWidget(charger_on)
 
-        layout.addLayout(dir_layout)
+        charger_off = QPushButton("OFF")
+        charger_off.setStyleSheet(btn_style)
+        charger_off.clicked.connect(lambda: self._send("charger", "Disable"))
+        charger_row.addWidget(charger_off)
 
-    def _on_toggle(self):
-        self.enabled = self.toggle_btn.isChecked()
-        self._update_toggle_style()
+        charger_row.addStretch()
+        layout.addLayout(charger_row)
 
-        if self.enabled:
-            command = {
-                "type": "ComponentControl",
-                "id": "cliff_ir",
-                "action": {"type": "Enable"}
-            }
-        else:
-            command = {
-                "type": "ComponentControl",
-                "id": "cliff_ir",
-                "action": {"type": "Disable"}
-            }
-        self.command_requested.emit(command)
+        # Board row
+        board_row = QHBoxLayout()
+        board_label = QLabel("Board")
+        board_label.setStyleSheet("color: #aaa;")
+        board_label.setFixedWidth(45)
+        board_row.addWidget(board_label)
 
-    def _update_toggle_style(self):
-        if self.enabled:
-            self.toggle_btn.setText("ON")
-            self.toggle_btn.setStyleSheet(
-                "background-color: #4CAF50; color: white; font-weight: bold;"
-            )
-        else:
-            self.toggle_btn.setText("OFF")
-            self.toggle_btn.setStyleSheet(
-                "background-color: #555; color: #ccc;"
-            )
+        board_on = QPushButton("ON")
+        board_on.setStyleSheet(btn_style)
+        board_on.clicked.connect(lambda: self._send("main_board", "Enable"))
+        board_row.addWidget(board_on)
 
-    def _on_set_direction(self):
-        value = self.dir_spinbox.value()
-        command = {
+        board_off = QPushButton("OFF")
+        board_off.setStyleSheet(btn_warn)
+        board_off.clicked.connect(lambda: self._send("main_board", "Disable"))
+        board_row.addWidget(board_off)
+
+        board_restart = QPushButton("Restart")
+        board_restart.setStyleSheet(btn_warn)
+        board_restart.clicked.connect(lambda: self._send("main_board", "Reset"))
+        board_row.addWidget(board_restart)
+
+        layout.addLayout(board_row)
+
+        # Warning
+        warn = QLabel("OFF/Restart terminates daemon!")
+        warn.setStyleSheet("color: #ff6b6b; font-size: 8px;")
+        layout.addWidget(warn)
+
+    def _send(self, component_id: str, action_type: str):
+        self.command_requested.emit({
             "type": "ComponentControl",
-            "id": "cliff_ir",
-            "action": {
-                "type": "Configure",
-                "config": {"direction": {"U8": value}}
-            }
-        }
-        self.command_requested.emit(command)
+            "id": component_id,
+            "action": {"type": action_type}
+        })
 
 
 class DriveControl(QWidget):
-    """Arrow key-style drive control widget for robot motion."""
+    """Arrow key-style drive control with E-Stop."""
 
-    # Signal: (linear_velocity, angular_velocity)
     velocity_changed = pyqtSignal(float, float)
-    # Signal: (enabled)
     motor_toggled = pyqtSignal(bool)
+    emergency_stop = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.linear_velocity = 0.0  # m/s
-        self.angular_velocity = 0.0  # rad/s
-        self.linear_step = 0.5  # m/s per press
-        self.angular_step = 0.5  # rad/s per press
+        self.linear_velocity = 0.0
+        self.angular_velocity = 0.0
+        self.linear_step = 0.5
+        self.angular_step = 0.5
         self.motor_enabled = False
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(5)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
 
-        # Header with title and motor toggle
-        header = QHBoxLayout()
+        # Arrow buttons grid (left side)
+        arrow_widget = QWidget()
+        grid = QGridLayout(arrow_widget)
+        grid.setSpacing(2)
+        grid.setContentsMargins(0, 0, 0, 0)
 
-        title = QLabel("Drive Control")
-        title.setFont(QFont("Arial", 10, QFont.Bold))
-        title.setStyleSheet("color: #e0e0e0;")
-        header.addWidget(title)
+        btn_style = """
+            QPushButton {
+                background-color: #555;
+                color: #e0e0e0;
+                border: none;
+                border-radius: 3px;
+            }
+            QPushButton:hover { background-color: #666; }
+            QPushButton:pressed { background-color: #4CAF50; }
+        """
 
-        header.addStretch()
-
-        self.motor_toggle = QPushButton("OFF")
-        self.motor_toggle.setCheckable(True)
-        self.motor_toggle.setFixedWidth(50)
-        self.motor_toggle.clicked.connect(self._on_motor_toggle)
-        self._update_motor_style()
-        header.addWidget(self.motor_toggle)
-
-        layout.addLayout(header)
-
-        # Arrow buttons grid
-        # Layout:  Row 0:     [▲]
-        #          Row 1: [◀] [▼] [▶]
-        grid = QGridLayout()
-        grid.setSpacing(3)
-
-        # Forward button (up arrow) - row 0, col 1
         self.btn_forward = QPushButton("▲")
-        self.btn_forward.setFixedSize(40, 40)
-        self.btn_forward.setFont(QFont("Arial", 14))
-        self.btn_forward.pressed.connect(self._on_forward_pressed)
+        self.btn_forward.setFixedSize(36, 36)
+        self.btn_forward.setStyleSheet(btn_style)
+        self.btn_forward.pressed.connect(self._on_forward)
         self.btn_forward.released.connect(self._on_released)
         grid.addWidget(self.btn_forward, 0, 1)
 
-        # Left button - row 1, col 0
         self.btn_left = QPushButton("◀")
-        self.btn_left.setFixedSize(40, 40)
-        self.btn_left.setFont(QFont("Arial", 14))
-        self.btn_left.pressed.connect(self._on_left_pressed)
+        self.btn_left.setFixedSize(36, 36)
+        self.btn_left.setStyleSheet(btn_style)
+        self.btn_left.pressed.connect(self._on_left)
         self.btn_left.released.connect(self._on_released)
         grid.addWidget(self.btn_left, 1, 0)
 
-        # Backward button (down arrow) - row 1, col 1 (same column as forward)
         self.btn_backward = QPushButton("▼")
-        self.btn_backward.setFixedSize(40, 40)
-        self.btn_backward.setFont(QFont("Arial", 14))
-        self.btn_backward.pressed.connect(self._on_backward_pressed)
+        self.btn_backward.setFixedSize(36, 36)
+        self.btn_backward.setStyleSheet(btn_style)
+        self.btn_backward.pressed.connect(self._on_backward)
         self.btn_backward.released.connect(self._on_released)
         grid.addWidget(self.btn_backward, 1, 1)
 
-        # Right button - row 1, col 2
         self.btn_right = QPushButton("▶")
-        self.btn_right.setFixedSize(40, 40)
-        self.btn_right.setFont(QFont("Arial", 14))
-        self.btn_right.pressed.connect(self._on_right_pressed)
+        self.btn_right.setFixedSize(36, 36)
+        self.btn_right.setStyleSheet(btn_style)
+        self.btn_right.pressed.connect(self._on_right)
         self.btn_right.released.connect(self._on_released)
         grid.addWidget(self.btn_right, 1, 2)
 
-        # Center the grid
-        grid_container = QHBoxLayout()
-        grid_container.addStretch()
-        grid_container.addLayout(grid)
-        grid_container.addStretch()
-        layout.addLayout(grid_container)
+        layout.addWidget(arrow_widget)
+
+        # Right side: Motor toggle, velocity, E-Stop
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+
+        # Motor toggle row
+        motor_row = QHBoxLayout()
+        motor_label = QLabel("Motor")
+        motor_label.setStyleSheet("color: #aaa; font-size: 10px;")
+        motor_row.addWidget(motor_label)
+
+        self.motor_toggle = QPushButton("OFF")
+        self.motor_toggle.setCheckable(True)
+        self.motor_toggle.setFixedSize(45, 22)
+        self.motor_toggle.clicked.connect(self._on_motor_toggle)
+        self._update_motor_style()
+        motor_row.addWidget(self.motor_toggle)
+
+        motor_row.addStretch()
+        right_layout.addLayout(motor_row)
 
         # Velocity display
-        self.velocity_label = QLabel("Lin: 0.00 m/s  Ang: 0.00 rad/s")
-        self.velocity_label.setAlignment(Qt.AlignCenter)
-        self.velocity_label.setStyleSheet("color: #aaa; font-size: 9px;")
-        layout.addWidget(self.velocity_label)
+        self.velocity_label = QLabel("0.0 / 0.0")
+        self.velocity_label.setStyleSheet("color: #777; font-size: 9px;")
+        right_layout.addWidget(self.velocity_label)
 
-    def _on_forward_pressed(self):
+        # E-Stop button
+        self.estop_btn = QPushButton("E-STOP")
+        self.estop_btn.setFixedHeight(28)
+        self.estop_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #d32f2f;
+                color: white;
+                font-weight: bold;
+                border: 2px solid #b71c1c;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #f44336; }
+            QPushButton:pressed { background-color: #b71c1c; }
+        """)
+        self.estop_btn.clicked.connect(self._on_estop)
+        right_layout.addWidget(self.estop_btn)
+
+        layout.addWidget(right_widget)
+        layout.addStretch()
+
+    def _on_forward(self):
         if not self.motor_enabled:
             return
         self.linear_velocity = self.linear_step
         self.angular_velocity = 0.0
         self._emit_velocity()
 
-    def _on_backward_pressed(self):
+    def _on_backward(self):
         if not self.motor_enabled:
             return
         self.linear_velocity = -self.linear_step
         self.angular_velocity = 0.0
         self._emit_velocity()
 
-    def _on_left_pressed(self):
+    def _on_left(self):
         if not self.motor_enabled:
             return
         self.linear_velocity = 0.0
         self.angular_velocity = self.angular_step
         self._emit_velocity()
 
-    def _on_right_pressed(self):
+    def _on_right(self):
         if not self.motor_enabled:
             return
         self.linear_velocity = 0.0
@@ -918,9 +689,7 @@ class DriveControl(QWidget):
         self._emit_velocity()
 
     def _emit_velocity(self):
-        self.velocity_label.setText(
-            f"Lin: {self.linear_velocity:.2f} m/s  Ang: {self.angular_velocity:.2f} rad/s"
-        )
+        self.velocity_label.setText(f"{self.linear_velocity:.1f} / {self.angular_velocity:.1f}")
         self.velocity_changed.emit(self.linear_velocity, self.angular_velocity)
 
     def _on_motor_toggle(self):
@@ -936,29 +705,28 @@ class DriveControl(QWidget):
             )
         else:
             self.motor_toggle.setText("OFF")
-            self.motor_toggle.setStyleSheet(
-                "background-color: #555; color: #ccc;"
-            )
+            self.motor_toggle.setStyleSheet("background-color: #555; color: #ccc;")
+
+    def _on_estop(self):
+        self.linear_velocity = 0.0
+        self.angular_velocity = 0.0
+        self.velocity_label.setText("STOP")
+        self.emergency_stop.emit()
 
     def set_motor_enabled(self, enabled: bool):
-        """Set motor enabled state (from keyboard shortcut)."""
         self.motor_enabled = enabled
         self.motor_toggle.setChecked(enabled)
         self._update_motor_style()
 
     def set_velocity(self, linear: float, angular: float):
-        """Set velocity from external source (keyboard)."""
         self.linear_velocity = linear
         self.angular_velocity = angular
-        self.velocity_label.setText(
-            f"Lin: {self.linear_velocity:.2f} m/s  Ang: {self.angular_velocity:.2f} rad/s"
-        )
+        self.velocity_label.setText(f"{linear:.1f} / {angular:.1f}")
 
 
 class ControlPanel(QWidget):
-    """Control panel with actuator controls and status widgets."""
+    """Control panel with collapsible groups."""
 
-    # Signal: (command_dict)
     command_requested = pyqtSignal(dict)
 
     def __init__(self, parent=None):
@@ -967,12 +735,11 @@ class ControlPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        # Main layout with scroll area
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Scroll area for all controls (vertical only)
+        # Scroll area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -984,263 +751,160 @@ class ControlPanel(QWidget):
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         """)
 
-        # Content widget inside scroll area
         content = QWidget()
-        content.setFixedWidth(242)  # Fixed width for content (250 - 8 for scrollbar)
+        content.setFixedWidth(242)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(6)
 
-        # Title
-        title = QLabel("Device Control")
-        title.setFont(QFont("Arial", 12, QFont.Bold))
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: #e0e0e0;")
-        layout.addWidget(title)
-
-        # Separator
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Sunken)
-        line.setStyleSheet("background-color: #444;")
-        layout.addWidget(line)
-
-        # Vacuum control
-        self.vacuum_ctrl = ActuatorControl("Vacuum", "vacuum")
-        self.vacuum_ctrl.command_changed.connect(self._on_actuator_command)
-        layout.addWidget(self.vacuum_ctrl)
-
-        # Side brush control
-        self.side_brush_ctrl = ActuatorControl("Side Brush", "side_brush")
-        self.side_brush_ctrl.command_changed.connect(self._on_actuator_command)
-        layout.addWidget(self.side_brush_ctrl)
-
-        # Main brush control
-        self.main_brush_ctrl = ActuatorControl("Main Brush", "brush")
-        self.main_brush_ctrl.command_changed.connect(self._on_actuator_command)
-        layout.addWidget(self.main_brush_ctrl)
-
-        # LED control
-        self.led_ctrl = LEDControl()
-        self.led_ctrl.command_changed.connect(self._on_led_command)
-        layout.addWidget(self.led_ctrl)
-
-        # Separator
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.HLine)
-        line2.setFrameShadow(QFrame.Sunken)
-        line2.setStyleSheet("background-color: #444;")
-        layout.addWidget(line2)
-
-        # Dustbox status
-        self.dustbox_status = DustboxStatus()
-        self.dustbox_status.water_pump_changed.connect(self._on_water_pump_command)
-        layout.addWidget(self.dustbox_status)
-
-        # Lidar control
-        self.lidar_control = LidarControl()
-        self.lidar_control.lidar_toggled.connect(self._on_lidar_toggled)
-        layout.addWidget(self.lidar_control)
-
-        # Cliff IR control
-        self.cliff_ir_control = CliffIRControl()
-        self.cliff_ir_control.command_requested.connect(self._forward_command)
-        layout.addWidget(self.cliff_ir_control)
-
-        # Separator
-        line3 = QFrame()
-        line3.setFrameShape(QFrame.HLine)
-        line3.setFrameShadow(QFrame.Sunken)
-        line3.setStyleSheet("background-color: #444;")
-        layout.addWidget(line3)
-
-        # Calibration control
-        self.calibration_control = CalibrationControl()
-        self.calibration_control.command_requested.connect(self._forward_command)
-        layout.addWidget(self.calibration_control)
-
-        # Separator
-        line4 = QFrame()
-        line4.setFrameShape(QFrame.HLine)
-        line4.setFrameShadow(QFrame.Sunken)
-        line4.setStyleSheet("background-color: #444;")
-        layout.addWidget(line4)
-
-        # Power control
-        self.power_control = PowerControl()
-        self.power_control.command_requested.connect(self._forward_command)
-        layout.addWidget(self.power_control)
-
-        # Separator
-        line5 = QFrame()
-        line5.setFrameShape(QFrame.HLine)
-        line5.setFrameShadow(QFrame.Sunken)
-        line5.setStyleSheet("background-color: #444;")
-        layout.addWidget(line5)
-
-        # Drive control
+        # === Motion Control (TOP) ===
+        self.motion_group = CollapsibleGroup("Motion Control")
         self.drive_control = DriveControl()
         self.drive_control.velocity_changed.connect(self._on_velocity_changed)
         self.drive_control.motor_toggled.connect(self._on_motor_toggled)
-        layout.addWidget(self.drive_control)
+        self.drive_control.emergency_stop.connect(self._on_emergency_stop)
+        self.motion_group.add_widget(self.drive_control)
+        layout.addWidget(self.motion_group)
 
-        # Push everything to top
+        # === Cleaning Systems ===
+        self.cleaning_group = CollapsibleGroup("Cleaning Systems")
+        self.actuator_row = CompactActuatorRow()
+        self.actuator_row.command_changed.connect(self._on_actuator_command)
+        self.cleaning_group.add_widget(self.actuator_row)
+
+        # Water pump (in dustbox)
+        self.dustbox_status = DustboxStatus()
+        self.dustbox_status.water_pump_changed.connect(self._on_water_pump_command)
+        self.cleaning_group.add_widget(self.dustbox_status)
+        layout.addWidget(self.cleaning_group)
+
+        # === Sensors ===
+        self.sensors_group = CollapsibleGroup("Sensors")
+        self.lidar_control = LidarControl()
+        self.lidar_control.lidar_toggled.connect(self._on_lidar_toggled)
+        self.sensors_group.add_widget(self.lidar_control)
+
+        self.cliff_ir_control = CliffIRControl()
+        self.cliff_ir_control.command_requested.connect(self._forward_command)
+        self.sensors_group.add_widget(self.cliff_ir_control)
+        layout.addWidget(self.sensors_group)
+
+        # === System ===
+        self.system_group = CollapsibleGroup("System")
+        self.led_ctrl = LEDControl()
+        self.led_ctrl.command_changed.connect(self._on_led_command)
+        self.system_group.add_widget(self.led_ctrl)
+        layout.addWidget(self.system_group)
+
+        # === Calibration ===
+        self.calibration_group = CollapsibleGroup("Calibration")
+        self.calibration_control = CalibrationControl()
+        self.calibration_control.command_requested.connect(self._forward_command)
+        self.calibration_group.add_widget(self.calibration_control)
+        layout.addWidget(self.calibration_group)
+
+        # === Power Management ===
+        self.power_group = CollapsibleGroup("Power Management")
+        self.power_control = PowerControl()
+        self.power_control.command_requested.connect(self._forward_command)
+        self.power_group.add_widget(self.power_control)
+        layout.addWidget(self.power_group)
+
         layout.addStretch()
-
-        # Set scroll area content
         scroll.setWidget(content)
         main_layout.addWidget(scroll)
 
-    def _on_actuator_command(self, actuator_id: str, speed: float):
-        """Handle actuator control command using ComponentControl protocol."""
-        # Map old actuator IDs to new component IDs
-        component_id = actuator_id
-        if actuator_id == "brush":
-            component_id = "main_brush"
-
+    def _on_actuator_command(self, actuator_id: str, speed: int):
+        component_id = "main_brush" if actuator_id == "brush" else actuator_id
         if speed > 0:
-            command = {
+            cmd = {
                 "type": "ComponentControl",
                 "id": component_id,
-                "action": {
-                    "type": "Configure",
-                    "config": {"speed": {"U8": int(speed)}}
-                }
+                "action": {"type": "Configure", "config": {"speed": {"U8": speed}}}
             }
         else:
-            command = {
+            cmd = {
                 "type": "ComponentControl",
                 "id": component_id,
                 "action": {"type": "Disable"}
             }
-        self.command_requested.emit(command)
+        self.command_requested.emit(cmd)
 
     def _on_led_command(self, value: int):
-        """Handle LED control command using ComponentControl protocol."""
-        command = {
+        self.command_requested.emit({
             "type": "ComponentControl",
             "id": "led",
-            "action": {
-                "type": "Configure",
-                "config": {"state": {"U8": value}}
-            }
-        }
-        self.command_requested.emit(command)
+            "action": {"type": "Configure", "config": {"state": {"U8": value}}}
+        })
 
     def _on_water_pump_command(self, speed: float):
-        """Handle water pump control command using ComponentControl protocol."""
         if speed > 0:
-            command = {
+            cmd = {
                 "type": "ComponentControl",
                 "id": "water_pump",
-                "action": {
-                    "type": "Configure",
-                    "config": {"speed": {"U8": int(speed)}}
-                }
+                "action": {"type": "Configure", "config": {"speed": {"U8": int(speed)}}}
             }
         else:
-            command = {
+            cmd = {
                 "type": "ComponentControl",
                 "id": "water_pump",
                 "action": {"type": "Disable"}
             }
-        self.command_requested.emit(command)
-
-    def update_sensors(self, data: dict):
-        """Update control panel with sensor data."""
-        # Update dustbox status
-        dustbox_attached = data.get('dustbox_attached', True)
-        # Water tank level from status offset 0x46 (0 or 100)
-        water_level = data.get('water_tank_level', None)
-        # Derive box type: if water_tank_level > 0, it's a 2-in-1 mop box
-        # (water level is only reported when 2-in-1 box is attached)
-        dustbox_type = "2in1" if water_level is not None and water_level > 0 else None
-        self.dustbox_status.update_status(dustbox_attached, dustbox_type, water_level)
-
-        # Update lidar status if scan data present
-        if 'scan' in data:
-            self.lidar_control.update_status(True)
+        self.command_requested.emit(cmd)
 
     def _on_lidar_toggled(self, enabled: bool):
-        """Handle lidar toggle from UI button using ComponentControl protocol."""
-        if enabled:
-            command = {
-                "type": "ComponentControl",
-                "id": "lidar",
-                "action": {"type": "Enable"}
-            }
-        else:
-            command = {
-                "type": "ComponentControl",
-                "id": "lidar",
-                "action": {"type": "Disable"}
-            }
-        self.command_requested.emit(command)
+        action = "Enable" if enabled else "Disable"
+        self.command_requested.emit({
+            "type": "ComponentControl",
+            "id": "lidar",
+            "action": {"type": action}
+        })
 
     def _on_velocity_changed(self, linear: float, angular: float):
-        """Handle velocity change from drive control using ComponentControl protocol."""
-        command = {
+        self.command_requested.emit({
             "type": "ComponentControl",
             "id": "drive",
             "action": {
                 "type": "Configure",
-                "config": {
-                    "linear": {"F32": linear},
-                    "angular": {"F32": angular}
-                }
+                "config": {"linear": {"F32": linear}, "angular": {"F32": angular}}
             }
-        }
-        self.command_requested.emit(command)
+        })
 
     def _on_motor_toggled(self, enabled: bool):
-        """Handle motor toggle from drive control using ComponentControl protocol."""
-        if enabled:
-            command = {
-                "type": "ComponentControl",
-                "id": "drive",
-                "action": {"type": "Enable"}
-            }
-        else:
-            command = {
-                "type": "ComponentControl",
-                "id": "drive",
-                "action": {"type": "Disable"}
-            }
-        self.command_requested.emit(command)
+        action = "Enable" if enabled else "Disable"
+        self.command_requested.emit({
+            "type": "ComponentControl",
+            "id": "drive",
+            "action": {"type": action}
+        })
+
+    def _on_emergency_stop(self):
+        self.command_requested.emit({
+            "type": "ComponentControl",
+            "id": "drive",
+            "action": {"type": "Reset"}
+        })
 
     def _forward_command(self, command: dict):
-        """Forward a command from nested control widgets."""
         self.command_requested.emit(command)
 
+    def update_sensors(self, data: dict):
+        dustbox_attached = data.get('dustbox_attached', True)
+        water_level = data.get('water_tank_level', None)
+        dustbox_type = "2in1" if water_level and water_level > 0 else None
+        self.dustbox_status.update_status(dustbox_attached, dustbox_type, water_level)
+
+        if 'scan' in data:
+            self.lidar_control.update_status(True)
+
     def set_lidar_enabled(self, enabled: bool):
-        """Set lidar enabled state (from keyboard shortcut)."""
         self.lidar_control.set_enabled(enabled)
 
     def set_motor_enabled(self, enabled: bool):
-        """Set motor enabled state (from keyboard shortcut)."""
         self.drive_control.set_motor_enabled(enabled)
 
     def set_velocity(self, linear: float, angular: float):
-        """Set velocity display (from keyboard)."""
         self.drive_control.set_velocity(linear, angular)
 
     def set_actuator_state(self, actuator_id: str, enabled: bool, speed: int = 100):
-        """Set actuator state (from keyboard shortcut)."""
-        if actuator_id == "vacuum":
-            self.vacuum_ctrl.enabled = enabled
-            self.vacuum_ctrl.speed = speed if enabled else 0
-            self.vacuum_ctrl.toggle_btn.setChecked(enabled)
-            self.vacuum_ctrl._update_toggle_style()
-            self.vacuum_ctrl.slider.setValue(speed // 25 if enabled else 0)
-        elif actuator_id == "side_brush":
-            self.side_brush_ctrl.enabled = enabled
-            self.side_brush_ctrl.speed = speed if enabled else 0
-            self.side_brush_ctrl.toggle_btn.setChecked(enabled)
-            self.side_brush_ctrl._update_toggle_style()
-            self.side_brush_ctrl.slider.setValue(speed // 25 if enabled else 0)
-        elif actuator_id == "brush":
-            self.main_brush_ctrl.enabled = enabled
-            self.main_brush_ctrl.speed = speed if enabled else 0
-            self.main_brush_ctrl.toggle_btn.setChecked(enabled)
-            self.main_brush_ctrl._update_toggle_style()
-            self.main_brush_ctrl.slider.setValue(speed // 25 if enabled else 0)
+        self.actuator_row.set_actuator_state(actuator_id, enabled, speed)
