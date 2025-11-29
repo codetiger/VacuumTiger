@@ -1,79 +1,174 @@
 """
-IMU Processor - Orientation estimation from gyroscope integration.
+IMU Processor - Mahony AHRS filter with quaternion orientation.
 
-Integrates all three gyroscope axes for real-time responsive rotation.
-Note: Will drift over time without absolute reference (accelerometer/magnetometer).
+Movement-validated axis mapping:
+  B40-41: Gyro Yaw rate   (most active during flat rotation) -> Z axis
+  B44-45: Gyro Pitch rate (most active during nose up/down)  -> Y axis
+  B48-49: Gyro Roll rate  (most active during left/right tilt) -> X axis
+  B52-57: LP Gravity vector for tilt correction
+
+Physical axes:
+  Y axis = Nose up/down (pitch)
+  X axis = Left/Right tilt (roll)
+  Z axis = Rotating on floor (yaw)
 """
+
+import math
 
 
 class IMUProcessor:
-    """
-    IMU orientation processor using pure gyroscope integration.
+    """Mahony AHRS filter for stable orientation estimation."""
 
-    Integrates gyroscope for all axes (roll, pitch, yaw) at 500Hz.
-    Provides smooth real-time orientation but will drift over time.
-    """
+    # Mahony filter gains
+    # Higher KP = faster correction, Higher KI = faster bias adaptation
+    KP = 5.0      # Proportional gain (increased for faster settling)
+    KI = 0.1      # Integral gain (increased for faster bias correction)
 
-    # Scale factor: raw gyro I16 values to degrees/sec
-    # Empirically tuned to match physical rotation on CRL-200S
-    GYRO_SCALE = 1.0 / 10.0
+    # Scale factor: raw gyro to rad/s
+    # Raw units are 0.1 deg/s, convert to rad/s
+    GYRO_SCALE = 0.1 * (math.pi / 180.0)
+
+    # Gravity scale (LP filtered gravity vector)
+    GRAVITY_SCALE = 1.0 / 1000.0
 
     def __init__(self, sample_rate_hz: float = 500.0):
-        """
-        Initialize the IMU processor.
-
-        Args:
-            sample_rate_hz: Expected sample rate of incoming data
-        """
         self.dt = 1.0 / sample_rate_hz
 
-        # Orientation state (degrees)
-        self.roll = 0.0   # X-axis rotation (tilt left/right)
-        self.pitch = 0.0  # Y-axis rotation (tilt forward/back)
-        self.yaw = 0.0    # Z-axis rotation (heading)
+        # Quaternion [w, x, y, z]
+        self.q = [1.0, 0.0, 0.0, 0.0]
 
-        # Decimation for UI updates (500Hz -> 100Hz for label updates)
+        # Integral error for bias correction
+        self.integral_error = [0.0, 0.0, 0.0]
+
+        # Gyro bias (calibrated from initial samples)
+        self.gyro_bias = [0.0, 0.0, 0.0]
+        self._calibration_samples = []
+        self._calibration_count = 0
+        self._calibration_duration = 1500  # ~3 seconds at 500Hz
+
+        # UI decimation
         self._counter = 0
-        self._decimation = 5  # Update every 5th sample = 100Hz
+        self._decimation = 5
 
     def process(self, gyro_x: int, gyro_y: int, gyro_z: int,
                 tilt_x: int, tilt_y: int, tilt_z: int) -> tuple:
         """
-        Process one IMU sample and return orientation.
+        Process IMU data using Mahony AHRS filter.
 
         Args:
-            gyro_x, gyro_y, gyro_z: Raw gyroscope values (i16)
-            tilt_x, tilt_y, tilt_z: Filtered tilt values (unused, for API compat)
+            gyro_x: Raw gyro X (B40-41) - Yaw rate (Z rotation)
+            gyro_y: Raw gyro Y (B44-45) - Pitch rate (Y rotation)
+            gyro_z: Raw gyro Z (B48-49) - Roll rate (X rotation)
+            tilt_x: LP gravity X (B52-53)
+            tilt_y: LP gravity Y (B54-55)
+            tilt_z: LP gravity Z (B56-57)
+
+        Data order is interleaved: [Gx][Ax][Gy][Ay][Gz][Az][LP_Ax][LP_Ay][LP_Az]
 
         Returns:
-            Tuple of (roll, pitch, yaw) in degrees
+            (roll, pitch, yaw) in degrees
         """
-        # Convert raw gyro to degrees/sec and integrate
-        # Axis mapping tuned for CRL-200S physical orientation
-        gx = gyro_x * self.GYRO_SCALE
-        gy = gyro_y * self.GYRO_SCALE
-        gz = gyro_z * self.GYRO_SCALE
 
-        self.roll += gz * self.dt    # Z gyro -> roll
-        self.pitch += gy * self.dt   # Y gyro -> pitch
-        self.yaw += gx * self.dt     # X gyro -> yaw
+        # Calibration phase - collect bias samples
+        if self._calibration_count < self._calibration_duration:
+            self._calibration_samples.append((gyro_x, gyro_y, gyro_z))
+            self._calibration_count += 1
 
-        # Normalize to -180 to +180 range
-        self.roll = ((self.roll + 180) % 360) - 180
-        self.pitch = ((self.pitch + 180) % 360) - 180
-        self.yaw = ((self.yaw + 180) % 360) - 180
+            if self._calibration_count == self._calibration_duration:
+                # Calculate average bias
+                n = len(self._calibration_samples)
+                self.gyro_bias[0] = sum(s[0] for s in self._calibration_samples) / n
+                self.gyro_bias[1] = sum(s[1] for s in self._calibration_samples) / n
+                self.gyro_bias[2] = sum(s[2] for s in self._calibration_samples) / n
+                self._calibration_samples = []  # Free memory
 
-        return (self.roll, self.pitch, self.yaw)
+            # During calibration, return zeros
+            return (0.0, 0.0, 0.0)
+
+        # Remove bias and convert to rad/s
+        # With interleaved data order [Gx][Ax][Gy][Ay][Gz][Az]:
+        # gyro_x (B40-41) = Yaw rate -> gz (Z axis rotation)
+        # gyro_y (B44-45) = Pitch rate -> gy (Y axis nose up/down)
+        # gyro_z (B48-49) = Roll rate -> gx (X axis tilt)
+        gx = (gyro_z - self.gyro_bias[2]) * self.GYRO_SCALE  # Roll
+        gy = (gyro_y - self.gyro_bias[1]) * self.GYRO_SCALE  # Pitch
+        gz = (gyro_x - self.gyro_bias[0]) * self.GYRO_SCALE  # Yaw
+
+        # Get current quaternion values
+        q0, q1, q2, q3 = self.q
+
+        # Normalize LP gravity vector
+        ax = tilt_x * self.GRAVITY_SCALE
+        ay = tilt_y * self.GRAVITY_SCALE
+        az = tilt_z * self.GRAVITY_SCALE
+
+        norm = math.sqrt(ax * ax + ay * ay + az * az)
+        if norm > 0.01:
+            ax /= norm
+            ay /= norm
+            az /= norm
+
+            # Estimated gravity direction from quaternion
+            # v = [2(q1q3 - q0q2), 2(q0q1 + q2q3), q0² - q1² - q2² + q3²]
+            vx = 2.0 * (q1 * q3 - q0 * q2)
+            vy = 2.0 * (q0 * q1 + q2 * q3)
+            vz = q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3
+
+            # Error is cross product between estimated and measured gravity
+            ex = ay * vz - az * vy
+            ey = az * vx - ax * vz
+            ez = ax * vy - ay * vx
+
+            # Integral feedback
+            self.integral_error[0] += ex * self.dt
+            self.integral_error[1] += ey * self.dt
+            self.integral_error[2] += ez * self.dt
+
+            # Apply feedback
+            gx += self.KP * ex + self.KI * self.integral_error[0]
+            gy += self.KP * ey + self.KI * self.integral_error[1]
+            gz += self.KP * ez + self.KI * self.integral_error[2]
+
+        # Quaternion derivative
+        dq0 = 0.5 * (-q1 * gx - q2 * gy - q3 * gz)
+        dq1 = 0.5 * (q0 * gx + q2 * gz - q3 * gy)
+        dq2 = 0.5 * (q0 * gy - q1 * gz + q3 * gx)
+        dq3 = 0.5 * (q0 * gz + q1 * gy - q2 * gx)
+
+        # Integrate
+        self.q[0] += dq0 * self.dt
+        self.q[1] += dq1 * self.dt
+        self.q[2] += dq2 * self.dt
+        self.q[3] += dq3 * self.dt
+
+        # Normalize quaternion
+        norm = math.sqrt(sum(x * x for x in self.q))
+        if norm > 0:
+            self.q = [x / norm for x in self.q]
+
+        # Convert quaternion to Euler angles (ZYX convention)
+        q0, q1, q2, q3 = self.q
+
+        # Roll (X axis rotation)
+        sinr_cosp = 2.0 * (q0 * q1 + q2 * q3)
+        cosr_cosp = 1.0 - 2.0 * (q1 * q1 + q2 * q2)
+        roll = math.atan2(sinr_cosp, cosr_cosp) * (180.0 / math.pi)
+
+        # Pitch (Y axis rotation)
+        sinp = 2.0 * (q0 * q2 - q3 * q1)
+        if abs(sinp) >= 1:
+            pitch = math.copysign(90.0, sinp)
+        else:
+            pitch = math.asin(sinp) * (180.0 / math.pi)
+
+        # Yaw (Z axis rotation)
+        siny_cosp = 2.0 * (q0 * q3 + q1 * q2)
+        cosy_cosp = 1.0 - 2.0 * (q2 * q2 + q3 * q3)
+        yaw = math.atan2(siny_cosp, cosy_cosp) * (180.0 / math.pi)
+
+        return (roll, pitch, yaw)
 
     def should_update_ui(self) -> bool:
-        """
-        Rate limit UI updates to ~100Hz.
-
-        Call this after process() to determine if UI should be updated.
-
-        Returns:
-            True if UI should be updated, False otherwise
-        """
         self._counter += 1
         if self._counter >= self._decimation:
             self._counter = 0
@@ -81,8 +176,14 @@ class IMUProcessor:
         return False
 
     def reset(self):
-        """Reset orientation to zero."""
-        self.roll = 0.0
-        self.pitch = 0.0
-        self.yaw = 0.0
+        """Reset orientation to identity."""
+        self.q = [1.0, 0.0, 0.0, 0.0]
+        self.integral_error = [0.0, 0.0, 0.0]
         self._counter = 0
+
+    def recalibrate(self):
+        """Reset and restart gyro bias calibration."""
+        self.reset()
+        self.gyro_bias = [0.0, 0.0, 0.0]
+        self._calibration_samples = []
+        self._calibration_count = 0
