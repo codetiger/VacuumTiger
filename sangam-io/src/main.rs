@@ -7,11 +7,9 @@ mod error;
 mod streaming;
 
 use crate::config::Config;
-use crate::core::types::{SensorGroupData, SensorValue};
 use crate::devices::create_device;
 use crate::error::Result;
 use crate::streaming::{create_serializer, TcpPublisher, TcpReceiver, WireFormat};
-use std::collections::HashMap;
 use std::env;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,58 +38,13 @@ fn main() -> Result<()> {
     );
 
     // Create device driver
-    let driver = create_device(&config)?;
+    let mut driver = create_device(&config)?;
+
+    // Initialize driver and get sensor data groups
+    let sensor_data = driver.initialize()?;
+    log::info!("Initialized {} sensor groups", sensor_data.len());
+
     let driver = Arc::new(Mutex::new(driver));
-
-    // Create pre-allocated sensor data for each group
-    let mut sensor_data: HashMap<String, Arc<Mutex<SensorGroupData>>> = HashMap::new();
-
-    for group in &config.device.sensor_groups {
-        // Pre-allocate with default values for each sensor
-        let keys: Vec<(&str, SensorValue)> = group
-            .sensors
-            .iter()
-            .map(|s| {
-                let default = match s.sensor_type {
-                    crate::core::types::SensorType::Bool => SensorValue::Bool(false),
-                    crate::core::types::SensorType::U8 => SensorValue::U8(0),
-                    crate::core::types::SensorType::U16 => SensorValue::U16(0),
-                    crate::core::types::SensorType::U32 => SensorValue::U32(0),
-                    crate::core::types::SensorType::U64 => SensorValue::U64(0),
-                    crate::core::types::SensorType::I8 => SensorValue::I8(0),
-                    crate::core::types::SensorType::I16 => SensorValue::I16(0),
-                    crate::core::types::SensorType::I32 => SensorValue::I32(0),
-                    crate::core::types::SensorType::I64 => SensorValue::I64(0),
-                    crate::core::types::SensorType::F32 => SensorValue::F32(0.0),
-                    crate::core::types::SensorType::F64 => SensorValue::F64(0.0),
-                    crate::core::types::SensorType::String => SensorValue::String(String::new()),
-                    crate::core::types::SensorType::Bytes => SensorValue::Bytes(vec![]),
-                    crate::core::types::SensorType::Vector3 => {
-                        SensorValue::Vector3([0.0, 0.0, 0.0])
-                    }
-                    crate::core::types::SensorType::PointCloud2D => {
-                        SensorValue::PointCloud2D(vec![])
-                    }
-                };
-                (s.id.as_str(), default)
-            })
-            .collect();
-
-        let data = SensorGroupData::new_with_keys(&group.id, &keys);
-        sensor_data.insert(group.id.clone(), Arc::new(Mutex::new(data)));
-
-        log::info!(
-            "Created sensor group '{}' with {} sensors",
-            group.id,
-            group.sensors.len()
-        );
-    }
-
-    // Initialize driver with shared sensor data
-    {
-        let mut driver = driver.lock().map_err(|_| error::Error::MutexPoisoned)?;
-        driver.initialize(sensor_data.clone())?;
-    }
 
     // Set up shutdown signal handler
     let running = Arc::new(AtomicBool::new(true));

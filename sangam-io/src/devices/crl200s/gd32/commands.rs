@@ -23,19 +23,11 @@
 //!
 //! These conversions are defined by the GD32F103 firmware protocol.
 
-use super::protocol::{
-    cmd_air_pump, cmd_charger_power, cmd_cliff_ir_control, cmd_cliff_ir_direction,
-    cmd_compass_calibrate, cmd_compass_calibration_state, cmd_imu_calibrate_state,
-    cmd_imu_factory_calibrate, cmd_led_state, cmd_lidar_power, cmd_lidar_pwm, cmd_main_board_power,
-    cmd_main_board_restart, cmd_main_brush, cmd_mcu_sleep, cmd_motor_mode, cmd_motor_speed,
-    cmd_motor_velocity, cmd_protocol_sync, cmd_reset_error_code, cmd_side_brush, cmd_wakeup_ack,
-    cmd_water_pump, Packet,
-};
+use super::packet::{protocol_sync_packet, TxPacket};
 use super::state::ComponentState;
 use crate::core::types::{Command, ComponentAction, SensorValue};
 use crate::error::{Error, Result};
 use serialport::SerialPort;
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -68,14 +60,14 @@ const ID_MCU: &str = "mcu";
 // Helpers
 // ============================================================================
 
-/// Helper to send a packet over the serial port
-fn send_packet(port: &Arc<Mutex<Box<dyn SerialPort>>>, pkt: &Packet) -> Result<()> {
+/// Helper to send a TxPacket over the serial port
+fn send_packet(port: &Arc<Mutex<Box<dyn SerialPort>>>, pkt: &TxPacket) -> Result<()> {
     let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
-    port_guard.write_all(&pkt.to_bytes()).map_err(Error::Io)?;
+    pkt.send_to(&mut *port_guard).map_err(Error::Io)?;
     Ok(())
 }
 
-/// Handle Enable/Disable/Configure for speed-based components (vacuum, main_brush, side_brush)
+/// Handle Enable/Disable/Configure for speed-based components (vacuum, main_brush, side_brush, water_pump)
 ///
 /// These components share identical behavior:
 /// - Enable: Set to 100%
@@ -84,7 +76,8 @@ fn send_packet(port: &Arc<Mutex<Box<dyn SerialPort>>>, pkt: &Packet) -> Result<(
 fn handle_speed_component(
     port: &Arc<Mutex<Box<dyn SerialPort>>>,
     state_field: &AtomicU8,
-    cmd_fn: fn(u8) -> Packet,
+    pkt: &mut TxPacket,
+    set_fn: fn(&mut TxPacket, u8),
     name: &str,
     action: &ComponentAction,
 ) -> Result<()> {
@@ -92,18 +85,21 @@ fn handle_speed_component(
         ComponentAction::Enable { .. } => {
             log::info!("{} enable (100%)", name);
             state_field.store(100, Ordering::Relaxed);
-            send_packet(port, &cmd_fn(100))
+            set_fn(pkt, 100);
+            send_packet(port, pkt)
         }
         ComponentAction::Disable { .. } => {
             log::info!("{} disable", name);
             state_field.store(0, Ordering::Relaxed);
-            send_packet(port, &cmd_fn(0))
+            set_fn(pkt, 0);
+            send_packet(port, pkt)
         }
         ComponentAction::Configure { ref config } => {
             if let Some(SensorValue::U8(speed)) = config.get("speed") {
                 log::info!("{} speed={}", name, speed);
                 state_field.store(*speed, Ordering::Relaxed);
-                send_packet(port, &cmd_fn(*speed))?;
+                set_fn(pkt, *speed);
+                send_packet(port, pkt)?;
             }
             Ok(())
         }
@@ -124,6 +120,7 @@ fn handle_speed_component(
 fn emergency_stop(
     port: &Arc<Mutex<Box<dyn SerialPort>>>,
     component_state: &Arc<ComponentState>,
+    pkt: &mut TxPacket,
 ) -> Result<()> {
     log::warn!("EMERGENCY STOP initiated!");
 
@@ -134,18 +131,31 @@ fn emergency_stop(
     let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
 
     // Stop all components
-    let _ = port_guard.write_all(&cmd_air_pump(0).to_bytes());
-    let _ = port_guard.write_all(&cmd_main_brush(0).to_bytes());
-    let _ = port_guard.write_all(&cmd_side_brush(0).to_bytes());
-    let _ = port_guard.write_all(&cmd_water_pump(0).to_bytes());
-    let _ = port_guard.write_all(&cmd_lidar_pwm(0).to_bytes());
-    let _ = port_guard.write_all(&cmd_lidar_power(false).to_bytes());
+    pkt.set_air_pump(0);
+    let _ = pkt.send_to(&mut *port_guard);
+
+    pkt.set_main_brush(0);
+    let _ = pkt.send_to(&mut *port_guard);
+
+    pkt.set_side_brush(0);
+    let _ = pkt.send_to(&mut *port_guard);
+
+    pkt.set_water_pump(0);
+    let _ = pkt.send_to(&mut *port_guard);
+
+    pkt.set_lidar_pwm(0);
+    let _ = pkt.send_to(&mut *port_guard);
+
+    pkt.set_lidar_power(false);
+    let _ = pkt.send_to(&mut *port_guard);
 
     // Stop motors
-    let _ = port_guard.write_all(&cmd_motor_velocity(0, 0).to_bytes());
+    pkt.set_velocity(0, 0);
+    let _ = pkt.send_to(&mut *port_guard);
 
     // Exit navigation mode
-    let _ = port_guard.write_all(&cmd_motor_mode(0x00).to_bytes());
+    pkt.set_motor_mode(0x00);
+    let _ = pkt.send_to(&mut *port_guard);
 
     log::warn!("Emergency stop complete - all components and motors stopped");
     Ok(())
@@ -176,16 +186,20 @@ pub(super) fn send_command(
     shutdown: &Arc<AtomicBool>,
     cmd: Command,
 ) -> Result<()> {
+    // Single TxPacket reused for all commands in this call
+    let mut pkt = TxPacket::new();
+
     match cmd {
         // Unified Component Control
         Command::ComponentControl { ref id, ref action } => {
-            handle_component_control(port, component_state, id, action)
+            handle_component_control(port, component_state, &mut pkt, id, action)
         }
 
         // Protocol Commands
         Command::ProtocolSync => {
             log::info!("Protocol sync (0x0C)");
-            send_packet(port, &cmd_protocol_sync())
+            let sync_pkt = protocol_sync_packet();
+            send_packet(port, &sync_pkt)
         }
 
         // System Lifecycle
@@ -200,62 +214,67 @@ pub(super) fn send_command(
 fn handle_component_control(
     port: &Arc<Mutex<Box<dyn SerialPort>>>,
     component_state: &Arc<ComponentState>,
+    pkt: &mut TxPacket,
     id: &str,
     action: &ComponentAction,
 ) -> Result<()> {
     match id {
         // === DRIVE (motion control) ===
-        ID_DRIVE => handle_drive(port, component_state, action),
+        ID_DRIVE => handle_drive(port, component_state, pkt, action),
 
-        // === SPEED-BASED COMPONENTS (vacuum, main_brush, side_brush) ===
+        // === SPEED-BASED COMPONENTS (vacuum, main_brush, side_brush, water_pump) ===
         ID_VACUUM => handle_speed_component(
             port,
             &component_state.vacuum,
-            cmd_air_pump,
+            pkt,
+            TxPacket::set_air_pump,
             "Vacuum",
             action,
         ),
         ID_MAIN_BRUSH => handle_speed_component(
             port,
             &component_state.main_brush,
-            cmd_main_brush,
+            pkt,
+            TxPacket::set_main_brush,
             "Main brush",
             action,
         ),
         ID_SIDE_BRUSH => handle_speed_component(
             port,
             &component_state.side_brush,
-            cmd_side_brush,
+            pkt,
+            TxPacket::set_side_brush,
             "Side brush",
             action,
         ),
         ID_WATER_PUMP => handle_speed_component(
             port,
             &component_state.water_pump,
-            cmd_water_pump,
+            pkt,
+            TxPacket::set_water_pump,
             "Water pump",
             action,
         ),
 
         // === LED ===
-        ID_LED => handle_led(port, action),
+        ID_LED => handle_led(port, pkt, action),
 
         // === LIDAR ===
-        ID_LIDAR => handle_lidar(port, component_state, action),
+        ID_LIDAR => handle_lidar(port, component_state, pkt, action),
 
         // === IMU ===
-        ID_IMU => handle_imu(port, action),
+        ID_IMU => handle_imu(port, pkt, action),
 
         // === COMPASS ===
-        ID_COMPASS => handle_compass(port, action),
+        ID_COMPASS => handle_compass(port, pkt, action),
 
         // === CLIFF IR ===
-        ID_CLIFF_IR => handle_cliff_ir(port, action),
+        ID_CLIFF_IR => handle_cliff_ir(port, pkt, action),
 
         // === POWER MANAGEMENT ===
-        ID_MAIN_BOARD => handle_main_board(port, action),
-        ID_CHARGER => handle_charger(port, action),
-        ID_MCU => handle_mcu(port, action),
+        ID_MAIN_BOARD => handle_main_board(port, pkt, action),
+        ID_CHARGER => handle_charger(port, pkt, action),
+        ID_MCU => handle_mcu(port, pkt, action),
 
         // === UNSUPPORTED ===
         _ => Err(Error::NotImplemented(format!(
@@ -273,6 +292,7 @@ fn handle_component_control(
 fn handle_drive(
     port: &Arc<Mutex<Box<dyn SerialPort>>>,
     component_state: &Arc<ComponentState>,
+    pkt: &mut TxPacket,
     action: &ComponentAction,
 ) -> Result<()> {
     match action {
@@ -290,7 +310,8 @@ fn handle_drive(
             component_state
                 .wheel_motor_enabled
                 .store(true, Ordering::Relaxed);
-            send_packet(port, &cmd_motor_mode(mode))
+            pkt.set_motor_mode(mode);
+            send_packet(port, pkt)
         }
         ComponentAction::Disable { .. } => {
             // Stop: zero velocity and set mode 0x00
@@ -301,13 +322,15 @@ fn handle_drive(
             component_state.linear_velocity.store(0, Ordering::Relaxed);
             component_state.angular_velocity.store(0, Ordering::Relaxed);
             // Send velocity 0,0 then mode 0x00
-            send_packet(port, &cmd_motor_velocity(0, 0))?;
-            send_packet(port, &cmd_motor_mode(0x00))
+            pkt.set_velocity(0, 0);
+            send_packet(port, pkt)?;
+            pkt.set_motor_mode(0x00);
+            send_packet(port, pkt)
         }
         ComponentAction::Reset { .. } => {
             // Emergency stop: immediate halt, all components off
             log::info!("Drive emergency stop");
-            emergency_stop(port, component_state)
+            emergency_stop(port, component_state, pkt)
         }
         ComponentAction::Configure { ref config } => {
             // Check for velocity mode (linear + angular) - continuous
@@ -330,7 +353,8 @@ fn handle_drive(
                     angular,
                     angular_units
                 );
-                return send_packet(port, &cmd_motor_velocity(linear_units, angular_units));
+                pkt.set_velocity(linear_units, angular_units);
+                return send_packet(port, pkt);
             }
             // Check for tank drive mode (left + right) - continuous
             if let (Some(SensorValue::F32(left)), Some(SensorValue::F32(right))) =
@@ -345,7 +369,8 @@ fn handle_drive(
                     right,
                     right_units
                 );
-                return send_packet(port, &cmd_motor_speed(left_units, right_units));
+                pkt.set_motor_speed(left_units, right_units);
+                return send_packet(port, pkt);
             }
             Err(Error::InvalidParameter(
                 "drive Configure requires (linear, angular) or (left, right)".into(),
@@ -355,12 +380,17 @@ fn handle_drive(
 }
 
 /// Handle LED commands
-fn handle_led(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+fn handle_led(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    pkt: &mut TxPacket,
+    action: &ComponentAction,
+) -> Result<()> {
     match action {
         ComponentAction::Configure { ref config } => {
             if let Some(SensorValue::U8(state)) = config.get("state") {
                 log::info!("LED state={}", state);
-                send_packet(port, &cmd_led_state(*state))?;
+                pkt.set_led(*state);
+                send_packet(port, pkt)?;
             }
             Ok(())
         }
@@ -375,6 +405,7 @@ fn handle_led(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) 
 fn handle_lidar(
     port: &Arc<Mutex<Box<dyn SerialPort>>>,
     component_state: &Arc<ComponentState>,
+    pkt: &mut TxPacket,
     action: &ComponentAction,
 ) -> Result<()> {
     match action {
@@ -384,7 +415,7 @@ fn handle_lidar(
                 .as_ref()
                 .and_then(|c| c.get("pwm"))
                 .and_then(|v| match v {
-                    SensorValue::U8(p) => Some(*p as i32),
+                    SensorValue::U8(p) => Some(*p),
                     _ => None,
                 })
                 .unwrap_or(60);
@@ -392,14 +423,14 @@ fn handle_lidar(
             log::info!("Lidar enable (PWM: {}%)", pwm);
 
             // Power on first, then set PWM
-            send_packet(port, &cmd_lidar_power(true))?;
-            send_packet(port, &cmd_lidar_pwm(pwm))?;
+            pkt.set_lidar_power(true);
+            send_packet(port, pkt)?;
+            pkt.set_lidar_pwm(pwm);
+            send_packet(port, pkt)?;
 
             // Update state for heartbeat
             component_state.lidar_enabled.store(true, Ordering::Relaxed);
-            component_state
-                .lidar_pwm
-                .store(pwm as u8, Ordering::Relaxed);
+            component_state.lidar_pwm.store(pwm, Ordering::Relaxed);
 
             Ok(())
         }
@@ -413,14 +444,17 @@ fn handle_lidar(
             component_state.lidar_pwm.store(0, Ordering::Relaxed);
 
             // PWM to 0 first, then power off
-            send_packet(port, &cmd_lidar_pwm(0))?;
-            send_packet(port, &cmd_lidar_power(false))
+            pkt.set_lidar_pwm(0);
+            send_packet(port, pkt)?;
+            pkt.set_lidar_power(false);
+            send_packet(port, pkt)
         }
         ComponentAction::Configure { ref config } => {
             if let Some(SensorValue::U8(pwm)) = config.get("pwm") {
                 log::info!("Lidar PWM: {}%", pwm);
                 component_state.lidar_pwm.store(*pwm, Ordering::Relaxed);
-                send_packet(port, &cmd_lidar_pwm(*pwm as i32))?;
+                pkt.set_lidar_pwm(*pwm);
+                send_packet(port, pkt)?;
             }
             Ok(())
         }
@@ -432,20 +466,25 @@ fn handle_lidar(
 }
 
 /// Handle IMU commands
-fn handle_imu(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+fn handle_imu(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    pkt: &mut TxPacket,
+    action: &ComponentAction,
+) -> Result<()> {
     match action {
         ComponentAction::Enable { .. } => {
-            let pkt = cmd_imu_calibrate_state(IMU_DEFAULT_PAYLOAD.to_vec());
+            pkt.set_imu_calibrate_state(&IMU_DEFAULT_PAYLOAD);
             log::info!(
                 "IMU calibration state query (0xA2): payload={:02X?}, bytes={:02X?}",
                 IMU_DEFAULT_PAYLOAD,
-                pkt.to_bytes()
+                pkt.as_bytes()
             );
-            send_packet(port, &pkt)
+            send_packet(port, pkt)
         }
         ComponentAction::Reset { .. } => {
             log::info!("IMU factory reset (0xA1)");
-            send_packet(port, &cmd_imu_factory_calibrate())
+            pkt.set_imu_factory_calibrate();
+            send_packet(port, pkt)
         }
         _ => Err(Error::NotImplemented(format!(
             "IMU only supports Enable/Reset, got {:?}",
@@ -455,15 +494,21 @@ fn handle_imu(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) 
 }
 
 /// Handle compass commands
-fn handle_compass(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+fn handle_compass(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    pkt: &mut TxPacket,
+    action: &ComponentAction,
+) -> Result<()> {
     match action {
         ComponentAction::Enable { .. } => {
             log::info!("Compass calibration state query (0xA4)");
-            send_packet(port, &cmd_compass_calibration_state())
+            pkt.set_compass_calibration_state();
+            send_packet(port, pkt)
         }
         ComponentAction::Reset { .. } => {
             log::info!("Compass calibration start (0xA3)");
-            send_packet(port, &cmd_compass_calibrate())
+            pkt.set_compass_calibrate();
+            send_packet(port, pkt)
         }
         _ => Err(Error::NotImplemented(format!(
             "Compass only supports Enable/Reset, got {:?}",
@@ -473,20 +518,27 @@ fn handle_compass(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentActi
 }
 
 /// Handle cliff IR commands
-fn handle_cliff_ir(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+fn handle_cliff_ir(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    pkt: &mut TxPacket,
+    action: &ComponentAction,
+) -> Result<()> {
     match action {
         ComponentAction::Enable { .. } => {
             log::info!("Cliff IR enable (0x78)");
-            send_packet(port, &cmd_cliff_ir_control(true))
+            pkt.set_cliff_ir(true);
+            send_packet(port, pkt)
         }
         ComponentAction::Disable { .. } => {
             log::info!("Cliff IR disable (0x78)");
-            send_packet(port, &cmd_cliff_ir_control(false))
+            pkt.set_cliff_ir(false);
+            send_packet(port, pkt)
         }
         ComponentAction::Configure { ref config } => {
             if let Some(SensorValue::U8(dir)) = config.get("direction") {
                 log::info!("Cliff IR direction (0x79): {}", dir);
-                send_packet(port, &cmd_cliff_ir_direction(*dir))?;
+                pkt.set_cliff_ir_direction(*dir);
+                send_packet(port, pkt)?;
             }
             Ok(())
         }
@@ -505,20 +557,24 @@ fn handle_cliff_ir(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAct
 /// - Reset: Restart main board (WARNING: terminates daemon!)
 fn handle_main_board(
     port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    pkt: &mut TxPacket,
     action: &ComponentAction,
 ) -> Result<()> {
     match action {
         ComponentAction::Enable { .. } => {
             log::info!("Main board power on (0x99)");
-            send_packet(port, &cmd_main_board_power(true))
+            pkt.set_main_board_power(true);
+            send_packet(port, pkt)
         }
         ComponentAction::Disable { .. } => {
             log::warn!("Main board power off (0x99) - daemon will terminate!");
-            send_packet(port, &cmd_main_board_power(false))
+            pkt.set_main_board_power(false);
+            send_packet(port, pkt)
         }
         ComponentAction::Reset { .. } => {
             log::warn!("Main board restart (0x9A) - daemon will terminate!");
-            send_packet(port, &cmd_main_board_restart())
+            pkt.set_main_board_restart();
+            send_packet(port, pkt)
         }
         _ => Err(Error::NotImplemented(format!(
             "Main board only supports Enable/Disable/Reset, got {:?}",
@@ -532,15 +588,21 @@ fn handle_main_board(
 /// Controls the charger power rail.
 /// - Enable: Enable charger power
 /// - Disable: Disable charger power
-fn handle_charger(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+fn handle_charger(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    pkt: &mut TxPacket,
+    action: &ComponentAction,
+) -> Result<()> {
     match action {
         ComponentAction::Enable { .. } => {
             log::info!("Charger power enable (0x9B)");
-            send_packet(port, &cmd_charger_power(true))
+            pkt.set_charger_power(true);
+            send_packet(port, pkt)
         }
         ComponentAction::Disable { .. } => {
             log::info!("Charger power disable (0x9B)");
-            send_packet(port, &cmd_charger_power(false))
+            pkt.set_charger_power(false);
+            send_packet(port, pkt)
         }
         _ => Err(Error::NotImplemented(format!(
             "Charger only supports Enable/Disable, got {:?}",
@@ -555,19 +617,26 @@ fn handle_charger(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentActi
 /// - Disable: Put MCU to sleep (0x04)
 /// - Enable: Acknowledge wakeup from sleep (0x05)
 /// - Reset: Clear/reset error codes (0x0A)
-fn handle_mcu(port: &Arc<Mutex<Box<dyn SerialPort>>>, action: &ComponentAction) -> Result<()> {
+fn handle_mcu(
+    port: &Arc<Mutex<Box<dyn SerialPort>>>,
+    pkt: &mut TxPacket,
+    action: &ComponentAction,
+) -> Result<()> {
     match action {
         ComponentAction::Disable { .. } => {
             log::info!("MCU sleep (0x04)");
-            send_packet(port, &cmd_mcu_sleep())
+            pkt.set_mcu_sleep();
+            send_packet(port, pkt)
         }
         ComponentAction::Enable { .. } => {
             log::info!("MCU wakeup ack (0x05)");
-            send_packet(port, &cmd_wakeup_ack())
+            pkt.set_wakeup_ack();
+            send_packet(port, pkt)
         }
         ComponentAction::Reset { .. } => {
             log::info!("MCU reset error code (0x0A)");
-            send_packet(port, &cmd_reset_error_code())
+            pkt.set_reset_error_code();
+            send_packet(port, pkt)
         }
         _ => Err(Error::NotImplemented(format!(
             "MCU only supports Enable/Disable/Reset, got {:?}",

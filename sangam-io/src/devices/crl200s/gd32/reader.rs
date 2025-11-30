@@ -3,7 +3,8 @@
 //! This module contains the reader loop that parses incoming packets from the GD32
 //! and updates sensor data in real-time.
 
-use super::protocol::{cmd_version_request, PacketReader};
+use super::packet::version_request_packet;
+use super::protocol::{PacketReader, RxPacket};
 use crate::core::types::{SensorGroupData, SensorValue};
 use crate::devices::crl200s::constants::{
     BATTERY_VOLTAGE_MAX, BATTERY_VOLTAGE_MIN, CMD_PROTOCOL_SYNC, CMD_STATUS, CMD_VERSION,
@@ -16,7 +17,6 @@ use crate::devices::crl200s::constants::{
     OFFSET_WHEEL_RIGHT_ENCODER, STATUS_PAYLOAD_MIN_SIZE,
 };
 use serialport::SerialPort;
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -70,7 +70,7 @@ pub(super) fn reader_loop(
                 log::debug!(
                     "Packet received: CMD=0x{:02X}, payload_len={}",
                     packet.cmd,
-                    packet.payload.len()
+                    packet.payload_len()
                 );
 
                 // Request version after first packet (like sangam-io2-backup)
@@ -81,9 +81,9 @@ pub(super) fn reader_loop(
                     );
                     version_requested = true;
 
-                    let version_pkt = cmd_version_request();
+                    let version_pkt = version_request_packet();
                     if let Ok(mut port) = port.lock() {
-                        if let Err(e) = port.write_all(&version_pkt.to_bytes()) {
+                        if let Err(e) = version_pkt.send_to(&mut *port) {
                             log::error!("Failed to send version request: {}", e);
                         }
                     } else {
@@ -93,7 +93,7 @@ pub(super) fn reader_loop(
 
                 // Handle version response
                 if packet.cmd == CMD_VERSION && !version_received {
-                    handle_version_packet(&packet, &version_data, &mut version_received);
+                    handle_version_packet(packet, &version_data, &mut version_received);
                 }
 
                 // Handle protocol sync ACK (0x0C echoed back from GD32)
@@ -101,13 +101,13 @@ pub(super) fn reader_loop(
                     protocol_sync_received = true;
                     log::info!(
                         "Protocol sync ACK received (payload: {:02X?})",
-                        packet.payload
+                        packet.payload()
                     );
                 }
 
                 // Handle sensor status data
-                if packet.cmd == CMD_STATUS && packet.payload.len() >= STATUS_PAYLOAD_MIN_SIZE {
-                    handle_status_packet(&packet, &sensor_data);
+                if packet.cmd == CMD_STATUS && packet.payload_len() >= STATUS_PAYLOAD_MIN_SIZE {
+                    handle_status_packet(packet, &sensor_data);
                 }
             }
             Ok(None) => {
@@ -128,12 +128,13 @@ pub(super) fn reader_loop(
 
 /// Handle version response packet
 fn handle_version_packet(
-    packet: &super::protocol::Packet,
+    packet: &RxPacket,
     version_data: &Option<Arc<Mutex<SensorGroupData>>>,
     version_received: &mut bool,
 ) {
     if let Some(ref vdata) = version_data {
-        if !packet.payload.is_empty() {
+        let payload = packet.payload();
+        if !payload.is_empty() {
             let Ok(mut data) = vdata.lock() else {
                 log::error!("Failed to lock version data");
                 return;
@@ -141,39 +142,33 @@ fn handle_version_packet(
             data.touch();
 
             // Parse version string
-            let version_string = if packet.payload[0] < 128 {
-                let len = packet.payload[0] as usize;
-                if packet.payload.len() > len {
-                    String::from_utf8_lossy(&packet.payload[1..=len]).to_string()
+            let version_string = if payload[0] < 128 {
+                let len = payload[0] as usize;
+                if payload.len() > len {
+                    String::from_utf8_lossy(&payload[1..=len]).to_string()
                 } else {
-                    String::from_utf8_lossy(&packet.payload).to_string()
+                    String::from_utf8_lossy(payload).to_string()
                 }
             } else {
-                let null_pos = packet
-                    .payload
+                let null_pos = payload
                     .iter()
                     .position(|&b| b == 0)
-                    .unwrap_or(packet.payload.len());
-                String::from_utf8_lossy(&packet.payload[..null_pos]).to_string()
+                    .unwrap_or(payload.len());
+                String::from_utf8_lossy(&payload[..null_pos]).to_string()
             };
 
             // Parse version code
-            let version_code = if packet.payload.len() >= 8 {
-                i32::from_le_bytes([
-                    packet.payload[4],
-                    packet.payload[5],
-                    packet.payload[6],
-                    packet.payload[7],
-                ])
+            let version_code = if payload.len() >= 8 {
+                i32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]])
             } else {
                 0
             };
 
-            data.update(
+            data.set(
                 "version_string",
                 SensorValue::String(version_string.clone()),
             );
-            data.update("version_code", SensorValue::I32(version_code));
+            data.set("version_code", SensorValue::I32(version_code));
 
             log::info!("GD32 version: {} ({})", version_string, version_code);
             *version_received = true;
@@ -182,26 +177,23 @@ fn handle_version_packet(
 }
 
 /// Handle status packet and update sensor data
-fn handle_status_packet(
-    packet: &super::protocol::Packet,
-    sensor_data: &Arc<Mutex<SensorGroupData>>,
-) {
+fn handle_status_packet(packet: &RxPacket, sensor_data: &Arc<Mutex<SensorGroupData>>) {
     // Update shared data directly (no allocations)
     let Ok(mut data) = sensor_data.lock() else {
         log::error!("Failed to lock sensor data");
         return;
     };
-    let payload = &packet.payload;
+    let payload = packet.payload();
 
     // Update timestamp
     data.touch();
 
     // Charging/battery status
-    data.update(
+    data.set(
         "is_charging",
         SensorValue::Bool((payload[OFFSET_CHARGING_FLAGS] & FLAG_CHARGING) != 0),
     );
-    data.update(
+    data.set(
         "is_dock_connected",
         SensorValue::Bool((payload[OFFSET_CHARGING_FLAGS] & FLAG_DOCK_CONNECTED) != 0),
     );
@@ -216,18 +208,18 @@ fn handle_status_packet(
         ((voltage - BATTERY_VOLTAGE_MIN) / (BATTERY_VOLTAGE_MAX - BATTERY_VOLTAGE_MIN) * 100.0)
             .clamp(0.0, 100.0) as u8;
 
-    data.update("battery_voltage", SensorValue::F32(voltage));
-    data.update("battery_level", SensorValue::U8(battery_level));
+    data.set("battery_voltage", SensorValue::F32(voltage));
+    data.set("battery_level", SensorValue::U8(battery_level));
 
     // Buttons
-    data.update(
+    data.set(
         "start_button",
         SensorValue::U16(u16::from_le_bytes([
             payload[OFFSET_START_BUTTON],
             payload[OFFSET_START_BUTTON + 1],
         ])),
     );
-    data.update(
+    data.set(
         "dock_button",
         SensorValue::U16(u16::from_le_bytes([
             payload[OFFSET_DOCK_BUTTON],
@@ -236,24 +228,24 @@ fn handle_status_packet(
     );
 
     // Bumpers
-    data.update(
+    data.set(
         "bumper_left",
         SensorValue::Bool((payload[OFFSET_BUMPER_FLAGS] & FLAG_BUMPER_LEFT) != 0),
     );
-    data.update(
+    data.set(
         "bumper_right",
         SensorValue::Bool((payload[OFFSET_BUMPER_FLAGS] & FLAG_BUMPER_RIGHT) != 0),
     );
 
     // Wheel encoders
-    data.update(
+    data.set(
         "wheel_left",
         SensorValue::U16(u16::from_le_bytes([
             payload[OFFSET_WHEEL_LEFT_ENCODER],
             payload[OFFSET_WHEEL_LEFT_ENCODER + 1],
         ])),
     );
-    data.update(
+    data.set(
         "wheel_right",
         SensorValue::U16(u16::from_le_bytes([
             payload[OFFSET_WHEEL_RIGHT_ENCODER],
@@ -262,45 +254,45 @@ fn handle_status_packet(
     );
 
     // Cliff sensors
-    data.update(
+    data.set(
         "cliff_left_side",
         SensorValue::Bool((payload[OFFSET_CLIFF_FLAGS] & FLAG_CLIFF_LEFT_SIDE) != 0),
     );
-    data.update(
+    data.set(
         "cliff_left_front",
         SensorValue::Bool((payload[OFFSET_CLIFF_FLAGS] & FLAG_CLIFF_LEFT_FRONT) != 0),
     );
-    data.update(
+    data.set(
         "cliff_right_front",
         SensorValue::Bool((payload[OFFSET_CLIFF_FLAGS] & FLAG_CLIFF_RIGHT_FRONT) != 0),
     );
-    data.update(
+    data.set(
         "cliff_right_side",
         SensorValue::Bool((payload[OFFSET_CLIFF_FLAGS] & FLAG_CLIFF_RIGHT_SIDE) != 0),
     );
 
     // Dustbox
-    data.update(
+    data.set(
         "dustbox_attached",
         SensorValue::Bool((payload[OFFSET_DUSTBOX_FLAGS] & FLAG_DUSTBOX_ATTACHED) != 0),
     );
 
     // IMU: Gyroscope raw values (i16 LE)
-    data.update(
+    data.set(
         "gyro_x",
         SensorValue::I16(i16::from_le_bytes([
             payload[OFFSET_GYRO_X],
             payload[OFFSET_GYRO_X + 1],
         ])),
     );
-    data.update(
+    data.set(
         "gyro_y",
         SensorValue::I16(i16::from_le_bytes([
             payload[OFFSET_GYRO_Y],
             payload[OFFSET_GYRO_Y + 1],
         ])),
     );
-    data.update(
+    data.set(
         "gyro_z",
         SensorValue::I16(i16::from_le_bytes([
             payload[OFFSET_GYRO_Z],
@@ -309,21 +301,21 @@ fn handle_status_packet(
     );
 
     // IMU: Accelerometer raw values (i16 LE)
-    data.update(
+    data.set(
         "accel_x",
         SensorValue::I16(i16::from_le_bytes([
             payload[OFFSET_ACCEL_X],
             payload[OFFSET_ACCEL_X + 1],
         ])),
     );
-    data.update(
+    data.set(
         "accel_y",
         SensorValue::I16(i16::from_le_bytes([
             payload[OFFSET_ACCEL_Y],
             payload[OFFSET_ACCEL_Y + 1],
         ])),
     );
-    data.update(
+    data.set(
         "accel_z",
         SensorValue::I16(i16::from_le_bytes([
             payload[OFFSET_ACCEL_Z],
@@ -332,21 +324,21 @@ fn handle_status_packet(
     );
 
     // IMU: Low-pass filtered tilt vector (gravity direction, i16 LE)
-    data.update(
+    data.set(
         "tilt_x",
         SensorValue::I16(i16::from_le_bytes([
             payload[OFFSET_TILT_X],
             payload[OFFSET_TILT_X + 1],
         ])),
     );
-    data.update(
+    data.set(
         "tilt_y",
         SensorValue::I16(i16::from_le_bytes([
             payload[OFFSET_TILT_Y],
             payload[OFFSET_TILT_Y + 1],
         ])),
     );
-    data.update(
+    data.set(
         "tilt_z",
         SensorValue::I16(i16::from_le_bytes([
             payload[OFFSET_TILT_Z],
@@ -355,5 +347,5 @@ fn handle_status_packet(
     );
 
     // Raw packet bytes for debugging/reverse engineering
-    data.update("raw_packet", SensorValue::Bytes(payload.to_vec()));
+    data.set("raw_packet", SensorValue::Bytes(payload.to_vec()));
 }

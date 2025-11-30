@@ -58,8 +58,10 @@
 // Submodules
 mod commands;
 mod heartbeat;
+pub mod packet;
 pub mod protocol;
 mod reader;
+mod ring_buffer;
 mod state;
 
 // Public re-exports
@@ -69,9 +71,8 @@ pub use state::ComponentState;
 use crate::core::types::{Command, SensorGroupData};
 use crate::devices::crl200s::constants::{INIT_RETRY_DELAY_MS, SERIAL_READ_TIMEOUT_MS};
 use crate::error::{Error, Result};
-use protocol::{cmd_initialize, cmd_motor_velocity};
+use packet::{initialize_packet, TxPacket};
 use serialport::SerialPort;
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -113,13 +114,12 @@ impl GD32Driver {
 
         // Send init commands (like sangam-io2-backup approach)
         // Don't wait for response here - reader thread will handle it
-        let init_pkt = cmd_initialize();
-        let init_bytes = init_pkt.to_bytes();
+        let init_pkt = initialize_packet();
 
         for attempt in 1..=5 {
             {
                 let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
-                if let Err(e) = port.write_all(&init_bytes) {
+                if let Err(e) = init_pkt.send_to(&mut *port) {
                     log::warn!("Init send failed (attempt {}): {}", attempt, e);
                 }
             }
@@ -194,9 +194,10 @@ impl GD32Driver {
         }
 
         // Send stop command
-        let stop_pkt = cmd_motor_velocity(0, 0);
+        let mut stop_pkt = TxPacket::new();
+        stop_pkt.set_velocity(0, 0);
         if let Ok(mut port) = self.port.lock() {
-            let _ = port.write_all(&stop_pkt.to_bytes());
+            let _ = stop_pkt.send_to(&mut *port);
         }
 
         log::info!("GD32 driver shutdown complete");

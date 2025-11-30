@@ -7,53 +7,7 @@
       "gd32_port": "/dev/ttyS3",
       "lidar_port": "/dev/ttyS1",
       "heartbeat_interval_ms": 20
-    },
-
-    "sensor_groups": [
-      {
-        "id": "gd32_version",
-        "sensors": [
-          { "id": "version_string", "type": "String" },
-          { "id": "version_code", "type": "I32" }
-        ]
-      },
-      {
-        "id": "gd32_status",
-        "sensors": [
-          { "id": "is_charging", "type": "Bool" },
-          { "id": "is_dock_connected", "type": "Bool" },
-          { "id": "battery_voltage", "type": "F32" },
-          { "id": "battery_level", "type": "U8" },
-          { "id": "wheel_left", "type": "U16" },
-          { "id": "wheel_right", "type": "U16" },
-          { "id": "bumper_left", "type": "Bool" },
-          { "id": "bumper_right", "type": "Bool" },
-          { "id": "cliff_left_side", "type": "Bool" },
-          { "id": "cliff_left_front", "type": "Bool" },
-          { "id": "cliff_right_front", "type": "Bool" },
-          { "id": "cliff_right_side", "type": "Bool" },
-          { "id": "dustbox_attached", "type": "Bool" },
-          { "id": "start_button", "type": "U16" },
-          { "id": "dock_button", "type": "U16" },
-          { "id": "gyro_x", "type": "I16" },
-          { "id": "gyro_y", "type": "I16" },
-          { "id": "gyro_z", "type": "I16" },
-          { "id": "accel_x", "type": "I16" },
-          { "id": "accel_y", "type": "I16" },
-          { "id": "accel_z", "type": "I16" },
-          { "id": "tilt_x", "type": "I16" },
-          { "id": "tilt_y", "type": "I16" },
-          { "id": "tilt_z", "type": "I16" },
-          { "id": "raw_packet", "type": "Bytes" }
-        ]
-      },
-      {
-        "id": "lidar",
-        "sensors": [
-          { "id": "scan", "type": "PointCloud2D" }
-        ]
-      }
-    ]
+    }
   },
 
   "network": {

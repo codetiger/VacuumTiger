@@ -5,6 +5,12 @@ edition = "2021"
 description = "Hardware abstraction daemon for robot vacuum"
 authors = ["CodeTiger"]
 
+[features]
+default = []
+# Enable raw packet capture in sensor data (adds ~48KB/sec allocations at 500Hz)
+# Useful for debugging and reverse engineering, disable for production
+protocol_debug = []
+
 [dependencies]
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

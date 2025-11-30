@@ -7,7 +7,7 @@ pub mod gd32;
 use crate::config::DeviceConfig;
 use crate::core::driver::DeviceDriver;
 use crate::core::types::{Command, SensorGroupData};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use delta2d::Delta2DDriver;
 use gd32::GD32Driver;
 use std::collections::HashMap;
@@ -44,11 +44,28 @@ impl CRL200SDriver {
 }
 
 impl DeviceDriver for CRL200SDriver {
-    fn initialize(
-        &mut self,
-        sensor_data: HashMap<String, Arc<Mutex<SensorGroupData>>>,
-    ) -> Result<()> {
+    fn initialize(&mut self) -> Result<HashMap<String, Arc<Mutex<SensorGroupData>>>> {
         log::info!("Initializing CRL-200S device: {}", self.config.name);
+
+        let mut sensor_data = HashMap::new();
+
+        // Create GD32 status sensor group
+        let sensor_status = SensorGroupData::new("sensor_status");
+        let gd32_data = Arc::new(Mutex::new(sensor_status));
+        sensor_data.insert("sensor_status".to_string(), gd32_data.clone());
+        log::info!("Created sensor group 'sensor_status'");
+
+        // Create GD32 version sensor group
+        let device_version = SensorGroupData::new("device_version");
+        let version_data = Arc::new(Mutex::new(device_version));
+        sensor_data.insert("device_version".to_string(), version_data.clone());
+        log::info!("Created sensor group 'device_version'");
+
+        // Create lidar sensor group
+        let lidar_group = SensorGroupData::new("lidar");
+        let lidar_data = Arc::new(Mutex::new(lidar_group));
+        sensor_data.insert("lidar".to_string(), lidar_data.clone());
+        log::info!("Created sensor group 'lidar'");
 
         // Initialize GD32 motor controller
         let mut gd32 = GD32Driver::new(
@@ -59,33 +76,20 @@ impl DeviceDriver for CRL200SDriver {
         // Send initialization sequence
         gd32.initialize()?;
 
-        // Get shared data for gd32_status sensor group
-        let gd32_data = sensor_data
-            .get("gd32_status")
-            .ok_or_else(|| Error::Config("Missing sensor data for gd32_status".to_string()))?
-            .clone();
-
-        // Get version data if configured (for one-time read)
-        let version_data = sensor_data.get("gd32_version").cloned();
-
         // Start reader and heartbeat threads
-        gd32.start(gd32_data, version_data)?;
+        gd32.start(gd32_data, Some(version_data))?;
 
         self.gd32 = Some(gd32);
 
-        // Initialize lidar driver if sensor data is configured
+        // Initialize lidar driver
         // Driver starts but lidar motor is OFF - will be enabled via command
-        if let Some(lidar_data) = sensor_data.get("lidar").cloned() {
-            let mut lidar = Delta2DDriver::new(&self.config.hardware.lidar_port);
-            lidar.start(lidar_data)?;
-            self.lidar = Some(lidar);
-            log::info!("Lidar driver started (motor OFF - use ComponentControl to enable)");
-        } else {
-            log::warn!("No lidar sensor data configured, skipping lidar initialization");
-        }
+        let mut lidar = Delta2DDriver::new(&self.config.hardware.lidar_port);
+        lidar.start(lidar_data)?;
+        self.lidar = Some(lidar);
+        log::info!("Lidar driver started (motor OFF - use ComponentControl to enable)");
 
         log::info!("CRL-200S device initialized");
-        Ok(())
+        Ok(sensor_data)
     }
 
     fn send_command(&mut self, cmd: Command) -> Result<()> {

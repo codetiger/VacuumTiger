@@ -67,27 +67,22 @@ pub struct SensorGroupData {
 }
 
 impl SensorGroupData {
-    /// Create a new SensorGroupData with pre-allocated keys
-    ///
-    /// This avoids HashMap allocations in the hot loop - values are updated in-place
-    pub fn new_with_keys(group_id: &str, keys: &[(&str, SensorValue)]) -> Self {
-        let mut values = HashMap::with_capacity(keys.len());
-        for (key, default_value) in keys {
-            values.insert((*key).to_string(), default_value.clone());
-        }
-
+    /// Create a new empty SensorGroupData
+    pub fn new(group_id: &str) -> Self {
         Self {
             group_id: group_id.to_string(),
             timestamp_us: 0,
-            values,
+            values: HashMap::new(),
         }
     }
 
-    /// Update a value in-place (no allocation if key exists)
+    /// Set a value (create or update in-place)
     #[inline]
-    pub fn update(&mut self, key: &str, value: SensorValue) {
+    pub fn set(&mut self, key: &str, value: SensorValue) {
         if let Some(v) = self.values.get_mut(key) {
             *v = value;
+        } else {
+            self.values.insert(key.to_string(), value);
         }
     }
 

@@ -179,7 +179,7 @@ impl Delta2DDriver {
             return;
         };
         data.touch();
-        data.update("scan", SensorValue::PointCloud2D(points.to_vec()));
+        data.set("scan", SensorValue::PointCloud2D(points.to_vec()));
 
         log::trace!("Published lidar scan with {} points", points.len());
     }

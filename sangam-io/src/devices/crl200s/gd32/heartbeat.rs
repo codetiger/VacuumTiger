@@ -21,6 +21,13 @@
 //! - This thread waits 100ms after mode switch, then resumes normal heartbeat
 //! - Mode switches happen automatically when any component is activated
 //!
+//! # Performance Optimization
+//!
+//! This module uses `TxPacket` for zero-allocation packet building:
+//! - Single 14-byte buffer created once at thread start
+//! - Reused for all commands every 20ms cycle
+//! - Static pre-computed packets for fixed commands (heartbeat, motor mode)
+//!
 //! # Known Limitations
 //!
 //! ## Wheel Motors Require Other Components
@@ -32,13 +39,9 @@
 //! **Workaround**: Enable lidar (even at low PWM) before enabling wheel motors
 //! for sustained operation.
 
-use super::protocol::{
-    cmd_air_pump, cmd_heartbeat, cmd_lidar_pwm, cmd_main_brush, cmd_motor_mode, cmd_motor_velocity,
-    cmd_request_stm32_data, cmd_side_brush, cmd_water_pump,
-};
+use super::packet::{heartbeat_packet, motor_mode_nav_packet, request_stm32_packet, TxPacket};
 use super::state::ComponentState;
 use serialport::SerialPort;
-use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -77,8 +80,13 @@ pub(super) fn heartbeat_loop(
     interval_ms: u64,
     component_state: Arc<ComponentState>,
 ) {
-    let heartbeat_pkt = cmd_heartbeat();
-    let heartbeat_bytes = heartbeat_pkt.to_bytes();
+    // =========================================================
+    // Pre-allocated packets - created once, reused every cycle
+    // =========================================================
+    let heartbeat = heartbeat_packet();
+    let motor_mode_nav = motor_mode_nav_packet();
+    let stm32_request = request_stm32_packet();
+    let mut pkt = TxPacket::new(); // For variable commands (velocity, actuators)
 
     // Counter for periodic STM32 data request (0x0D)
     // At 20ms interval, 75 cycles = 1.5 seconds (matching R2D MITM log frequency)
@@ -102,8 +110,7 @@ pub(super) fn heartbeat_loop(
 
         // Send motor mode 0x02 when first component is enabled
         if any_component_active && !component_state.motor_mode_set.load(Ordering::Relaxed) {
-            let pkt = cmd_motor_mode(0x02);
-            if port.write_all(&pkt.to_bytes()).is_ok() {
+            if motor_mode_nav.send_to(&mut *port).is_ok() {
                 component_state
                     .motor_mode_set
                     .store(true, Ordering::Relaxed);
@@ -125,12 +132,11 @@ pub(super) fn heartbeat_loop(
 
         if component_state.motor_mode_set.load(Ordering::Relaxed) {
             // Send motor mode 0x02 periodically to keep GD32 in navigation mode
-            let mode_pkt = cmd_motor_mode(0x02);
-            let _ = port.write_all(&mode_pkt.to_bytes());
+            let _ = motor_mode_nav.send_to(&mut *port);
 
             // Motor mode 0x02 active - send velocity command as heartbeat
-            let pkt = cmd_motor_velocity(linear, angular);
-            if let Err(e) = port.write_all(&pkt.to_bytes()) {
+            pkt.set_velocity(linear, angular);
+            if let Err(e) = pkt.send_to(&mut *port) {
                 log::error!("Velocity heartbeat send failed: {}", e);
             } else {
                 log::trace!(
@@ -140,36 +146,36 @@ pub(super) fn heartbeat_loop(
                 );
             }
 
-            // Send component commands every cycle
+            // Send component commands every cycle (reuse same pkt buffer)
             if vacuum > 0 {
-                let pkt = cmd_air_pump(vacuum);
-                let _ = port.write_all(&pkt.to_bytes());
+                pkt.set_air_pump(vacuum);
+                let _ = pkt.send_to(&mut *port);
             }
 
             if main_brush > 0 {
-                let pkt = cmd_main_brush(main_brush);
-                let _ = port.write_all(&pkt.to_bytes());
+                pkt.set_main_brush(main_brush);
+                let _ = pkt.send_to(&mut *port);
             }
 
             if side_brush > 0 {
-                let pkt = cmd_side_brush(side_brush);
-                let _ = port.write_all(&pkt.to_bytes());
+                pkt.set_side_brush(side_brush);
+                let _ = pkt.send_to(&mut *port);
             }
 
             if water_pump > 0 {
-                let pkt = cmd_water_pump(water_pump);
-                let _ = port.write_all(&pkt.to_bytes());
+                pkt.set_water_pump(water_pump);
+                let _ = pkt.send_to(&mut *port);
             }
 
             // Send lidar PWM if enabled
             if lidar_enabled {
                 let lidar_pwm = component_state.lidar_pwm.load(Ordering::Relaxed);
-                let pkt = cmd_lidar_pwm(lidar_pwm as i32);
-                let _ = port.write_all(&pkt.to_bytes());
+                pkt.set_lidar_pwm(lidar_pwm);
+                let _ = pkt.send_to(&mut *port);
             }
         } else {
             // No components active - send regular heartbeat
-            if let Err(e) = port.write_all(&heartbeat_bytes) {
+            if let Err(e) = heartbeat.send_to(&mut *port) {
                 log::error!("Heartbeat send failed: {}", e);
             } else {
                 log::trace!("Heartbeat sent");
@@ -180,8 +186,7 @@ pub(super) fn heartbeat_loop(
         stm32_request_counter += 1;
         if stm32_request_counter >= stm32_request_interval {
             stm32_request_counter = 0;
-            let pkt = cmd_request_stm32_data();
-            if let Err(e) = port.write_all(&pkt.to_bytes()) {
+            if let Err(e) = stm32_request.send_to(&mut *port) {
                 log::warn!("STM32 data request (0x0D) send failed: {}", e);
             } else {
                 log::trace!("STM32 data request sent");

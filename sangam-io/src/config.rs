@@ -13,8 +13,7 @@
 //!       "gd32_port": "/dev/ttyS3",
 //!       "lidar_port": "/dev/ttyS1",
 //!       "heartbeat_interval_ms": 20
-//!     },
-//!     "sensor_groups": [...]
+//!     }
 //!   },
 //!   "network": {
 //!     "bind_address": "0.0.0.0:5555",
@@ -25,7 +24,6 @@
 //!
 //! See `hardware.json` for complete example.
 
-use crate::core::types::SensorGroupSpec;
 use crate::error::{Error, Result};
 use crate::streaming::WireFormat;
 use serde::Deserialize;
@@ -84,14 +82,6 @@ pub struct DeviceConfig {
     ///
     /// **Required**: Yes
     pub hardware: HardwareConfig,
-
-    /// Sensor group specifications
-    ///
-    /// Defines which sensor data will be streamed to clients.
-    /// See `SensorGroupSpec` for details.
-    ///
-    /// **Required**: Yes (must have at least one group)
-    pub sensor_groups: Vec<SensorGroupSpec>,
 }
 
 /// Network configuration for TCP server
