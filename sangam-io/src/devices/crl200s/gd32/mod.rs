@@ -78,13 +78,19 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-/// GD32 driver managing heartbeat and sensor reading
+/// GD32 motor controller driver with heartbeat and reader threads.
 pub struct GD32Driver {
+    /// Serial port shared between heartbeat (write) and reader (read) threads
     port: Arc<Mutex<Box<dyn SerialPort>>>,
+    /// Heartbeat interval from config (typically 20ms)
     heartbeat_interval_ms: u64,
+    /// Shutdown signal - set to true to stop all threads
     shutdown: Arc<AtomicBool>,
+    /// Heartbeat thread handle - joined on shutdown
     heartbeat_handle: Option<JoinHandle<()>>,
+    /// Reader thread handle - joined on shutdown
     reader_handle: Option<JoinHandle<()>>,
+    /// Component states (velocity, brushes, etc.) - atomic for lockless heartbeat reads
     component_state: Arc<ComponentState>,
 }
 

@@ -10,7 +10,7 @@ VacuumTiger is a modular, configuration-driven firmware stack that makes it easy
 - **Extensible**: Add new robot platforms by implementing one trait
 - **Generic Protocol**: TCP streaming works with any SLAM application
 - **Real-time**: 500Hz sensor updates, <25ms command latency
-- **Hackable**: Small codebase (~3K lines Rust), no dependencies on proprietary SDKs
+- **Hackable**: Small codebase (~4K lines Rust), no dependencies on proprietary SDKs
 
 ## How It Works
 
@@ -223,14 +223,17 @@ That's it! Your new robot works with any existing SLAM application.
 VacuumTiger/
 ├── sangam-io/              # Hardware abstraction daemon (Rust)
 │   ├── src/
-│   │   ├── core/           # DeviceDriver trait, sensor types
+│   │   ├── core/           # DeviceDriver trait, SensorValue types
 │   │   ├── devices/        # Robot-specific implementations
 │   │   │   └── crl200s/    # CRL-200S driver (GD32 + Delta-2D)
 │   │   └── streaming/      # TCP protocol, wire format
-│   └── hardware.json       # Robot configuration
+│   ├── hardware.json       # Robot configuration
+│   ├── COMMANDS.md         # GD32 command reference
+│   └── SENSORSTATUS.md     # Sensor packet documentation
 ├── drishti/                # Diagnostic visualization (Python)
-│   ├── drishti_ui.py       # GUI with sensor overlays
-│   └── drishti.py          # Console client
+│   ├── drishti_ui.py       # PyQt GUI with sensor overlays
+│   ├── drishti.py          # Console client
+│   └── ui/                 # PyQt widgets and processors
 └── protocol-mitm/          # Reverse engineering tools
 ```
 

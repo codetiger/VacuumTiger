@@ -1,4 +1,9 @@
-//! Core data types for SangamIO
+//! Core data types for sensors, commands, and device communication.
+//!
+//! Key types for device implementers:
+//! - [`SensorGroupData`]: Container for sensor values, updated by driver threads
+//! - [`Command`]: Inbound commands from TCP clients (mainly [`Command::ComponentControl`])
+//! - [`SensorValue`]: Typed sensor values for the `values` HashMap
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

@@ -1,6 +1,6 @@
 # Drishti - Robot Diagnostic Tool
 
-Simple monitoring tool for testing sensor diagnosis and TCP protocol communication with SangamIO.
+PyQt-based monitoring tool for testing sensor diagnosis and TCP protocol communication with SangamIO.
 
 ## Installation
 

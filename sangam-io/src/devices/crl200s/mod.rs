@@ -1,4 +1,13 @@
-//! CRL-200S Vacuum Robot device driver
+//! CRL-200S Vacuum Robot driver - reference implementation for new devices.
+//!
+//! This driver manages two subcomponents:
+//! - **GD32**: Motor controller (wheels, brushes, vacuum) via `/dev/ttyS3`
+//! - **Delta2D**: Lidar sensor via `/dev/ttyS1`
+//!
+//! # Sensor Groups Published
+//! - `sensor_status`: Bumpers, cliffs, encoders, IMU @ 500Hz
+//! - `device_version`: Firmware version (one-time)
+//! - `lidar`: Point cloud @ 5Hz
 
 pub mod constants;
 pub mod delta2d;
@@ -13,10 +22,12 @@ use gd32::GD32Driver;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// CRL-200S device driver
+/// CRL-200S device driver coordinating GD32 motor controller and Delta2D lidar.
 pub struct CRL200SDriver {
     config: DeviceConfig,
+    /// Motor controller - `None` before `initialize()`, `Some` after
     gd32: Option<GD32Driver>,
+    /// Lidar driver - `None` before `initialize()`, `Some` after
     lidar: Option<Delta2DDriver>,
 }
 

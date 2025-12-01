@@ -4,7 +4,7 @@ Man-in-the-Middle (MITM) toolset for reverse-engineering proprietary serial prot
 
 ## Overview
 
-This toolset enables transparent serial port interception using PTY-based forwarding, allowing capture of bidirectional communication without modifying the original firmware or hardware. The captured protocol was successfully reverse-engineered and implemented in the [SangamIO library](../sangam-io/).
+This toolset enables transparent serial port interception using PTY-based forwarding, allowing capture of bidirectional communication without modifying the original firmware or hardware. The captured protocol was successfully reverse-engineered and implemented in the [SangamIO daemon](../sangam-io/).
 
 ### Key Features
 

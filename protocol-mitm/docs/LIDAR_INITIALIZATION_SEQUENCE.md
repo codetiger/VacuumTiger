@@ -43,7 +43,7 @@ Packet Format: [0xFA 0xFB] [0x04] [0x65] [MODE] [CRC]
 
 **Purpose**: Enables navigation subsystems including lidar control. Without switching to mode 0x02, the GD32 firmware ignores CMD=0xA2, CMD=0x97, and CMD=0x71.
 
-**Implementation** (sangam-io/src/devices/gd32/mod.rs:462):
+**Implementation** (sangam-io/src/devices/crl200s/gd32/mod.rs):
 ```rust
 pub fn set_motor_mode(&mut self, mode: u8) -> Result<()> {
     log::info!("GD32: Setting motor mode: 0x{:02X}", mode);
@@ -66,7 +66,7 @@ Packet Format: [0xFA 0xFB] [0x07] [0xA2] [0x10 0x0E 0x00 0x00] [CRC]
 
 **Note**: This command was discovered by analyzing MITM logs. In the original AuxCtrl firmware, CMD=0xA2 and CMD=0x97 are sent in a single write operation, suggesting they're tightly coupled.
 
-**Implementation** (sangam-io/src/devices/gd32/mod.rs:472):
+**Implementation** (sangam-io/src/devices/crl200s/gd32/mod.rs):
 ```rust
 pub fn send_lidar_prep(&mut self) -> Result<()> {
     log::info!("GD32: Sending lidar preparation command");
@@ -91,7 +91,7 @@ Packet Format: [0xFA 0xFB] [0x04] [0x97] [POWER] [CRC]
 - CMD=0x97 [0x01] → GD32 sets `/sys/class/gpio/gpio233/value` = 1
 - CMD=0x97 [0x00] → GD32 sets `/sys/class/gpio/gpio233/value` = 0
 
-**Implementation** (sangam-io/src/devices/gd32/mod.rs:482):
+**Implementation** (sangam-io/src/devices/crl200s/gd32/mod.rs):
 ```rust
 pub fn set_lidar_power(&mut self, enable: bool) -> Result<()> {
     log::info!("GD32: Setting lidar power: {}", enable);
@@ -112,7 +112,7 @@ Packet Format: [0xFA 0xFB] [0x07] [0x71] [PWM 4 bytes little-endian] [CRC]
 - CRC: 16-bit big-endian word sum
 ```
 
-**Implementation** (sangam-io/src/devices/gd32/mod.rs:492):
+**Implementation** (sangam-io/src/devices/crl200s/gd32/mod.rs):
 ```rust
 pub fn set_lidar_pwm(&mut self, pwm_percent: i32) -> Result<()> {
     log::info!("GD32: Setting lidar PWM: {}%", pwm_percent);
@@ -125,8 +125,6 @@ pub fn set_lidar_pwm(&mut self, pwm_percent: i32) -> Result<()> {
 ## Complete Initialization Procedure
 
 ### Full Working Example
-
-From `sangam-io/examples/test_lidar_scenario.rs`:
 
 ```rust
 // Step 1: Initialize GD32 motor controller
@@ -227,13 +225,12 @@ gd32.set_lidar_power(false)?;    // Disable power
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| CMD=0x65 (MotorMode) | ✅ Implemented | `src/devices/gd32/protocol.rs:54` |
-| CMD=0xA2 (LidarPrep) | ✅ Implemented | `src/devices/gd32/protocol.rs:42` |
-| CMD=0x97 (LidarPower) | ✅ Implemented | `src/devices/gd32/protocol.rs:99` |
-| CMD=0x71 (LidarPWM) | ✅ Implemented | `src/devices/gd32/protocol.rs:102` |
-| Heartbeat thread | ✅ Working | `src/devices/gd32/heartbeat.rs` |
-| Delta-2D driver | ✅ Working | `src/devices/delta2d/mod.rs` |
-| Test scenario | ✅ Verified | `examples/test_lidar_scenario.rs` |
+| CMD=0x65 (MotorMode) | ✅ Implemented | `src/devices/crl200s/gd32/commands.rs` |
+| CMD=0xA2 (LidarPrep) | ✅ Implemented | `src/devices/crl200s/gd32/commands.rs` |
+| CMD=0x97 (LidarPower) | ✅ Implemented | `src/devices/crl200s/gd32/commands.rs` |
+| CMD=0x71 (LidarPWM) | ✅ Implemented | `src/devices/crl200s/gd32/commands.rs` |
+| Heartbeat thread | ✅ Working | `src/devices/crl200s/gd32/heartbeat.rs` |
+| Delta-2D driver | ✅ Working | `src/devices/crl200s/delta2d/mod.rs` |
 
 ## Troubleshooting
 
@@ -263,14 +260,14 @@ gd32.set_lidar_power(false)?;    // Disable power
 ## References
 
 ### Source Code
-- **Protocol Implementation**: `sangam-io/src/devices/gd32/protocol.rs`
-- **GD32 Driver**: `sangam-io/src/devices/gd32/mod.rs`
-- **Test Example**: `sangam-io/examples/test_lidar_scenario.rs`
+- **Protocol Implementation**: `sangam-io/src/devices/crl200s/gd32/protocol.rs`
+- **GD32 Driver**: `sangam-io/src/devices/crl200s/gd32/mod.rs`
+- **Commands**: `sangam-io/src/devices/crl200s/gd32/commands.rs`
 
 ### Documentation
 - **MITM Logging Guide**: `protocol-mitm/docs/MITM_LOGGING_GUIDE.md`
-- **GD32 Protocol Spec**: See protocol.rs source code for complete specification
-- **Project Guide**: `sangam-io/GUIDE.md`
+- **GD32 Command Reference**: `sangam-io/COMMANDS.md`
+- **Sensor Status Packet**: `sangam-io/SENSORSTATUS.md`
 
 ### MITM Logs
 - **Successful Capture**: `protocol-mitm/logs/mitm_gpio/cleaning_session_with_gpio.log`

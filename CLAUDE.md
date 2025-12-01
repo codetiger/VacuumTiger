@@ -174,23 +174,23 @@ while True:
 
 ## Configuration
 
-Edit `sangamio.toml`:
+Edit `hardware.json`:
 
-```toml
-[hardware]
-gd32_port = "/dev/ttyS3"    # Motor controller
-lidar_port = "/dev/ttyS1"   # Delta-2D lidar
-
-[robot]
-max_ticks_per_sec = 3000.0  # Calibration constant
-
-[streaming]
-tcp_pub_address = "0.0.0.0:5555"  # Telemetry output
-tcp_cmd_address = "0.0.0.0:5556"  # Command input
-
-[logging]
-level = "info"
-output = "stdout"
+```json
+{
+  "device": {
+    "type": "crl200s",
+    "name": "CRL-200S Vacuum Robot",
+    "hardware": {
+      "gd32_port": "/dev/ttyS3",
+      "lidar_port": "/dev/ttyS1"
+    }
+  },
+  "network": {
+    "tcp_pub_address": "0.0.0.0:5555",
+    "tcp_cmd_address": "0.0.0.0:5556"
+  }
+}
 ```
 
 ## Module Organization
@@ -200,37 +200,47 @@ VacuumTiger/
 ├── sangam-io/                 # Hardware abstraction daemon
 │   ├── src/
 │   │   ├── main.rs           # Entry point, arg parsing
-│   │   ├── app.rs            # Application orchestration
 │   │   ├── config.rs         # Configuration structures
 │   │   ├── error.rs          # Error types
-│   │   ├── serial_io.rs      # Serial transport layer
+│   │   ├── core/             # Core abstractions
+│   │   │   ├── mod.rs
+│   │   │   ├── driver.rs     # DeviceDriver trait
+│   │   │   └── types.rs      # SensorValue, Command types
 │   │   ├── devices/          # Hardware drivers
-│   │   │   ├── mod.rs        # DeviceDriver trait
-│   │   │   ├── crl200s/      # CRL-200S robot platform
-│   │   │   │   ├── gd32/     # Motor controller driver
-│   │   │   │   │   ├── mod.rs         # Driver orchestration
-│   │   │   │   │   ├── protocol.rs    # Packet encoding/decoding
-│   │   │   │   │   ├── heartbeat.rs   # 20ms watchdog loop
-│   │   │   │   │   ├── reader.rs      # Status parsing
-│   │   │   │   │   ├── commands.rs    # Command handlers
-│   │   │   │   │   ├── actuators.rs   # Actuator control
-│   │   │   │   │   └── state.rs       # Shared atomic state
-│   │   │   │   └── delta2d/  # 3iRobotix lidar
-│   │   │   │       ├── mod.rs         # LidarDriver impl
-│   │   │   │       └── protocol.rs    # Packet parsing
-│   │   │   └── constants.rs  # Hardware constants
+│   │   │   ├── mod.rs        # Device factory
+│   │   │   └── crl200s/      # CRL-200S robot platform
+│   │   │       ├── mod.rs
+│   │   │       ├── constants.rs      # Offsets, flags, timing
+│   │   │       ├── gd32/             # Motor controller driver
+│   │   │       │   ├── mod.rs        # Driver orchestration
+│   │   │       │   ├── protocol.rs   # RxPacket, PacketReader
+│   │   │       │   ├── packet.rs     # TxPacket, checksum
+│   │   │       │   ├── ring_buffer.rs # Zero-copy ring buffer
+│   │   │       │   ├── heartbeat.rs  # 20ms watchdog loop
+│   │   │       │   ├── reader.rs     # Status parsing
+│   │   │       │   ├── commands.rs   # Command handlers
+│   │   │       │   └── state.rs      # Shared atomic state
+│   │   │       └── delta2d/          # 3iRobotix lidar
+│   │   │           ├── mod.rs        # LidarDriver impl
+│   │   │           └── protocol.rs   # Packet parsing
 │   │   └── streaming/        # TCP communication
 │   │       ├── mod.rs        # Re-exports
 │   │       ├── messages.rs   # Protocol definitions
 │   │       ├── wire.rs       # Serialization layer
 │   │       ├── tcp_publisher.rs # Outbound stream
 │   │       └── tcp_receiver.rs  # Command handler
-│   └── hardware.json         # Configuration file
+│   ├── hardware.json         # Configuration file
+│   ├── COMMANDS.md           # GD32 command reference
+│   └── SENSORSTATUS.md       # Sensor packet documentation
 │
 └── drishti/                  # Python visualization client
     ├── drishti.py           # Console client
     ├── drishti_ui.py        # GUI application
-    └── ui/                  # Web interface
+    └── ui/                  # PyQt widgets
+        ├── main_window.py
+        ├── processors/       # Data processing
+        ├── threads/          # Background workers
+        └── widgets/          # UI components
 ```
 
 ## Critical Hardware Constraints
@@ -257,13 +267,13 @@ VacuumTiger/
 - **Format**: `[0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC]`
 - **CRC**: 16-bit big-endian word sum checksum
 - **Status**: CMD=0x15, 96 bytes @ 500Hz
-- **Location**: `src/devices/gd32/protocol.rs`
+- **Location**: `src/devices/crl200s/gd32/protocol.rs`
 
 ### Delta-2D Protocol
 - **Format**: Variable-length with 8-byte headers
 - **Data**: Angle (0.01° units), distance (0.25mm units)
 - **Rate**: ~5Hz complete scans
-- **Location**: `src/devices/delta2d/protocol.rs`
+- **Location**: `src/devices/crl200s/delta2d/protocol.rs`
 
 ## Performance Characteristics
 
@@ -362,13 +372,11 @@ python drishti.py --robot 192.168.68.101 --verbose
 
 ## Documentation References
 
-- **sangam-io/README.md**: Quick start and overview
-- **sangam-io/ARCHITECTURE.md**: Design decisions and extensibility
-- **sangam-io/PROTOCOL.md**: TCP message specifications
-- **sangam-io/DEPLOYMENT.md**: Production installation guide
-- **sangam-io/CHANGELOG.md**: Version history and changes
+- **sangam-io/COMMANDS.md**: GD32 command reference with TCP API
+- **sangam-io/SENSORSTATUS.md**: Sensor packet byte layout
 - **drishti/README.md**: Python client documentation
-- **drishti/UI_README.md**: GUI application guide
+- **protocol-mitm/README.md**: MITM reverse engineering tools
+- **protocol-mitm/docs/**: Protocol discovery documentation
 
 ## Future Roadmap
 
@@ -390,6 +398,6 @@ When modifying this codebase:
 
 1. **Maintain simplicity**: Avoid unnecessary abstractions
 2. **Prioritize reliability**: Real-time constraints matter
-3. **Document changes**: Update CHANGELOG.md
+3. **Document changes**: Update relevant documentation
 4. **Test on hardware**: Virtual tests insufficient
 5. **Preserve safety**: Never bypass heartbeat mechanism
