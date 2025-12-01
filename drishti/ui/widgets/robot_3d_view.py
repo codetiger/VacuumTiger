@@ -285,6 +285,9 @@ class Robot3DView(QWidget):
         # Battery status overlay (bottom-right)
         self._create_battery_overlay()
 
+        # Button counter overlay (top-right, hidden by default)
+        self._create_button_overlay()
+
     def _create_view_overlay(self):
         """Create floating view control buttons."""
         self.view_overlay = QWidget(self.gl_widget)
@@ -418,6 +421,49 @@ class Robot3DView(QWidget):
 
         layout.addWidget(bar_container)
 
+    def _create_button_overlay(self):
+        """Create button counter overlay (shown when buttons are pressed)."""
+        self.button_overlay = QWidget(self.gl_widget)
+        self.button_overlay.setStyleSheet("""
+            background-color: rgba(45, 45, 45, 200);
+            border-radius: 8px;
+        """)
+        self.button_overlay.setFixedSize(120, 70)
+        self.button_overlay.hide()  # Hidden by default
+
+        layout = QVBoxLayout(self.button_overlay)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        title = QLabel("Button Press")
+        title.setStyleSheet("color: #ddd; font-weight: bold; font-size: 11px; background: transparent;")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        # Start button counter
+        start_layout = QHBoxLayout()
+        start_layout.setSpacing(8)
+        start_label = QLabel("Start:")
+        start_label.setStyleSheet("color: #aaa; font-size: 11px; background: transparent;")
+        start_layout.addWidget(start_label)
+        self.start_counter_label = QLabel("0")
+        self.start_counter_label.setStyleSheet("color: #4CAF50; font-size: 14px; font-weight: bold; background: transparent;")
+        self.start_counter_label.setAlignment(Qt.AlignRight)
+        start_layout.addWidget(self.start_counter_label)
+        layout.addLayout(start_layout)
+
+        # Home/Dock button counter
+        home_layout = QHBoxLayout()
+        home_layout.setSpacing(8)
+        home_label = QLabel("Home:")
+        home_label.setStyleSheet("color: #aaa; font-size: 11px; background: transparent;")
+        home_layout.addWidget(home_label)
+        self.home_counter_label = QLabel("0")
+        self.home_counter_label.setStyleSheet("color: #4CAF50; font-size: 14px; font-weight: bold; background: transparent;")
+        self.home_counter_label.setAlignment(Qt.AlignRight)
+        home_layout.addWidget(self.home_counter_label)
+        layout.addLayout(home_layout)
+
     def resizeEvent(self, event):
         """Handle resize to position overlays."""
         super().resizeEvent(event)
@@ -429,6 +475,12 @@ class Robot3DView(QWidget):
             self.battery_overlay.move(
                 self.width() - self.battery_overlay.width() - 10,
                 self.height() - self.battery_overlay.height() - 10
+            )
+        # Position button overlay at top-right
+        if hasattr(self, 'button_overlay'):
+            self.button_overlay.move(
+                self.width() - self.button_overlay.width() - 10,
+                10
             )
 
     def _set_camera_preset(self, preset: str):
@@ -839,18 +891,33 @@ class Robot3DView(QWidget):
                 self.gl_items[item_key].setData(color=color)
                 self._cache[sensor_key] = triggered
 
-        # Update button colors
-        start_pressed = data.get('start_button', 0) > 100
+        # Update button colors and counter overlay
+        # Button counters increment from 0 while pressed, reset to 0 when released
+        start_counter = data.get('start_button', 0)
+        dock_counter = data.get('dock_button', 0)
+        start_pressed = start_counter > 0
+        dock_pressed = dock_counter > 0
+
         if start_pressed != self._cache.get('start_pressed'):
             color = COLORS['button_on'] if start_pressed else COLORS['button_off']
             self.gl_items['button_start'].setData(color=color)
             self._cache['start_pressed'] = start_pressed
 
-        dock_pressed = data.get('dock_button', 0) > 100
         if dock_pressed != self._cache.get('dock_pressed'):
             color = COLORS['button_on'] if dock_pressed else COLORS['button_off']
             self.gl_items['button_dock'].setData(color=color)
             self._cache['dock_pressed'] = dock_pressed
+
+        # Update button counter overlay
+        if start_pressed or dock_pressed:
+            if hasattr(self, 'button_overlay'):
+                self.start_counter_label.setText(str(start_counter) if start_pressed else "—")
+                self.home_counter_label.setText(str(dock_counter) if dock_pressed else "—")
+                if not self.button_overlay.isVisible():
+                    self.button_overlay.show()
+        else:
+            if hasattr(self, 'button_overlay') and self.button_overlay.isVisible():
+                self.button_overlay.hide()
 
         # Update battery status
         battery_level = data.get('battery_level', None)

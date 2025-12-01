@@ -31,18 +31,23 @@ class TelemetryThread(QThread):
         self.socket = None
         self.log_raw_packets = log_raw_packets
         self.raw_packet_file = None
+        self.sensor_data_file = None
         self._packet_count = 0
+        self._sensor_log_count = 0
 
     def run(self):
         """Main thread loop - connect and receive data."""
         logger.info(f"Telemetry thread starting, connecting to {self.host}:{self.port}")
 
-        # Open raw packet log file if enabled
+        # Open log files if enabled
         if self.log_raw_packets:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_filename = f"raw_packets_{timestamp}.log"
-            self.raw_packet_file = open(log_filename, 'w')
-            logger.info(f"Raw packet logging enabled: {log_filename}")
+            raw_log_filename = f"raw_packets_{timestamp}.log"
+            sensor_log_filename = f"sensor_data_{timestamp}.log"
+            self.raw_packet_file = open(raw_log_filename, 'w')
+            self.sensor_data_file = open(sensor_log_filename, 'w')
+            logger.info(f"Raw packet logging enabled: {raw_log_filename}")
+            logger.info(f"Sensor data logging enabled: {sensor_log_filename}")
 
         while self._running:
             try:
@@ -97,6 +102,12 @@ class TelemetryThread(QThread):
             try:
                 self.raw_packet_file.close()
                 logger.info(f"Raw packet log closed ({self._packet_count} packets logged)")
+            except:
+                pass
+        if self.sensor_data_file:
+            try:
+                self.sensor_data_file.close()
+                logger.info(f"Sensor data log closed ({self._sensor_log_count} entries logged)")
             except:
                 pass
         self.wait()
@@ -199,6 +210,10 @@ class TelemetryThread(QThread):
             sensor_data['_group_id'] = group_id
             sensor_data['_timestamp_us'] = payload.get('timestamp_us', 0)
 
+            # Log parsed sensor data if enabled
+            if self.sensor_data_file:
+                self._log_sensor_data(sensor_data)
+
             self.sensor_data_received.emit(sensor_data)
 
     def _log_raw_packet(self, raw_packet: list, timestamp_us: int):
@@ -217,6 +232,20 @@ class TelemetryThread(QThread):
                 self.raw_packet_file.flush()
         except Exception as e:
             logger.error(f"Failed to log raw packet: {e}")
+
+    def _log_sensor_data(self, sensor_data: dict):
+        """Log parsed sensor data as JSON to file."""
+        try:
+            # Write as JSON line (exclude raw_packet to keep it readable)
+            data_to_log = {k: v for k, v in sensor_data.items() if k != 'raw_packet'}
+            self.sensor_data_file.write(json.dumps(data_to_log) + '\n')
+            self._sensor_log_count += 1
+
+            # Flush every 100 entries
+            if self._sensor_log_count % 100 == 0:
+                self.sensor_data_file.flush()
+        except Exception as e:
+            logger.error(f"Failed to log sensor data: {e}")
 
     def _extract_value(self, tagged_value):
         """Extract value from tagged SensorValue format.
