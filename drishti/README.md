@@ -70,10 +70,10 @@ Length-prefixed JSON:
 
 ```json
 {
-  "topic": "sensors/gd32_status",
+  "topic": "sensors/sensor_status",
   "payload": {
     "type": "SensorGroup",
-    "group_id": "gd32_status",
+    "group_id": "sensor_status",
     "timestamp_us": 1700000000000,
     "values": {
       "is_charging": {"Bool": false},

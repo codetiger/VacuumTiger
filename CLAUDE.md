@@ -120,10 +120,10 @@ All messages use length-prefixed framing with JSON payloads:
 
 ```json
 {
-    "topic": "sensors/gd32_status",
+    "topic": "sensors/sensor_status",
     "payload": {
         "type": "SensorGroup",
-        "group_id": "gd32_status",
+        "group_id": "sensor_status",
         "timestamp_us": 1234567890,
         "values": {
             "is_charging": {"Bool": false},
@@ -138,8 +138,8 @@ All messages use length-prefixed framing with JSON payloads:
 ### Topics
 
 **Outbound (Daemon → Client)**:
-- `sensors/gd32_status`: Sensor data @ 500Hz (all 13 sensors)
-- `sensors/gd32_version`: Version info (one-time)
+- `sensors/sensor_status`: Sensor data @ 500Hz (all 13 sensors)
+- `sensors/device_version`: Version info (one-time)
 - `sensors/lidar`: LidarScan @ 5Hz (point cloud)
 
 **Inbound (Client → Daemon)**:
@@ -166,7 +166,7 @@ while True:
     msg = json.loads(data)
 
     topic = msg['topic']
-    if topic == 'sensors/gd32_status':
+    if topic == 'sensors/sensor_status':
         values = msg['payload']['values']
         charging = values['is_charging']['Bool']
         print(f"Charging: {charging}")

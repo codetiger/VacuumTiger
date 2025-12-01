@@ -49,7 +49,7 @@ Everything is defined in `hardware.json`:
     },
     "sensor_groups": [
       {
-        "id": "gd32_status",
+        "id": "sensor_status",
         "sensors": [
           { "id": "wheel_left", "type": "U16" },
           { "id": "wheel_right", "type": "U16" },

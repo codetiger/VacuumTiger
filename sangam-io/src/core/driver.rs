@@ -52,7 +52,7 @@ use std::sync::{Arc, Mutex};
 pub trait DeviceDriver: Send {
     /// Initialize hardware and start background threads.
     ///
-    /// Returns sensor groups keyed by group ID (e.g., "gd32_status", "lidar").
+    /// Returns sensor groups keyed by group ID (e.g., "sensor_status", "lidar").
     /// The TCP publisher uses these to stream sensor data to clients.
     fn initialize(&mut self) -> Result<HashMap<String, Arc<Mutex<SensorGroupData>>>>;
 
