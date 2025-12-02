@@ -158,8 +158,9 @@ impl PacketReader {
         // Verify checksum (except for CMD=0x08)
         if cmd != CMD_INITIALIZE && !self.verify_checksum(total_len) {
             log::warn!("Checksum mismatch for CMD=0x{:02X}", cmd);
-            // Consume bad packet - O(1)!
-            self.buffer.advance(total_len);
+            // Only advance past first sync byte - don't trust the corrupted len!
+            // This allows find_pattern_2 to resync on the next valid packet.
+            self.buffer.advance(1);
             return Ok(None);
         }
 
