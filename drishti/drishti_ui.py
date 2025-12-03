@@ -47,15 +47,37 @@ def main():
         help="Log raw GD32 status packets to file for debugging"
     )
 
+    # SLAM/Odometry arguments
+    parser.add_argument(
+        "--slam-host",
+        default="localhost",
+        help="dhruva-slam-node hostname (default: localhost)"
+    )
+    parser.add_argument(
+        "--slam-port",
+        type=int,
+        default=5557,
+        help="dhruva-slam-node TCP port (default: 5557)"
+    )
+    parser.add_argument(
+        "--no-slam",
+        action="store_true",
+        help="Disable SLAM/odometry connection"
+    )
+
     args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
     logger.info("Drishti - CRL-200S Robot Visualization")
-    logger.info(f"Connecting to {args.robot}:{args.port}")
+    logger.info(f"Connecting to robot at {args.robot}:{args.port}")
     if args.log_raw_packets:
         logger.info("Raw packet logging ENABLED")
+    if not args.no_slam:
+        logger.info(f"SLAM enabled: {args.slam_host}:{args.slam_port}")
+    else:
+        logger.info("SLAM disabled")
 
     # Create Qt application
     app = QApplication(sys.argv)
@@ -66,7 +88,10 @@ def main():
         window = MainWindow(
             robot_ip=args.robot,
             port=args.port,
-            log_raw_packets=args.log_raw_packets
+            log_raw_packets=args.log_raw_packets,
+            slam_host=args.slam_host,
+            slam_port=args.slam_port,
+            no_slam=args.no_slam
         )
         window.show()
 

@@ -1,17 +1,21 @@
 """
 Main window for Drishti robot visualization application.
 
-Full-screen 3D wireframe robot visualization with real-time sensor overlays
-and IMU-based orientation display.
+Full-screen 3D wireframe robot visualization with real-time sensor overlays,
+IMU-based orientation display, and SLAM map/trajectory visualization.
 """
 
 from PyQt5.QtCore import Qt, pyqtSlot, QEvent
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStatusBar)
+from PyQt5.QtWidgets import (
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QStatusBar, QTabWidget
+)
 from PyQt5.QtGui import QFont, QKeyEvent
 import logging
 
 from ui.threads.telemetry_thread import TelemetryThread
+from ui.threads.odometry_thread import OdometryThread
 from ui.widgets.robot_3d_view import Robot3DView
+from ui.widgets.slam_view import SlamView
 from ui.widgets.control_panel import ControlPanel
 
 logger = logging.getLogger(__name__)
@@ -20,13 +24,18 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     """Main application window with full-screen robot diagram."""
 
-    def __init__(self, robot_ip="192.168.68.101", port=5555, log_raw_packets=False):
+    def __init__(self, robot_ip="192.168.68.101", port=5555, log_raw_packets=False,
+                 slam_host=None, slam_port=5557, no_slam=False):
         super().__init__()
 
         self.robot_ip = robot_ip
         self.port = port
         self.log_raw_packets = log_raw_packets
+        self.slam_host = slam_host or "localhost"
+        self.slam_port = slam_port
+        self.slam_enabled = not no_slam
         self.telemetry_thread = None
+        self.odometry_thread = None
         self.lidar_enabled = False  # Lidar starts disabled
         self.side_brush_enabled = False
         self.main_brush_enabled = False
@@ -54,14 +63,49 @@ class MainWindow(QMainWindow):
         title_bar = self._create_title_bar()
         main_layout.addWidget(title_bar)
 
-        # Content area: robot diagram (80%) + control panel (20%)
+        # Content area: tab widget (left) + control panel (right)
         content_layout = QHBoxLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
 
-        # 3D robot view (left side, takes remaining space)
+        # Tab widget for different views
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: none;
+                background-color: #1a1a1a;
+            }
+            QTabBar::tab {
+                background-color: #333;
+                color: #aaa;
+                padding: 8px 20px;
+                margin-right: 2px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background-color: #1a1a1a;
+                color: #fff;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #444;
+            }
+        """)
+
+        # 3D robot view (Tab 1)
         self.robot_3d_view = Robot3DView()
-        content_layout.addWidget(self.robot_3d_view, 1)  # Stretch factor 1 (expands)
+        self.tab_widget.addTab(self.robot_3d_view, "Robot View")
+
+        # SLAM view (Tab 2)
+        self.slam_view = SlamView()
+        self.slam_view.velocity_command.connect(self._on_slam_velocity)
+        self.slam_view.slam_command.connect(self._on_slam_command)
+        self.tab_widget.addTab(self.slam_view, "SLAM")
+
+        # Handle tab changes to show/hide control panel
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
+        content_layout.addWidget(self.tab_widget, 1)  # Stretch factor 1 (expands)
 
         # Control panel (right side, fixed width) - dark theme
         self.control_panel = ControlPanel()
@@ -85,6 +129,10 @@ class MainWindow(QMainWindow):
 
         # Connect to robot
         self._start_telemetry()
+
+        # Connect to SLAM daemon (optional)
+        if self.slam_enabled:
+            self._start_odometry()
 
     def _create_title_bar(self):
         """Create application title bar."""
@@ -119,6 +167,108 @@ class MainWindow(QMainWindow):
             self.connection_status_label.setText("Connection Failed")
             self.connection_status_label.setStyleSheet("color: red; font-weight: bold;")
             self.status_bar.showMessage(f"Error: {e}")
+
+    def _start_odometry(self):
+        """Start odometry thread to receive pose data from dhruva-slam-node."""
+        try:
+            logger.info(f"Connecting to SLAM at {self.slam_host}:{self.slam_port}")
+
+            # Create and start odometry thread
+            self.odometry_thread = OdometryThread(
+                self.slam_host, self.slam_port
+            )
+            self.odometry_thread.pose_received.connect(self._on_pose_data)
+            self.odometry_thread.diagnostics_received.connect(self._on_diagnostics_data)
+            self.odometry_thread.connection_status.connect(self._on_slam_connection_status)
+
+            # Connect SLAM signals to SlamView
+            self.odometry_thread.slam_status_received.connect(self.slam_view.update_status)
+            self.odometry_thread.slam_map_received.connect(self.slam_view.update_map)
+            self.odometry_thread.slam_scan_received.connect(self.slam_view.update_scan)
+            self.odometry_thread.slam_diagnostics_received.connect(self.slam_view.update_diagnostics)
+
+            self.odometry_thread.start()
+
+        except Exception as e:
+            logger.error(f"Failed to start odometry: {e}")
+            self.status_bar.showMessage(f"SLAM Error: {e}", 3000)
+
+    @pyqtSlot(dict)
+    def _on_pose_data(self, pose: dict):
+        """Handle pose data from odometry thread."""
+        x = pose.get('x', 0.0)
+        y = pose.get('y', 0.0)
+        theta = pose.get('theta', 0.0)
+        # Update SLAM view with pose for trajectory
+        self.slam_view.update_pose(x, y, theta)
+
+    @pyqtSlot(dict)
+    def _on_diagnostics_data(self, diagnostics: dict):
+        """Handle diagnostics data from odometry thread."""
+        # Diagnostics are no longer shown in SLAM view
+        pass
+
+    @pyqtSlot(dict)
+    def _on_slam_velocity(self, velocity: dict):
+        """Handle velocity command from SLAM view (go-to-point controller)."""
+        linear = velocity.get('linear', 0.0)
+        angular = velocity.get('angular', 0.0)
+        command = {
+            "type": "ComponentControl",
+            "id": "drive",
+            "action": {
+                "type": "Configure",
+                "config": {
+                    "linear": {"F32": linear},
+                    "angular": {"F32": angular}
+                }
+            }
+        }
+        self._send_command(command)
+        self.control_panel.set_velocity(linear, angular)
+        logger.debug(f"SLAM velocity: linear={linear:.2f}, angular={angular:.2f}")
+
+    @pyqtSlot(dict)
+    def _on_slam_command(self, command: dict):
+        """Handle SLAM command from SlamView (mode change, reset, etc.)."""
+        # SLAM commands go to dhruva-slam-node, not SangamIO
+        # TODO: Implement sending commands to dhruva-slam-node when supported
+        cmd_type = command.get('command', '')
+        if cmd_type == 'set_mode':
+            mode = command.get('mode', 'Idle')
+            logger.info(f"SLAM mode change requested: {mode}")
+            self.status_bar.showMessage(f"SLAM mode: {mode}", 2000)
+        elif cmd_type == 'reset':
+            logger.info("SLAM reset requested")
+            self.status_bar.showMessage("SLAM reset requested", 2000)
+        elif cmd_type == 'reset_pose':
+            x = command.get('x', 0)
+            y = command.get('y', 0)
+            theta = command.get('theta', 0)
+            logger.info(f"SLAM pose reset requested: ({x:.2f}, {y:.2f}, {theta:.2f})")
+            self.status_bar.showMessage("SLAM pose reset requested", 2000)
+        elif cmd_type == 'save_map':
+            path = command.get('path', '')
+            logger.info(f"SLAM save map requested: {path}")
+            self.status_bar.showMessage(f"SLAM save map: {path}", 2000)
+
+    @pyqtSlot(bool, str)
+    def _on_slam_connection_status(self, connected: bool, message: str):
+        """Handle SLAM connection status changes."""
+        if connected:
+            logger.info(f"SLAM connected: {message}")
+        else:
+            logger.warning(f"SLAM disconnected: {message}")
+
+    @pyqtSlot(int)
+    def _on_tab_changed(self, index: int):
+        """Handle tab change to show/hide control panel."""
+        # Tab 0 = Robot View (show control panel)
+        # Tab 1 = SLAM (hide control panel - it has its own status panel)
+        if index == 0:
+            self.control_panel.show()
+        else:
+            self.control_panel.hide()
 
     @pyqtSlot(dict)
     def _on_sensor_data(self, data: dict):
@@ -416,4 +566,6 @@ class MainWindow(QMainWindow):
         """Handle window close event."""
         if self.telemetry_thread:
             self.telemetry_thread.stop()
+        if self.odometry_thread:
+            self.odometry_thread.stop()
         event.accept()
