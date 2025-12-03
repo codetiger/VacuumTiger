@@ -61,7 +61,6 @@ mod heartbeat;
 pub mod packet;
 pub mod protocol;
 mod reader;
-mod ring_buffer;
 mod state;
 
 // Public re-exports
@@ -101,6 +100,11 @@ impl GD32Driver {
             .timeout(Duration::from_millis(SERIAL_READ_TIMEOUT_MS))
             .open()
             .map_err(Error::Serial)?;
+
+        // Flush any stale data in the serial buffer to ensure clean packet sync
+        if let Err(e) = port.clear(serialport::ClearBuffer::Input) {
+            log::warn!("Failed to clear serial input buffer: {}", e);
+        }
 
         Ok(Self {
             port: Arc::new(Mutex::new(port)),

@@ -55,9 +55,7 @@ pub const SERIAL_READ_TIMEOUT_MS: u64 = 50;
 pub const INIT_RETRY_DELAY_MS: u64 = 100;
 
 // Packet sizes
-pub const MIN_PACKET_SIZE: usize = 6; // SYNC(2) + LEN(1) + CMD(1) + CRC(2)
 pub const STATUS_PAYLOAD_MIN_SIZE: usize = 80;
-pub const MAX_BUFFER_SIZE: usize = 1024;
 
 // Sensor data offsets in status packet
 pub const OFFSET_CHARGING_FLAGS: usize = 0x07;

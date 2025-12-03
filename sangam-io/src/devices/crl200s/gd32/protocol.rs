@@ -3,16 +3,13 @@
 //! Packet format: [0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_H] [CRC_L]
 //!
 //! This module provides:
-//! - `PacketReader`: Ring-buffer based parser with O(1) advance (no drain!)
+//! - `PacketReader`: Simple Vec-based parser for reliable packet parsing
 //! - `RxPacket`: Zero-allocation parsed packet with fixed-size payload buffer
 //!
 //! For sending commands, use `TxPacket` from `packet.rs`.
 
 use super::packet::checksum;
-use super::ring_buffer::RingBuffer;
-use crate::devices::crl200s::constants::{
-    CMD_INITIALIZE, MAX_BUFFER_SIZE, MIN_PACKET_SIZE, SYNC_BYTE_1, SYNC_BYTE_2,
-};
+use crate::devices::crl200s::constants::{CMD_INITIALIZE, SYNC_BYTE_1, SYNC_BYTE_2};
 use crate::error::{Error, Result};
 use std::io::Read;
 
@@ -72,14 +69,12 @@ impl Default for RxPacket {
     }
 }
 
-/// Ring-buffer based packet reader with O(1) advance
+/// Simple Vec-based packet reader for reliable parsing
 ///
-/// Uses `RingBuffer` instead of `Vec<u8>` to eliminate O(n) `drain()` operations.
-/// At 500Hz packet rate, this saves ~50KB/sec of memory shifts.
-///
-/// Returns `RxPacket` with fixed-size payload buffer (no heap allocation).
+/// Uses a plain Vec<u8> with drain() for simplicity and correctness.
+/// At 500Hz with ~100 byte packets, the O(n) drain is negligible.
 pub struct PacketReader {
-    buffer: RingBuffer<1024>,
+    buffer: Vec<u8>,
     /// Reusable packet buffer - avoids allocation on every read
     packet: RxPacket,
 }
@@ -87,7 +82,7 @@ pub struct PacketReader {
 impl PacketReader {
     pub fn new() -> Self {
         Self {
-            buffer: RingBuffer::new(),
+            buffer: Vec::with_capacity(1024),
             packet: RxPacket::new(),
         }
     }
@@ -102,7 +97,7 @@ impl PacketReader {
         match port.read(&mut temp_buf) {
             Ok(0) => return Ok(None),
             Ok(n) => {
-                self.buffer.extend(&temp_buf[..n]);
+                self.buffer.extend_from_slice(&temp_buf[..n]);
             }
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
                 return Ok(None);
@@ -117,101 +112,103 @@ impl PacketReader {
         self.try_parse_packet()
     }
 
+    /// Find sync pattern FA FB in buffer
+    fn find_sync(&self) -> Option<usize> {
+        self.buffer
+            .windows(2)
+            .position(|w| w[0] == SYNC_BYTE_1 && w[1] == SYNC_BYTE_2)
+    }
+
     fn try_parse_packet(&mut self) -> Result<Option<&RxPacket>> {
-        if self.buffer.len() < MIN_PACKET_SIZE {
-            return Ok(None);
-        }
-
-        // Find sync bytes (0xFA 0xFB)
-        let Some(sync_idx) = self.buffer.find_pattern_2(SYNC_BYTE_1, SYNC_BYTE_2) else {
-            // No sync found, keep tail for partial match detection
-            if self.buffer.len() > MAX_BUFFER_SIZE {
-                // Keep last byte in case it's 0xFA
-                self.buffer.advance(self.buffer.len() - 1);
+        loop {
+            // Step 1: Need at least 3 bytes to read FA FB [LEN]
+            if self.buffer.len() < 3 {
+                return Ok(None);
             }
-            return Ok(None);
-        };
 
-        // Skip bytes before sync - O(1) instead of O(n) drain!
-        if sync_idx > 0 {
-            self.buffer.advance(sync_idx);
-        }
+            // Step 2: Find sync bytes (0xFA 0xFB)
+            let Some(sync_idx) = self.find_sync() else {
+                // No sync found, keep only last byte (could be start of FA)
+                let keep = if self.buffer.last() == Some(&SYNC_BYTE_1) {
+                    1
+                } else {
+                    0
+                };
+                self.buffer.drain(..self.buffer.len() - keep);
+                return Ok(None);
+            };
 
-        // Check if we have length byte
-        if self.buffer.len() < 3 {
-            return Ok(None);
-        }
+            // Remove bytes before sync
+            if sync_idx > 0 {
+                self.buffer.drain(..sync_idx);
+            }
 
-        let Some(len) = self.buffer.get(2) else {
-            return Ok(None);
-        };
-        let total_len = 3 + len as usize; // SYNC(2) + LEN(1) + DATA(len)
+            // Need at least 3 bytes for header (FA FB LEN)
+            if self.buffer.len() < 3 {
+                return Ok(None);
+            }
 
-        // Wait for complete packet
-        if self.buffer.len() < total_len {
-            return Ok(None);
-        }
+            // Step 3: Read length and wait for complete packet
+            let len = self.buffer[2];
+            let total_len = 3 + len as usize; // SYNC(2) + LEN(1) + DATA(len)
 
-        // Extract cmd
-        let cmd = self.buffer.get(3).unwrap();
+            // Wait until buffer has complete packet
+            if self.buffer.len() < total_len {
+                return Ok(None);
+            }
 
-        // Verify checksum (except for CMD=0x08)
-        if cmd != CMD_INITIALIZE && !self.verify_checksum(total_len) {
-            log::warn!("Checksum mismatch for CMD=0x{:02X}", cmd);
-            // Only advance past first sync byte - don't trust the corrupted len!
-            // This allows find_pattern_2 to resync on the next valid packet.
-            self.buffer.advance(1);
-            return Ok(None);
-        }
+            // Step 4: Extract packet data
+            // Packet structure: [FA FB] [LEN] [CMD] [PAYLOAD...] [CRC_H] [CRC_L]
+            // LEN = CMD(1) + PAYLOAD(n) + CRC(2), so payload_len = LEN - 3
+            let cmd = self.buffer[3];
+            let payload_len = (len as usize).saturating_sub(3); // LEN - CMD(1) - CRC(2)
 
-        // Extract payload into fixed buffer (no heap allocation!)
-        // Payload starts AFTER CMD byte - offsets in constants.rs are relative to payload start
-        let payload_len = total_len.saturating_sub(6); // header(3) + cmd(1) + crc(2)
-        if payload_len > 0 {
-            // Start at index 4 (after SYNC(2) + LEN(1) + CMD(1))
-            let slice = self.buffer.get_slice(4, payload_len);
-            if let Some(data) = slice {
-                self.packet.set(cmd, data);
+            // Step 5: Verify checksum (except for CMD=0x08 which has no CRC)
+            let crc_valid = if cmd == CMD_INITIALIZE {
+                true
             } else {
-                self.packet.set(cmd, &[]);
+                self.verify_checksum(total_len)
+            };
+
+            if crc_valid {
+                // Extract payload before draining
+                if payload_len > 0 && payload_len <= MAX_PAYLOAD_SIZE {
+                    self.packet.set(cmd, &self.buffer[4..4 + payload_len]);
+                } else {
+                    self.packet.set(cmd, &[]);
+                }
+
+                // Remove valid packet from buffer
+                self.buffer.drain(..total_len);
+                return Ok(Some(&self.packet));
+            } else {
+                // CRC failed - this was likely a FALSE sync (FA FB in payload data)
+                // Remove just the false FA byte and continue loop to find real sync
+                self.buffer.drain(..1);
+                // Continue loop to try again with remaining data
             }
-        } else {
-            self.packet.set(cmd, &[]);
         }
-
-        // Consume packet - O(1) instead of O(n) drain!
-        self.buffer.advance(total_len);
-
-        Ok(Some(&self.packet))
     }
 
     /// Verify checksum of packet in buffer
-    fn verify_checksum(&mut self, total_len: usize) -> bool {
+    fn verify_checksum(&self, total_len: usize) -> bool {
         // Get received CRC (big-endian, at end of packet)
-        let crc_high = self.buffer.get(total_len - 2).unwrap_or(0);
-        let crc_low = self.buffer.get(total_len - 1).unwrap_or(0);
+        let crc_high = self.buffer[total_len - 2];
+        let crc_low = self.buffer[total_len - 1];
         let received_crc = ((crc_high as u16) << 8) | (crc_low as u16);
 
         // Calculate checksum over CMD + PAYLOAD (bytes 3 to total_len-2)
-        let data_len = total_len - 5; // Exclude sync(2), len(1), crc(2)
-        let data_slice = self.buffer.get_slice(3, data_len);
-
-        let Some(data) = data_slice else {
-            log::warn!(
-                "Failed to get data slice for checksum: total_len={}, data_len={}",
-                total_len,
-                data_len
-            );
-            return false;
-        };
-
-        // Use shared checksum from packet.rs
+        // This is: CMD + PAYLOAD, excluding SYNC(2), LEN(1), and CRC(2)
+        let data = &self.buffer[3..total_len - 2];
         let calculated_crc = checksum(data);
 
         if calculated_crc != received_crc {
-            log::debug!(
-                "CRC mismatch: received=0x{:04X}, calculated=0x{:04X}, total_len={}, data_len={}, first_bytes={:02X?}",
-                received_crc, calculated_crc, total_len, data_len, &data[..data_len.min(8)]
+            log::warn!(
+                "CRC mismatch: received=0x{:04X}, calculated=0x{:04X}, len={}, packet={:02X?}",
+                received_crc,
+                calculated_crc,
+                total_len,
+                &self.buffer[..total_len]
             );
         }
 
