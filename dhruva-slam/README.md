@@ -161,53 +161,27 @@ max_range = 8.0               # Lidar max range (m)
 
 ## TCP Output Protocol
 
-The node publishes data on the configured port (default 5557) using length-prefixed JSON:
+The node publishes data on the configured port (default 5557) using length-prefixed Protobuf:
 
 ```
 ┌──────────────────┬─────────────────────┐
-│ Length (4 bytes) │ JSON Payload        │
-│ Big-endian u32   │                     │
+│ Length (4 bytes) │ Protobuf Payload    │
+│ Big-endian u32   │ (binary)            │
 └──────────────────┴─────────────────────┘
 ```
+
+See `proto/dhruva.proto` for the complete schema.
 
 ### Published Topics
 
 | Topic | Rate | Description |
 |-------|------|-------------|
-| `odometry` | 50Hz | Current pose (x, y, theta) |
+| `odometry/pose` | 50Hz | Current pose (x, y, theta) |
+| `odometry/diagnostics` | 1Hz | Odometry diagnostics |
 | `slam/status` | 5Hz | SLAM status (mode, keyframes, etc.) |
 | `slam/map` | 1Hz | Occupancy grid map |
 | `slam/scan` | 5Hz | Processed lidar scan |
 | `slam/diagnostics` | 5Hz | Timing and statistics |
-
-### Example Odometry Message
-
-```json
-{
-  "topic": "odometry",
-  "timestamp_us": 1701612345000000,
-  "pose": {
-    "x": 1.234,
-    "y": 0.567,
-    "theta": 0.123
-  }
-}
-```
-
-### Example SLAM Status Message
-
-```json
-{
-  "topic": "slam/status",
-  "timestamp_us": 1701612345000000,
-  "mode": "Mapping",
-  "num_scans": 1234,
-  "num_keyframes": 45,
-  "num_submaps": 3,
-  "last_match_score": 0.95,
-  "is_lost": false
-}
-```
 
 ## Module Structure
 
@@ -326,9 +300,9 @@ Benchmarked operations:
 
 | Crate | Purpose |
 |-------|---------|
-| `serde` | Serialization framework |
-| `serde_json` | JSON wire format |
-| `postcard` | Binary wire format |
+| `prost` | Protobuf serialization |
+| `serde` | Configuration serialization |
+| `postcard` | Bag file format (internal) |
 | `kiddo` | K-d tree for nearest neighbor |
 | `thiserror` | Error handling |
 | `log` / `env_logger` | Logging |

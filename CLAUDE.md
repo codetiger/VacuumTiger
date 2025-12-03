@@ -43,7 +43,7 @@ VacuumTiger is an open-source robotic vacuum firmware project for the CRL-200S h
 2. **Concrete Over Abstract**: Direct implementations instead of trait objects (except LidarDriver)
 3. **Lock-Free Streaming**: Uses lock-free queues for sensor data flow
 4. **Real-Time Guarantees**: OS threads for heartbeat (20ms) instead of async
-5. **TCP Protocol**: JSON over TCP for all communication (configurable wire format)
+5. **TCP Protocol**: Protobuf over TCP for all communication
 
 ## Build and Deployment
 
@@ -107,33 +107,18 @@ sshpass -p "vacuum@123" ssh root@vacuum "RUST_LOG=info /usr/sbin/sangamio"
 
 ### Message Format
 
-All messages use length-prefixed framing with JSON payloads:
+All messages use length-prefixed framing with Protobuf payloads:
 
 ```
 +------------------+------------------+
-| Length (4 bytes) | JSON Message     |
-| (big-endian)     |                  |
+| Length (4 bytes) | Protobuf Message |
+| (big-endian)     | (binary)         |
 +------------------+------------------+
 ```
 
-### Message Structure
+### Proto Schema
 
-```json
-{
-    "topic": "sensors/sensor_status",
-    "payload": {
-        "type": "SensorGroup",
-        "group_id": "sensor_status",
-        "timestamp_us": 1234567890,
-        "values": {
-            "is_charging": {"Bool": false},
-            "wheel_left": {"U16": 12345},
-            "bumper_left": {"Bool": false},
-            ...
-        }
-    }
-}
-```
+See `sangam-io/proto/sangamio.proto` for SangamIO messages (sensors, commands) and `dhruva-slam/proto/dhruva.proto` for SLAM output messages (odometry, map, scan).
 
 ### Topics
 
@@ -150,7 +135,7 @@ All messages use length-prefixed framing with JSON payloads:
 ```python
 import socket
 import struct
-import json
+from proto import sangamio_pb2
 
 # Connect to daemon
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -161,36 +146,32 @@ while True:
     # Read length prefix
     length = struct.unpack('>I', sock.recv(4))[0]
 
-    # Read JSON message
+    # Read Protobuf message
     data = sock.recv(length)
-    msg = json.loads(data)
+    msg = sangamio_pb2.Message()
+    msg.ParseFromString(data)
 
-    topic = msg['topic']
-    if topic == 'sensors/sensor_status':
-        values = msg['payload']['values']
-        charging = values['is_charging']['Bool']
+    if msg.topic == 'sensors/sensor_status':
+        sg = msg.sensor_group
+        charging = sg.values['is_charging'].bool_val
         print(f"Charging: {charging}")
 ```
 
 ## Configuration
 
-Edit `hardware.json`:
+Edit `sangamio.toml`:
 
-```json
-{
-  "device": {
-    "type": "crl200s",
-    "name": "CRL-200S Vacuum Robot",
-    "hardware": {
-      "gd32_port": "/dev/ttyS3",
-      "lidar_port": "/dev/ttyS1"
-    }
-  },
-  "network": {
-    "tcp_pub_address": "0.0.0.0:5555",
-    "tcp_cmd_address": "0.0.0.0:5556"
-  }
-}
+```toml
+[device]
+type = "crl200s"
+name = "CRL-200S Vacuum Robot"
+
+[device.hardware]
+gd32_port = "/dev/ttyS3"
+lidar_port = "/dev/ttyS1"
+
+[network]
+bind_address = "0.0.0.0:5555"
 ```
 
 ## Module Organization
@@ -225,11 +206,12 @@ VacuumTiger/
 │   │   │           └── protocol.rs   # Packet parsing
 │   │   └── streaming/        # TCP communication
 │   │       ├── mod.rs        # Re-exports
-│   │       ├── messages.rs   # Protocol definitions
-│   │       ├── wire.rs       # Serialization layer
+│   │       ├── wire.rs       # Protobuf serialization
 │   │       ├── tcp_publisher.rs # Outbound stream
 │   │       └── tcp_receiver.rs  # Command handler
-│   ├── hardware.json         # Configuration file
+│   ├── proto/                # Protobuf schema
+│   │   └── sangamio.proto    # Message definitions
+│   ├── sangamio.toml         # Configuration file
 │   ├── COMMANDS.md           # GD32 command reference
 │   └── SENSORSTATUS.md       # Sensor packet documentation
 │

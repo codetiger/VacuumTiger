@@ -16,16 +16,10 @@ TCP client that connects to the SangamIO daemon running on the robot.
 ### Connection
 
 ```rust
-use dhruva_slam::io::sangam_client::{SangamClient, WireFormat};
+use dhruva_slam::io::sangam_client::SangamClient;
 
-// Connect with default JSON format
+// Connect to SangamIO (Protobuf wire format)
 let mut client = SangamClient::connect("192.168.68.101:5555")?;
-
-// Or with binary Postcard format
-let mut client = SangamClient::connect_with_format(
-    "192.168.68.101:5555",
-    WireFormat::Postcard,
-)?;
 
 // Set read timeout
 client.set_timeout(Some(Duration::from_millis(500)));
@@ -74,21 +68,14 @@ pub struct Payload {
 }
 ```
 
-### Wire Formats
-
-| Format | Description | Use Case |
-|--------|-------------|----------|
-| `Json` | Human-readable JSON | Debugging, development |
-| `Postcard` | Compact binary | Production, bandwidth-limited |
-
 ### Protocol
 
-Length-prefixed framing over TCP:
+Length-prefixed Protobuf framing over TCP:
 
 ```
 ┌──────────────────┬─────────────────────┐
-│ Length (4 bytes) │ Payload             │
-│ Big-endian u32   │ JSON or Postcard    │
+│ Length (4 bytes) │ Protobuf Payload    │
+│ Big-endian u32   │ (binary)            │
 └──────────────────┴─────────────────────┘
 ```
 

@@ -2,11 +2,11 @@
 
 **Open-source firmware for hackable vacuum robots**
 
-VacuumTiger is a modular, configuration-driven firmware stack that makes it easy to build autonomous vacuum robots. Define your sensors and actuators in JSON, and the system handles everything else—from real-time control to network streaming.
+VacuumTiger is a modular, configuration-driven firmware stack that makes it easy to build autonomous vacuum robots. Define your sensors and actuators in TOML, and the system handles everything else—from real-time control to network streaming.
 
 ## Why VacuumTiger?
 
-- **Configurable**: Define sensors, actuators, and hardware in a single JSON file
+- **Configurable**: Define sensors, actuators, and hardware in a single TOML file
 - **Extensible**: Add new robot platforms by implementing one trait
 - **Generic Protocol**: TCP streaming works with any SLAM application
 - **Real-time**: 500Hz sensor updates, <25ms command latency
@@ -17,7 +17,7 @@ VacuumTiger is a modular, configuration-driven firmware stack that makes it easy
 ```
 ┌─────────────────────────────────────────────────┐
 │          SLAM Application (Planned)             │
-│   Reads hardware.json to discover capabilities  │
+│   Reads sangamio.toml to discover capabilities  │
 └─────────────┬───────────────────────────────────┘
               │ TCP Protocol (Generic)
 ┌─────────────▼───────────────────────────────────┐
@@ -35,41 +35,20 @@ VacuumTiger is a modular, configuration-driven firmware stack that makes it easy
 
 ## Configuration-Driven Design
 
-Everything is defined in `hardware.json`:
+Everything is defined in `sangamio.toml`:
 
-```json
-{
-  "device": {
-    "type": "crl200s",
-    "name": "CRL-200S Vacuum Robot",
-    "hardware": {
-      "gd32_port": "/dev/ttyS3",
-      "lidar_port": "/dev/ttyS1",
-      "heartbeat_interval_ms": 20
-    },
-    "sensor_groups": [
-      {
-        "id": "sensor_status",
-        "sensors": [
-          { "id": "wheel_left", "type": "U16" },
-          { "id": "wheel_right", "type": "U16" },
-          { "id": "bumper_left", "type": "Bool" },
-          { "id": "cliff_left_front", "type": "Bool" }
-        ]
-      },
-      {
-        "id": "lidar",
-        "sensors": [
-          { "id": "scan", "type": "PointCloud2D" }
-        ]
-      }
-    ]
-  },
-  "network": {
-    "bind_address": "0.0.0.0:5555",
-    "wire_format": "json"
-  }
-}
+```toml
+[device]
+type = "crl200s"
+name = "CRL-200S Vacuum Robot"
+
+[device.hardware]
+gd32_port = "/dev/ttyS3"
+lidar_port = "/dev/ttyS1"
+heartbeat_interval_ms = 20
+
+[network]
+bind_address = "0.0.0.0:5555"
 ```
 
 **SLAM applications read this same config** to discover what sensors and actuators are available, enabling truly portable navigation algorithms.
@@ -81,48 +60,10 @@ The protocol is robot-agnostic. Any client that speaks the wire format can contr
 ### Message Format
 
 ```
-[4-byte length (big-endian)][JSON payload]
+[4-byte length (big-endian)][Protobuf payload]
 ```
 
-### Sensor Streaming (Daemon → Client)
-
-```json
-{
-  "topic": "sensors/navigation",
-  "payload": {
-    "type": "SensorGroup",
-    "group_id": "navigation",
-    "timestamp_us": 1700000000000,
-    "values": {
-      "wheel_left": { "U16": 12345 },
-      "wheel_right": { "U16": 12340 },
-      "cliff_left": { "Bool": false },
-      "bumper_front": { "Bool": false }
-    }
-  }
-}
-```
-
-### Commands (Client → Daemon)
-
-All commands use the unified `ComponentControl` pattern:
-
-```json
-{
-  "topic": "command",
-  "payload": {
-    "type": "Command",
-    "command": {
-      "type": "ComponentControl",
-      "id": "drive",
-      "action": {
-        "type": "Configure",
-        "config": { "linear": {"F32": 0.2}, "angular": {"F32": 0.0} }
-      }
-    }
-  }
-}
-```
+All communication uses Protocol Buffers for efficient binary serialization. See `sangam-io/proto/sangamio.proto` and `dhruva-slam/proto/dhruva.proto` for schema definitions.
 
 ### Component Actions
 
@@ -150,29 +91,16 @@ VacuumTiger is designed to support any robot hardware. Here's how to add a new p
 
 ### 1. Create Configuration
 
-```json
-{
-  "device": {
-    "type": "my_robot",
-    "hardware": {
-      "motor_port": "/dev/ttyUSB0",
-      "heartbeat_interval_ms": 20
-    },
-    "sensor_groups": [
-      {
-        "id": "odometry",
-        "sensors": [
-          { "id": "left_encoder", "type": "I32" },
-          { "id": "right_encoder", "type": "I32" }
-        ]
-      }
-    ]
-  },
-  "network": {
-    "bind_address": "0.0.0.0:5555",
-    "wire_format": "json"
-  }
-}
+```toml
+[device]
+type = "my_robot"
+
+[device.hardware]
+motor_port = "/dev/ttyUSB0"
+heartbeat_interval_ms = 20
+
+[network]
+bind_address = "0.0.0.0:5555"
 ```
 
 ### 2. Implement DeviceDriver Trait
@@ -226,8 +154,9 @@ VacuumTiger/
 │   │   ├── core/           # DeviceDriver trait, SensorValue types
 │   │   ├── devices/        # Robot-specific implementations
 │   │   │   └── crl200s/    # CRL-200S driver (GD32 + Delta-2D)
-│   │   └── streaming/      # TCP protocol, wire format
-│   ├── hardware.json       # Robot configuration
+│   │   └── streaming/      # TCP protocol, Protobuf wire format
+│   ├── proto/              # Protobuf schema definitions
+│   ├── sangamio.toml       # Robot configuration
 │   ├── COMMANDS.md         # GD32 command reference
 │   └── SENSORSTATUS.md     # Sensor packet documentation
 ├── drishti/                # Diagnostic visualization (Python)
@@ -277,7 +206,7 @@ python drishti_ui.py --robot 192.168.68.101
 |-----------|--------|-------|
 | SangamIO Daemon | ✅ Complete | Config-driven, ~350KB binary |
 | CRL-200S Driver | ✅ Verified | GD32 motor controller + Delta-2D lidar |
-| TCP Protocol | ✅ Complete | Generic JSON streaming |
+| TCP Protocol | ✅ Complete | Protobuf binary streaming |
 | Drishti UI | ✅ Complete | Real-time sensor visualization |
 | SLAM Application | 📋 Planned | Navigation and mapping |
 | Additional Platforms | 📋 Planned | Roomba, Turtlebot, etc. |
