@@ -95,10 +95,16 @@ fn handle_speed_component(
             send_packet(port, pkt)
         }
         ComponentAction::Configure { ref config } => {
-            if let Some(SensorValue::U8(speed)) = config.get("speed") {
+            // Handle both U8 and U32 speed values (protobuf sends U8 as U32)
+            let speed = match config.get("speed") {
+                Some(SensorValue::U8(s)) => Some(*s),
+                Some(SensorValue::U32(s)) => Some(*s as u8),
+                _ => None,
+            };
+            if let Some(speed) = speed {
                 log::info!("{} speed={}", name, speed);
-                state_field.store(*speed, Ordering::Relaxed);
-                set_fn(pkt, *speed);
+                state_field.store(speed, Ordering::Relaxed);
+                set_fn(pkt, speed);
                 send_packet(port, pkt)?;
             }
             Ok(())
@@ -298,11 +304,13 @@ fn handle_drive(
     match action {
         ComponentAction::Enable { ref config } => {
             // Enable motor with mode (default 0x02 nav mode)
+            // Handle both U8 and U32 (protobuf sends U8 as U32)
             let mode = config
                 .as_ref()
                 .and_then(|c| c.get("mode"))
                 .and_then(|v| match v {
                     SensorValue::U8(m) => Some(*m),
+                    SensorValue::U32(m) => Some(*m as u8),
                     _ => None,
                 })
                 .unwrap_or(0x02);
@@ -387,9 +395,15 @@ fn handle_led(
 ) -> Result<()> {
     match action {
         ComponentAction::Configure { ref config } => {
-            if let Some(SensorValue::U8(state)) = config.get("state") {
+            // Handle both U8 and U32 (protobuf sends U8 as U32)
+            let state = match config.get("state") {
+                Some(SensorValue::U8(s)) => Some(*s),
+                Some(SensorValue::U32(s)) => Some(*s as u8),
+                _ => None,
+            };
+            if let Some(state) = state {
                 log::info!("LED state={}", state);
-                pkt.set_led(*state);
+                pkt.set_led(state);
                 send_packet(port, pkt)?;
             }
             Ok(())
@@ -411,11 +425,13 @@ fn handle_lidar(
     match action {
         ComponentAction::Enable { ref config } => {
             // Get PWM from config or use default (60%)
+            // Handle both U8 and U32 (protobuf sends U8 as U32)
             let pwm = config
                 .as_ref()
                 .and_then(|c| c.get("pwm"))
                 .and_then(|v| match v {
                     SensorValue::U8(p) => Some(*p),
+                    SensorValue::U32(p) => Some(*p as u8),
                     _ => None,
                 })
                 .unwrap_or(60);
@@ -450,10 +466,16 @@ fn handle_lidar(
             send_packet(port, pkt)
         }
         ComponentAction::Configure { ref config } => {
-            if let Some(SensorValue::U8(pwm)) = config.get("pwm") {
+            // Handle both U8 and U32 (protobuf sends U8 as U32)
+            let pwm = match config.get("pwm") {
+                Some(SensorValue::U8(p)) => Some(*p),
+                Some(SensorValue::U32(p)) => Some(*p as u8),
+                _ => None,
+            };
+            if let Some(pwm) = pwm {
                 log::info!("Lidar PWM: {}%", pwm);
-                component_state.lidar_pwm.store(*pwm, Ordering::Relaxed);
-                pkt.set_lidar_pwm(*pwm);
+                component_state.lidar_pwm.store(pwm, Ordering::Relaxed);
+                pkt.set_lidar_pwm(pwm);
                 send_packet(port, pkt)?;
             }
             Ok(())
@@ -535,9 +557,15 @@ fn handle_cliff_ir(
             send_packet(port, pkt)
         }
         ComponentAction::Configure { ref config } => {
-            if let Some(SensorValue::U8(dir)) = config.get("direction") {
+            // Handle both U8 and U32 (protobuf sends U8 as U32)
+            let dir = match config.get("direction") {
+                Some(SensorValue::U8(d)) => Some(*d),
+                Some(SensorValue::U32(d)) => Some(*d as u8),
+                _ => None,
+            };
+            if let Some(dir) = dir {
                 log::info!("Cliff IR direction (0x79): {}", dir);
-                pkt.set_cliff_ir_direction(*dir);
+                pkt.set_cliff_ir_direction(dir);
                 send_packet(port, pkt)?;
             }
             Ok(())

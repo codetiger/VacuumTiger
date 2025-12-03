@@ -523,15 +523,20 @@ class SlamView(QWidget):
         height = map_data.get('height', 0)
         origin_x = map_data.get('origin_x', 0.0)
         origin_y = map_data.get('origin_y', 0.0)
-        cells_b64 = map_data.get('cells', '')
+        cells = map_data.get('cells', b'')
 
-        if not cells_b64 or width == 0 or height == 0:
+        if not cells or width == 0 or height == 0:
             return
 
-        # Decode cells
+        # Decode cells - handle both raw bytes (from protobuf) and base64 (legacy)
         try:
-            cells = base64.b64decode(cells_b64)
-            cells_array = np.frombuffer(cells, dtype=np.uint8).reshape((height, width))
+            if isinstance(cells, bytes):
+                # Raw bytes from protobuf
+                cells_array = np.frombuffer(cells, dtype=np.uint8).reshape((height, width))
+            else:
+                # Base64 string (legacy JSON format)
+                cells_bytes = base64.b64decode(cells)
+                cells_array = np.frombuffer(cells_bytes, dtype=np.uint8).reshape((height, width))
         except Exception as e:
             return
 
@@ -559,6 +564,10 @@ class SlamView(QWidget):
         self._map_height = height
 
         # Update image item with correct position/scale
+        # Note: pyqtgraph ImageItem maps image[row, col] to position (col, row) in local coords,
+        # then setRect maps this to world coordinates. Since cells_array[y, x] contains the
+        # cell at world (origin_x + x*res, origin_y + y*res), and rgb_image[y, x] gets color
+        # from cells_array[y, x], the mapping is: rgb_image[y, x] -> world (origin_x + x*res, origin_y + y*res)
         self._map_item.setImage(rgb_image)
         self._map_item.setRect(
             origin_x,
