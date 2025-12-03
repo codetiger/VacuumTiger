@@ -68,7 +68,7 @@ cargo build --release --target armv7-unknown-linux-musleabihf
 
 # Strip debug symbols (reduces size ~40%)
 arm-linux-gnueabihf-strip \
-  target/armv7-unknown-linux-musleabihf/release/sangamio
+  target/armv7-unknown-linux-musleabihf/release/sangam-io
 ```
 
 ## Deployment
@@ -77,7 +77,7 @@ arm-linux-gnueabihf-strip \
 
 ```bash
 # Deploy binary (device lacks sftp-server, use cat over SSH)
-cat target/armv7-unknown-linux-musleabihf/release/sangamio | \
+cat target/armv7-unknown-linux-musleabihf/release/sangam-io | \
   ssh root@vacuum "cat > /usr/sbin/sangamio && chmod +x /usr/sbin/sangamio"
 
 # Deploy configuration

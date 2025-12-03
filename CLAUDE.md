@@ -71,7 +71,7 @@ rustup target add armv7-unknown-linux-musleabihf
 cargo build --release --target armv7-unknown-linux-musleabihf
 
 # Strip debug symbols (reduces size ~40%)
-arm-linux-gnueabihf-strip target/armv7-unknown-linux-musleabihf/release/sangamio
+arm-linux-gnueabihf-strip target/armv7-unknown-linux-musleabihf/release/sangam-io
 ```
 
 ### Deployment to Robot
@@ -88,7 +88,7 @@ cd sangam-io
 cargo build --release --target armv7-unknown-linux-musleabihf
 
 # Deploy binary (device lacks sftp-server, use cat over SSH)
-cat target/armv7-unknown-linux-musleabihf/release/sangamio | \
+cat target/armv7-unknown-linux-musleabihf/release/sangam-io | \
   sshpass -p "vacuum@123" ssh root@vacuum "cat > /usr/sbin/sangamio && chmod +x /usr/sbin/sangamio"
 
 # Deploy configuration

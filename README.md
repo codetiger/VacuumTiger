@@ -254,7 +254,7 @@ cargo build --release --target armv7-unknown-linux-musleabihf
 
 ```bash
 # Copy binary to robot
-cat target/armv7-unknown-linux-musleabihf/release/sangamio | \
+cat target/armv7-unknown-linux-musleabihf/release/sangam-io | \
   ssh root@vacuum "cat > /usr/sbin/sangamio && chmod +x /usr/sbin/sangamio"
 
 # Run daemon
