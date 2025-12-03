@@ -1,0 +1,39 @@
+[package]
+name = "dhruva-slam"
+version = "0.1.0"
+edition = "2024"
+description = "Modular SLAM implementation for robotic vacuum cleaners"
+license = "MIT"
+
+[dependencies]
+base64 = "0.22"
+ctrlc = "3.4"
+env_logger = "0.11"
+kiddo = "4.2"  # K-d tree for nearest neighbor queries
+log = "0.4"
+postcard = { version = "1.0", features = ["alloc"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+toml = "0.8"
+
+[dev-dependencies]
+approx = "0.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3.14"
+
+[[bin]]
+name = "dhruva-slam-node"
+path = "src/bin/dhruva_slam_node.rs"
+
+[[bin]]
+name = "bag-record"
+path = "src/bin/bag_record.rs"
+
+[[bin]]
+name = "bag-info"
+path = "src/bin/bag_info.rs"
+
+[[bench]]
+name = "milestone1"
+harness = false

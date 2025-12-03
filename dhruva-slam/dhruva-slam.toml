@@ -1,0 +1,49 @@
+# dhruva-slam-node configuration
+#
+# This file configures the dead reckoning odometry daemon.
+
+[source]
+# SangamIO daemon address (robot IP:port)
+sangam_address = "192.168.68.101:5555"
+
+[output]
+# TCP port for visualization clients (Drishti connects here)
+bind_port = 5557
+# Output rate in Hz (decimated from 500Hz input)
+odometry_rate_hz = 50
+# SLAM status/diagnostics rate (Hz)
+slam_status_rate_hz = 5.0
+# SLAM map publishing rate (Hz)
+slam_map_rate_hz = 1.0
+
+[odometry]
+# Encoder ticks per meter of wheel travel
+# Calibrated: linear push test average = 4464 ticks/m
+ticks_per_meter = 4464.0
+
+# Distance between wheel centers in meters
+# Physical measurement: (24.8 + 21.5) / 2 = 23.15cm
+wheel_base = 0.233
+
+# Complementary filter gyro weight (0.0 to 1.0)
+# Higher values trust gyroscope more
+# 0.8 gives good balance - encoder dominates long-term, gyro smooths short-term
+alpha = 0.8
+
+# Gyroscope scale factor (raw units to rad/s)
+# CRL-200S IMU: raw units are 0.01 deg/s
+# Convert to rad/s: 0.01 × (π/180) = 0.0001745
+gyro_scale = 0.0001745
+
+# Gyroscope Z bias in raw units
+# Auto-calibrated at startup (1500 samples ~3 seconds)
+gyro_bias_z = 0.0
+
+[slam]
+# Enable SLAM processing
+enabled = true
+# Initial mode: "Mapping", "Localization", or "Idle"
+initial_mode = "Mapping"
+# Lidar range filter (meters)
+min_range = 0.15
+max_range = 8.0
