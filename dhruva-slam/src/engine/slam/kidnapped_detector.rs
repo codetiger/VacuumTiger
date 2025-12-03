@@ -30,7 +30,7 @@
 //! }
 //! ```
 
-use crate::core::types::{Pose2D, Covariance2D};
+use crate::core::types::{Covariance2D, Pose2D};
 
 /// Configuration for kidnapped robot detection.
 #[derive(Debug, Clone)]
@@ -193,7 +193,8 @@ impl KidnappedDetector {
         self.scan_count += 1;
 
         // Don't trigger during initial tracking period
-        let tracking_time = timestamp_us.saturating_sub(self.tracking_start_us.unwrap_or(timestamp_us));
+        let tracking_time =
+            timestamp_us.saturating_sub(self.tracking_start_us.unwrap_or(timestamp_us));
         if tracking_time < self.config.min_tracking_time_us {
             self.update_ema(match_score);
             return KidnappedDetection::default();
@@ -254,7 +255,8 @@ impl KidnappedDetector {
                     detection.confidence = (detection.confidence + 0.3).min(1.0);
                 } else {
                     // Large innovation alone is suspicious but not conclusive
-                    detection.confidence = (innovation / self.config.innovation_threshold - 1.0).min(0.5);
+                    detection.confidence =
+                        (innovation / self.config.innovation_threshold - 1.0).min(0.5);
                 }
             }
         }
@@ -273,12 +275,20 @@ impl KidnappedDetector {
         match (poor_matches, high_uncertainty) {
             (true, true) => {
                 // Strong indication of kidnapping
-                let confidence = 0.7 + 0.3 * (self.consecutive_poor as f32 / (self.config.consecutive_threshold as f32 * 2.0)).min(1.0);
+                let confidence = 0.7
+                    + 0.3
+                        * (self.consecutive_poor as f32
+                            / (self.config.consecutive_threshold as f32 * 2.0))
+                            .min(1.0);
                 (true, KidnappedReason::Combined, confidence)
             }
             (true, false) => {
                 // Consecutive poor matches alone
-                let confidence = 0.5 + 0.3 * (self.consecutive_poor as f32 / (self.config.consecutive_threshold as f32 * 2.0)).min(1.0);
+                let confidence = 0.5
+                    + 0.3
+                        * (self.consecutive_poor as f32
+                            / (self.config.consecutive_threshold as f32 * 2.0))
+                            .min(1.0);
                 (true, KidnappedReason::ConsecutivePoorMatches, confidence)
             }
             (false, true) if self.score_ema < self.config.score_threshold => {

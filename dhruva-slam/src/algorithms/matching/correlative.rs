@@ -17,8 +17,8 @@
 //! - Recovery from tracking loss
 //! - Global localization in known map
 
-use crate::core::types::{PointCloud2D, Pose2D};
 use super::{ScanMatchResult, ScanMatcher};
+use crate::core::types::{PointCloud2D, Pose2D};
 
 /// Configuration for correlative scan matcher.
 #[derive(Debug, Clone)]
@@ -192,7 +192,8 @@ impl CorrelativeMatcher {
 
         let x_steps = (self.config.search_window_x / self.config.linear_resolution).ceil() as i32;
         let y_steps = (self.config.search_window_y / self.config.linear_resolution).ceil() as i32;
-        let t_steps = (self.config.search_window_theta / self.config.angular_resolution).ceil() as i32;
+        let t_steps =
+            (self.config.search_window_theta / self.config.angular_resolution).ceil() as i32;
 
         for ti in -t_steps..=t_steps {
             let theta = center.theta + ti as f32 * self.config.angular_resolution;
@@ -355,8 +356,16 @@ mod tests {
         let cloud = create_L_shape(20, 1.0);
         let matcher = CorrelativeMatcher::new(CorrelativeConfig::default());
 
-        assert!(!matcher.match_scans(&empty, &cloud, &Pose2D::identity()).converged);
-        assert!(!matcher.match_scans(&cloud, &empty, &Pose2D::identity()).converged);
+        assert!(
+            !matcher
+                .match_scans(&empty, &cloud, &Pose2D::identity())
+                .converged
+        );
+        assert!(
+            !matcher
+                .match_scans(&cloud, &empty, &Pose2D::identity())
+                .converged
+        );
     }
 
     #[test]
@@ -370,7 +379,10 @@ mod tests {
         let result = matcher.match_scans(&source, &target, &Pose2D::identity());
 
         // Should not converge because transform is outside search window
-        assert!(result.score < 0.5, "Should not find transform outside window");
+        assert!(
+            result.score < 0.5,
+            "Should not find transform outside window"
+        );
     }
 
     #[test]

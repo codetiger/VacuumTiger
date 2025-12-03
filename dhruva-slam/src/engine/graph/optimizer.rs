@@ -22,8 +22,8 @@
 //!
 //! Where H is the Hessian approximation and b is the gradient.
 
+use super::pose_graph::{Information2D, PoseGraph};
 use crate::core::types::Pose2D;
-use super::pose_graph::{PoseGraph, Information2D};
 
 /// Result of graph optimization.
 #[derive(Debug, Clone)]
@@ -285,9 +285,7 @@ impl GraphOptimizer {
         [
             info.xx as f64 * error[0] + info.xy as f64 * error[1] + info.xt as f64 * error[2],
             info.xy as f64 * error[0] + info.yy as f64 * error[1] + info.yt as f64 * error[2],
-            info.xt as f64 * error[0]
-                + info.yt as f64 * error[1]
-                + info.tt as f64 * error[2],
+            info.xt as f64 * error[0] + info.yt as f64 * error[1] + info.tt as f64 * error[2],
         ]
     }
 
@@ -632,8 +630,18 @@ mod tests {
         let id2 = graph.add_node(Pose2D::new(2.0, 0.0, 0.0), 2000);
 
         // Add odometry edges
-        graph.add_odometry_edge(id0, id1, Pose2D::new(1.0, 0.0, 0.0), Information2D::default());
-        graph.add_odometry_edge(id1, id2, Pose2D::new(1.0, 0.0, 0.0), Information2D::default());
+        graph.add_odometry_edge(
+            id0,
+            id1,
+            Pose2D::new(1.0, 0.0, 0.0),
+            Information2D::default(),
+        );
+        graph.add_odometry_edge(
+            id1,
+            id2,
+            Pose2D::new(1.0, 0.0, 0.0),
+            Information2D::default(),
+        );
 
         let result = optimizer.optimize(&mut graph);
 
@@ -662,12 +670,7 @@ mod tests {
             Pose2D::new(0.0, 1.0, std::f32::consts::FRAC_PI_2),
             info,
         );
-        graph.add_odometry_edge(
-            id2,
-            id3,
-            Pose2D::new(-1.0, 0.0, std::f32::consts::PI),
-            info,
-        );
+        graph.add_odometry_edge(id2, id3, Pose2D::new(-1.0, 0.0, std::f32::consts::PI), info);
 
         // Add loop closure (3 back to 0)
         graph.add_loop_closure_edge(
@@ -694,7 +697,12 @@ mod tests {
         let id0 = graph.add_node(Pose2D::new(0.0, 0.0, 0.0), 0);
         let id1 = graph.add_node(Pose2D::new(1.0, 0.0, 0.0), 1000);
 
-        graph.add_odometry_edge(id0, id1, Pose2D::new(1.0, 0.0, 0.0), Information2D::default());
+        graph.add_odometry_edge(
+            id0,
+            id1,
+            Pose2D::new(1.0, 0.0, 0.0),
+            Information2D::default(),
+        );
 
         let chi2 = optimizer.compute_chi_squared(&graph);
         assert!(chi2 < 0.01, "Chi-squared should be near zero: {}", chi2);

@@ -177,8 +177,8 @@ impl Covariance2D {
     #[inline]
     pub fn add(&self, other: &Self) -> Self {
         let mut result = [0.0; 9];
-        for i in 0..9 {
-            result[i] = self.data[i] + other.data[i];
+        for (i, val) in result.iter_mut().enumerate() {
+            *val = self.data[i] + other.data[i];
         }
         Self { data: result }
     }

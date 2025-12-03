@@ -417,10 +417,7 @@ impl PoseGraph {
 
     /// Get all optimized poses as a map from node ID to pose.
     pub fn poses(&self) -> std::collections::HashMap<u64, Pose2D> {
-        self.nodes
-            .iter()
-            .map(|n| (n.id, n.pose))
-            .collect()
+        self.nodes.iter().map(|n| (n.id, n.pose)).collect()
     }
 
     /// Get poses for nodes with submap IDs.
@@ -547,7 +544,12 @@ mod tests {
         let id1 = graph.add_node(Pose2D::new(1.0, 0.0, 0.0), 1000);
 
         let measurement = Pose2D::new(1.0, 0.0, 0.0);
-        graph.add_odometry_edge(id0, id1, measurement, Information2D::diagonal(1.0, 1.0, 1.0));
+        graph.add_odometry_edge(
+            id0,
+            id1,
+            measurement,
+            Information2D::diagonal(1.0, 1.0, 1.0),
+        );
 
         let error = graph.total_error();
         assert_relative_eq!(error, 0.0, epsilon = 1e-6);
@@ -563,15 +565,25 @@ mod tests {
         let id2 = graph.add_node(Pose2D::new(1.0, 1.0, 0.0), 2000);
 
         // Odometry edges
-        graph.add_odometry_edge(id0, id1, Pose2D::new(1.0, 0.0, 0.0), Information2D::identity());
-        graph.add_odometry_edge(id1, id2, Pose2D::new(0.0, 1.0, 0.0), Information2D::identity());
+        graph.add_odometry_edge(
+            id0,
+            id1,
+            Pose2D::new(1.0, 0.0, 0.0),
+            Information2D::identity(),
+        );
+        graph.add_odometry_edge(
+            id1,
+            id2,
+            Pose2D::new(0.0, 1.0, 0.0),
+            Information2D::identity(),
+        );
 
         // Loop closure with error - measurement says (-1.1, -0.9) but actual is (-1, -1)
         // This creates a residual error that optimization should minimize
         graph.add_loop_closure_edge(
             id2,
             id0,
-            Pose2D::new(-1.1, -0.9, 0.0),  // Slightly different from actual
+            Pose2D::new(-1.1, -0.9, 0.0), // Slightly different from actual
             Information2D::identity(),
             0.9,
         );
@@ -604,8 +616,18 @@ mod tests {
         let id1 = graph.add_node(Pose2D::new(1.0, 0.0, 0.0), 1000);
         let id2 = graph.add_node(Pose2D::new(2.0, 0.0, 0.0), 2000);
 
-        graph.add_odometry_edge(id0, id1, Pose2D::new(1.0, 0.0, 0.0), Information2D::identity());
-        graph.add_odometry_edge(id1, id2, Pose2D::new(1.0, 0.0, 0.0), Information2D::identity());
+        graph.add_odometry_edge(
+            id0,
+            id1,
+            Pose2D::new(1.0, 0.0, 0.0),
+            Information2D::identity(),
+        );
+        graph.add_odometry_edge(
+            id1,
+            id2,
+            Pose2D::new(1.0, 0.0, 0.0),
+            Information2D::identity(),
+        );
         graph.add_loop_closure_edge(
             id2,
             id0,

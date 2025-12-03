@@ -17,8 +17,8 @@
 //! - Handles large search windows efficiently
 //! - Pruning reduces search space at each level
 
+use super::{CorrelativeConfig, CorrelativeMatcher, ScanMatchResult, ScanMatcher};
 use crate::core::types::{PointCloud2D, Pose2D};
-use super::{ScanMatchResult, ScanMatcher, CorrelativeMatcher, CorrelativeConfig};
 
 /// Configuration for multi-resolution matcher.
 #[derive(Debug, Clone)]
@@ -98,9 +98,10 @@ impl MultiResolutionMatcher {
     fn level_config(&self, level: usize) -> CorrelativeConfig {
         let level_f = level as f32;
         let multiplier = self.config.resolution_multiplier.powf(level_f);
-        let window_scale = self.config.window_shrink_factor.powf(
-            (self.config.num_levels - 1 - level) as f32
-        );
+        let window_scale = self
+            .config
+            .window_shrink_factor
+            .powf((self.config.num_levels - 1 - level) as f32);
 
         CorrelativeConfig {
             search_window_x: self.config.coarse_search_window_xy / window_scale,
@@ -146,7 +147,7 @@ impl ScanMatcher for MultiResolutionMatcher {
         let fine_config = self.level_config(0);
         let fine_matcher = CorrelativeMatcher::new(fine_config);
         let mut final_result = fine_matcher.match_scans(source, target, &current_guess);
-        final_result.iterations = total_iterations + final_result.iterations;
+        final_result.iterations += total_iterations;
 
         final_result
     }
@@ -272,8 +273,16 @@ mod tests {
         let cloud = create_L_shape(20, 1.0);
         let matcher = MultiResolutionMatcher::new(MultiResolutionConfig::default());
 
-        assert!(!matcher.match_scans(&empty, &cloud, &Pose2D::identity()).converged);
-        assert!(!matcher.match_scans(&cloud, &empty, &Pose2D::identity()).converged);
+        assert!(
+            !matcher
+                .match_scans(&empty, &cloud, &Pose2D::identity())
+                .converged
+        );
+        assert!(
+            !matcher
+                .match_scans(&cloud, &empty, &Pose2D::identity())
+                .converged
+        );
     }
 
     #[test]
@@ -294,7 +303,11 @@ mod tests {
 
         // Level 0 (finest) should have fine resolution
         let level0 = matcher.level_config(0);
-        assert_relative_eq!(level0.linear_resolution, config.fine_resolution, epsilon = 0.001);
+        assert_relative_eq!(
+            level0.linear_resolution,
+            config.fine_resolution,
+            epsilon = 0.001
+        );
 
         // Coarser levels should have larger resolution
         let level1 = matcher.level_config(1);

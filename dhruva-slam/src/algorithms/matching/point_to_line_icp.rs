@@ -23,8 +23,8 @@
 
 use kiddo::{KdTree, SquaredEuclidean};
 
-use crate::core::types::{Covariance2D, Point2D, PointCloud2D, Pose2D};
 use super::{ScanMatchResult, ScanMatcher};
+use crate::core::types::{Covariance2D, Point2D, PointCloud2D, Pose2D};
 
 /// Configuration for Point-to-Line ICP.
 #[derive(Debug, Clone)]
@@ -168,8 +168,8 @@ impl Line2D {
         self.a * p.x + self.b * p.y + self.c
     }
 
-    /// Project a point onto the line.
-    #[inline]
+    /// Project a point onto the line (used in tests).
+    #[cfg(test)]
     fn project(&self, p: &Point2D) -> Point2D {
         let d = self.distance(p);
         Point2D::new(p.x - self.a * d, p.y - self.b * d)
@@ -183,8 +183,6 @@ struct Correspondence {
     source_idx: usize,
     /// Target line (fitted from neighbors)
     target_line: Line2D,
-    /// Closest point on target line
-    target_point: Point2D,
     /// Squared distance to line
     distance_sq: f32,
 }
@@ -238,10 +236,8 @@ impl PointToLineIcp {
             let transformed = Point2D::new(tx, ty);
 
             // Find k nearest neighbors in target
-            let neighbors = target_tree.nearest_n::<SquaredEuclidean>(
-                &[tx, ty],
-                self.config.line_neighbors,
-            );
+            let neighbors =
+                target_tree.nearest_n::<SquaredEuclidean>(&[tx, ty], self.config.line_neighbors);
 
             if neighbors.is_empty() {
                 continue;
@@ -277,7 +273,6 @@ impl PointToLineIcp {
                 correspondences.push(Correspondence {
                     source_idx: i,
                     target_line: line,
-                    target_point: line.project(&transformed),
                     distance_sq: dist_sq,
                 });
             }
@@ -285,11 +280,10 @@ impl PointToLineIcp {
 
         // Apply outlier rejection
         if self.config.outlier_ratio > 0.0 && !correspondences.is_empty() {
-            correspondences.sort_by(|a, b| {
-                a.distance_sq.partial_cmp(&b.distance_sq).unwrap()
-            });
+            correspondences.sort_by(|a, b| a.distance_sq.partial_cmp(&b.distance_sq).unwrap());
 
-            let keep_count = ((1.0 - self.config.outlier_ratio) * correspondences.len() as f32) as usize;
+            let keep_count =
+                ((1.0 - self.config.outlier_ratio) * correspondences.len() as f32) as usize;
             correspondences.truncate(keep_count.max(self.config.min_correspondences));
         }
 
@@ -330,7 +324,7 @@ impl PointToLineIcp {
 
         // Initialize 3x3 system
         let mut h = [[0.0f32; 3]; 3]; // Hessian approximation
-        let mut g = [0.0f32; 3];       // Gradient
+        let mut g = [0.0f32; 3]; // Gradient
 
         for corr in correspondences {
             let p = &source.points[corr.source_idx];
@@ -368,8 +362,8 @@ impl PointToLineIcp {
 
         // Solve 3x3 system using Cramer's rule (small system, direct solve)
         let det = h[0][0] * (h[1][1] * h[2][2] - h[1][2] * h[2][1])
-                - h[0][1] * (h[1][0] * h[2][2] - h[1][2] * h[2][0])
-                + h[0][2] * (h[1][0] * h[2][1] - h[1][1] * h[2][0]);
+            - h[0][1] * (h[1][0] * h[2][2] - h[1][2] * h[2][0])
+            + h[0][2] * (h[1][0] * h[2][1] - h[1][1] * h[2][0]);
 
         if det.abs() < 1e-10 {
             return Pose2D::identity();
@@ -441,12 +435,8 @@ impl ScanMatcher for PointToLineIcp {
             iterations = iter + 1;
 
             // Find correspondences with line fitting
-            let correspondences = self.find_correspondences(
-                source,
-                target,
-                &target_tree,
-                &current_transform,
-            );
+            let correspondences =
+                self.find_correspondences(source, target, &target_tree, &current_transform);
 
             if correspondences.len() < self.config.min_correspondences {
                 return ScanMatchResult::failed();
@@ -480,12 +470,8 @@ impl ScanMatcher for PointToLineIcp {
         }
 
         // Max iterations reached
-        let correspondences = self.find_correspondences(
-            source,
-            target,
-            &target_tree,
-            &current_transform,
-        );
+        let correspondences =
+            self.find_correspondences(source, target, &target_tree, &current_transform);
         let final_mse = self.compute_mse(&correspondences);
         let score = self.mse_to_score(final_mse);
 
@@ -568,7 +554,11 @@ mod tests {
         let line = Line2D::fit(&points).unwrap();
 
         // Horizontal line: y = 0, or 0*x + 1*y + 0 = 0
-        assert!(line.quality > 0.99, "Quality should be high: {}", line.quality);
+        assert!(
+            line.quality > 0.99,
+            "Quality should be high: {}",
+            line.quality
+        );
         assert!(line.b.abs() > 0.99, "Should be near horizontal");
     }
 

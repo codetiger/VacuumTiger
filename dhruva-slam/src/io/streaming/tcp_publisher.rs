@@ -26,8 +26,8 @@
 //! ```
 
 use crate::algorithms::mapping::OccupancyGrid;
-use crate::engine::slam::SlamStatus;
 use crate::core::types::{PointCloud2D, Pose2D};
+use crate::engine::slam::SlamStatus;
 use serde::Serialize;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
@@ -37,7 +37,9 @@ use std::thread;
 use std::time::Duration;
 use thiserror::Error;
 
-use super::slam_messages::{SlamDiagnosticsMessage, SlamMapMessage, SlamScanMessage, SlamStatusMessage};
+use super::slam_messages::{
+    SlamDiagnosticsMessage, SlamMapMessage, SlamScanMessage, SlamStatusMessage,
+};
 
 /// Publisher errors
 #[derive(Error, Debug)]
@@ -283,7 +285,7 @@ impl OdometryPublisher {
                 continue;
             }
 
-            if let Err(e) = client.stream.write_all(&bytes) {
+            if let Err(e) = client.stream.write_all(bytes) {
                 log::debug!("Client {} write failed (payload): {}", client.addr, e);
                 failed_indices.push(i);
             }

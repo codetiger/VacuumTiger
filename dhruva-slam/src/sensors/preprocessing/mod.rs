@@ -41,7 +41,7 @@ pub use range_filter::{RangeFilter, RangeFilterConfig};
 use crate::core::types::{LaserScan, PointCloud2D};
 
 /// Configuration for the scan preprocessor pipeline.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PreprocessorConfig {
     /// Range filter configuration
     pub range_filter: RangeFilterConfig,
@@ -49,16 +49,6 @@ pub struct PreprocessorConfig {
     pub outlier_filter: OutlierFilterConfig,
     /// Downsampler configuration
     pub downsampler: AngularDownsamplerConfig,
-}
-
-impl Default for PreprocessorConfig {
-    fn default() -> Self {
-        Self {
-            range_filter: RangeFilterConfig::default(),
-            outlier_filter: OutlierFilterConfig::default(),
-            downsampler: AngularDownsamplerConfig::default(),
-        }
-    }
 }
 
 /// Complete scan preprocessing pipeline.
@@ -137,7 +127,14 @@ mod tests {
             })
             .collect();
 
-        LaserScan::new(0.0, TAU - angle_increment, angle_increment, 0.15, 12.0, ranges)
+        LaserScan::new(
+            0.0,
+            TAU - angle_increment,
+            angle_increment,
+            0.15,
+            12.0,
+            ranges,
+        )
     }
 
     #[test]

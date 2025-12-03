@@ -410,7 +410,14 @@ mod tests {
         use std::f32::consts::TAU;
         let n = ranges.len();
         let angle_increment = TAU / n as f32;
-        LaserScan::new(0.0, TAU - angle_increment, angle_increment, 0.1, 10.0, ranges)
+        LaserScan::new(
+            0.0,
+            TAU - angle_increment,
+            angle_increment,
+            0.1,
+            10.0,
+            ranges,
+        )
     }
 
     #[test]

@@ -161,6 +161,7 @@ impl RayTracer {
 /// Iterator over cells along a ray (without modifying grid).
 ///
 /// Useful for checking line of sight or counting obstacles.
+#[cfg(test)]
 pub struct RayCellIterator {
     x: i32,
     y: i32,
@@ -174,6 +175,7 @@ pub struct RayCellIterator {
     finished: bool,
 }
 
+#[cfg(test)]
 impl RayCellIterator {
     /// Create a new ray cell iterator.
     pub fn new(x0: i32, y0: i32, x1: i32, y1: i32) -> Self {
@@ -197,6 +199,7 @@ impl RayCellIterator {
     }
 }
 
+#[cfg(test)]
 impl Iterator for RayCellIterator {
     type Item = (i32, i32);
 
@@ -306,7 +309,10 @@ mod tests {
 
         // Endpoint should be occupied
         let (ex, ey) = grid.world_to_cell(2.0, 0.0).unwrap();
-        assert!(grid.get_log_odds(ex, ey) > 0.0, "Endpoint should be occupied");
+        assert!(
+            grid.get_log_odds(ex, ey) > 0.0,
+            "Endpoint should be occupied"
+        );
     }
 
     #[test]

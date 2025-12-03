@@ -229,7 +229,10 @@ impl RecoveryStateMachine {
 
     /// Check if currently in a recovery state.
     pub fn is_recovering(&self) -> bool {
-        matches!(self.state, RecoveryState::Lost | RecoveryState::Recovering(_))
+        matches!(
+            self.state,
+            RecoveryState::Lost | RecoveryState::Recovering(_)
+        )
     }
 
     /// Check if recovery has failed and needs intervention.
@@ -310,11 +313,9 @@ impl RecoveryStateMachine {
                 self.update_recovering(strategy, match_score, timestamp_us)
             }
 
-            RecoveryState::Failed => {
-                RecoveryAction::RequestAssistance {
-                    reason: "Recovery failed, manual intervention required".to_string(),
-                }
-            }
+            RecoveryState::Failed => RecoveryAction::RequestAssistance {
+                reason: "Recovery failed, manual intervention required".to_string(),
+            },
         }
     }
 
@@ -330,7 +331,10 @@ impl RecoveryStateMachine {
             self.good_match_count += 1;
             if self.good_match_count >= self.config.confirmation_frames {
                 // Recovery successful!
-                log::info!("Recovery: Successful after {} attempts", self.recovery_attempts);
+                log::info!(
+                    "Recovery: Successful after {} attempts",
+                    self.recovery_attempts
+                );
                 self.state = RecoveryState::Tracking;
                 self.state_start_us = timestamp_us;
                 self.successful_recoveries += 1;
@@ -380,11 +384,9 @@ impl RecoveryStateMachine {
                 RecoveryAction::Continue
             }
 
-            RecoveryStrategy::ManualAssistance => {
-                RecoveryAction::RequestAssistance {
-                    reason: "Waiting for manual assistance".to_string(),
-                }
-            }
+            RecoveryStrategy::ManualAssistance => RecoveryAction::RequestAssistance {
+                reason: "Waiting for manual assistance".to_string(),
+            },
         }
     }
 

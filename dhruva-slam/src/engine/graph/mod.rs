@@ -60,19 +60,13 @@
 //! let result = optimizer.optimize(&mut graph);
 //! ```
 
-mod pose_graph;
 mod loop_detector;
 mod optimizer;
+mod pose_graph;
 
-pub use pose_graph::{
-    PoseGraph, PoseNode, PoseEdge, EdgeType, Information2D,
-};
-pub use loop_detector::{
-    LoopDetector, LoopDetectorConfig, LoopClosureCandidate,
-};
-pub use optimizer::{
-    GraphOptimizer, GraphOptimizerConfig, OptimizationResult, TerminationReason,
-};
+pub use loop_detector::{LoopClosureCandidate, LoopDetector, LoopDetectorConfig};
+pub use optimizer::{GraphOptimizer, GraphOptimizerConfig, OptimizationResult, TerminationReason};
+pub use pose_graph::{EdgeType, Information2D, PoseEdge, PoseGraph, PoseNode};
 
 #[cfg(test)]
 mod tests {

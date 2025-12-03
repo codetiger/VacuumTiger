@@ -5,8 +5,8 @@ use tempfile::TempDir;
 
 use super::recorder::BagRecorder;
 use super::types::{EncoderTicks, SensorStatusMsg};
+use crate::core::types::Timestamped;
 use crate::io::sangam_client::LidarScan;
-use crate::core::types::{Pose2D, Timestamped};
 
 /// Test fixture for bag file testing.
 ///
@@ -128,11 +128,7 @@ impl BagTestFixture {
     /// - `angle_rad`: Total rotation angle in radians
     /// - `angular_velocity_radps`: Angular velocity in radians per second
     /// - `gyro_scale`: Gyro scale factor (rad/s per LSB)
-    pub fn rotation_in_place(
-        angle_rad: f32,
-        angular_velocity_radps: f32,
-        gyro_scale: f32,
-    ) -> Self {
+    pub fn rotation_in_place(angle_rad: f32, angular_velocity_radps: f32, gyro_scale: f32) -> Self {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         let bag_path = temp_dir.path().join("rotation.bag");
 
@@ -201,7 +197,6 @@ impl BagTestFixture {
         // 4 sides with 4 turns
         for _ in 0..4 {
             // Straight segment
-            let segment_start = total_distance;
             let segment_duration_us = (straight_time_s * 1_000_000.0) as u64;
             let segment_end_time = time + segment_duration_us;
 
@@ -316,11 +311,11 @@ mod tests {
     #[test]
     fn test_square_path() {
         let fixture = BagTestFixture::square_path(
-            1.0,   // 1m sides
-            0.2,   // 0.2 m/s
-            0.5,   // 0.5 rad/s
+            1.0,    // 1m sides
+            0.2,    // 0.2 m/s
+            0.5,    // 0.5 rad/s
             1000.0, // 1000 ticks/m
-            0.001, // gyro scale
+            0.001,  // gyro scale
         );
 
         let player = BagPlayer::open(fixture.path()).unwrap();

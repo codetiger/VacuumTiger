@@ -14,8 +14,8 @@
 //! ```
 
 use std::env;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use dhruva_slam::io::bag::{BagRecorder, EncoderTicks, SensorStatusMsg};
@@ -89,7 +89,12 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                 wire_format = match args[i].to_lowercase().as_str() {
                     "json" => WireFormat::Json,
                     "postcard" => WireFormat::Postcard,
-                    _ => return Err(format!("Invalid format: {} (use json or postcard)", args[i])),
+                    _ => {
+                        return Err(format!(
+                            "Invalid format: {} (use json or postcard)",
+                            args[i]
+                        ));
+                    }
                 };
             }
             "--help" | "-h" => {
@@ -154,7 +159,9 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut recorder = BagRecorder::create(&config.output_path)?;
 
     let start_time = Instant::now();
-    let end_time = config.duration_secs.map(|d| start_time + Duration::from_secs(d));
+    let end_time = config
+        .duration_secs
+        .map(|d| start_time + Duration::from_secs(d));
 
     let mut sensor_count = 0u64;
     let mut lidar_count = 0u64;
@@ -167,20 +174,20 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     while running.load(Ordering::SeqCst) {
         // Check duration limit
-        if let Some(end) = end_time {
-            if Instant::now() >= end {
-                println!("\nDuration limit reached.");
-                break;
-            }
+        if let Some(end) = end_time
+            && Instant::now() >= end
+        {
+            println!("\nDuration limit reached.");
+            break;
         }
 
         // Receive message with timeout
         match client.recv() {
             Ok(msg) => {
                 let timestamp_us = match &msg.payload {
-                    dhruva_slam::io::sangam_client::Payload::SensorGroup { timestamp_us, .. } => {
-                        *timestamp_us
-                    }
+                    dhruva_slam::io::sangam_client::Payload::SensorGroup {
+                        timestamp_us, ..
+                    } => *timestamp_us,
                 };
 
                 // Check if it's sensor status or lidar
@@ -232,10 +239,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     println!("    Sensor status: {}", info.sensor_count);
     println!("    LiDAR scans: {}", info.lidar_count);
     println!("  File size: {:.2} MB", info.file_size_mb());
-    println!(
-        "  Average rate: {:.1} Hz",
-        info.message_rate_hz()
-    );
+    println!("  Average rate: {:.1} Hz", info.message_rate_hz());
 
     Ok(())
 }

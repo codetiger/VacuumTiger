@@ -175,8 +175,7 @@ impl MotionModel {
 
         if delta_trans < 1e-6 && odom_delta.theta.abs() < 1e-6 {
             // No motion expected, check if pose changed
-            if actual_trans < 1e-4
-                && normalize_angle(pose_new.theta - pose_old.theta).abs() < 1e-4
+            if actual_trans < 1e-4 && normalize_angle(pose_new.theta - pose_old.theta).abs() < 1e-4
             {
                 return 0.0; // log(1) for identity
             }
@@ -204,7 +203,8 @@ impl MotionModel {
         let rot2_abs = delta_rot2.abs();
 
         let var_rot1 = self.config.alpha1 * rot1_abs + self.config.alpha2 * delta_trans;
-        let var_trans = self.config.alpha3 * delta_trans + self.config.alpha4 * (rot1_abs + rot2_abs);
+        let var_trans =
+            self.config.alpha3 * delta_trans + self.config.alpha4 * (rot1_abs + rot2_abs);
         let var_rot2 = self.config.alpha1 * rot2_abs + self.config.alpha2 * delta_trans;
 
         // Compute log probabilities (Gaussian)
@@ -421,7 +421,11 @@ mod tests {
 
         // Very unexpected motion should have low probability
         let log_p = model.log_probability(&pose_new, &pose_old, &delta);
-        assert!(log_p < -10.0, "Unexpected motion should have low prob: {}", log_p);
+        assert!(
+            log_p < -10.0,
+            "Unexpected motion should have low prob: {}",
+            log_p
+        );
     }
 
     #[test]

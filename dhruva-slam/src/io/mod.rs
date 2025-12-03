@@ -8,8 +8,8 @@
 //! - [`bag`]: Data recording and playback
 //! - [`streaming`]: TCP publishing for odometry and SLAM results
 
-pub mod sangam_client;
 pub mod bag;
+pub mod sangam_client;
 pub mod streaming;
 
 // Re-export common types

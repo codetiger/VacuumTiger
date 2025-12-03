@@ -22,8 +22,8 @@
 
 use kiddo::{KdTree, SquaredEuclidean};
 
-use crate::core::types::{PointCloud2D, Point2D, Pose2D};
 use super::{ScanMatchResult, ScanMatcher};
+use crate::core::types::{Point2D, PointCloud2D, Pose2D};
 
 /// Configuration for Point-to-Point ICP.
 #[derive(Debug, Clone)]
@@ -64,8 +64,8 @@ impl Default for IcpConfig {
     fn default() -> Self {
         Self {
             max_iterations: 50,
-            translation_epsilon: 0.001, // 1mm
-            rotation_epsilon: 0.001,    // ~0.06°
+            translation_epsilon: 0.001,       // 1mm
+            rotation_epsilon: 0.001,          // ~0.06°
             max_correspondence_distance: 0.5, // 50cm
             min_correspondences: 10,
             outlier_ratio: 0.1, // Reject worst 10%
@@ -108,7 +108,7 @@ impl PointToPointIcp {
     fn find_correspondences(
         &self,
         source: &PointCloud2D,
-        target: &PointCloud2D,
+        _target: &PointCloud2D,
         target_tree: &KdTree<f32, 2>,
         transform: &Pose2D,
     ) -> Vec<(usize, usize, f32)> {
@@ -137,7 +137,8 @@ impl PointToPointIcp {
             correspondences.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
 
             // Keep only the best correspondences
-            let keep_count = ((1.0 - self.config.outlier_ratio) * correspondences.len() as f32) as usize;
+            let keep_count =
+                ((1.0 - self.config.outlier_ratio) * correspondences.len() as f32) as usize;
             correspondences.truncate(keep_count.max(self.config.min_correspondences));
         }
 
@@ -292,12 +293,8 @@ impl ScanMatcher for PointToPointIcp {
             iterations = iter + 1;
 
             // Find correspondences
-            let correspondences = self.find_correspondences(
-                source,
-                target,
-                &target_tree,
-                &current_transform,
-            );
+            let correspondences =
+                self.find_correspondences(source, target, &target_tree, &current_transform);
 
             // Check minimum correspondences
             if correspondences.len() < self.config.min_correspondences {
@@ -305,12 +302,8 @@ impl ScanMatcher for PointToPointIcp {
             }
 
             // Compute incremental transform
-            let delta = self.compute_transform(
-                source,
-                target,
-                &correspondences,
-                &current_transform,
-            );
+            let delta =
+                self.compute_transform(source, target, &correspondences, &current_transform);
 
             // Apply delta
             current_transform = current_transform.compose(&delta);
@@ -340,12 +333,8 @@ impl ScanMatcher for PointToPointIcp {
         }
 
         // Max iterations reached
-        let correspondences = self.find_correspondences(
-            source,
-            target,
-            &target_tree,
-            &current_transform,
-        );
+        let correspondences =
+            self.find_correspondences(source, target, &target_tree, &current_transform);
         let final_mse = self.compute_mse(source, target, &correspondences, &current_transform);
         let score = self.mse_to_score(final_mse);
 
@@ -466,7 +455,10 @@ mod tests {
         let icp = PointToPointIcp::new(IcpConfig::default());
         let result = icp.match_scans(&source, &target, &initial_guess);
 
-        assert!(result.converged, "ICP should converge with good initial guess");
+        assert!(
+            result.converged,
+            "ICP should converge with good initial guess"
+        );
         assert_relative_eq!(result.transform.x, 0.3, epsilon = 0.03);
         assert_relative_eq!(result.transform.y, 0.2, epsilon = 0.03);
         assert_relative_eq!(result.transform.theta, 0.15, epsilon = 0.02);

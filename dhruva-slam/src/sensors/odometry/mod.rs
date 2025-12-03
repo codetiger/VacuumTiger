@@ -38,9 +38,7 @@ mod eskf;
 mod evaluator;
 mod wheel_odometry;
 
-pub use complementary::{ComplementaryConfig, ComplementaryFilter, CRL200S_GYRO_SCALE};
+pub use complementary::{CRL200S_GYRO_SCALE, ComplementaryConfig, ComplementaryFilter};
 pub use eskf::{Eskf, EskfConfig, MeasurementNoise, ProcessNoise};
-pub use evaluator::{
-    EvaluationResult, OdometryEvaluator, ScenarioBounds, Stats, TestScenario,
-};
+pub use evaluator::{EvaluationResult, OdometryEvaluator, ScenarioBounds, Stats, TestScenario};
 pub use wheel_odometry::{WheelOdometry, WheelOdometryConfig};

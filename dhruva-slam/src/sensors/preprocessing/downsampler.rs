@@ -98,12 +98,10 @@ impl AngularDownsampler {
 
             new_ranges.push(scan.ranges[i]);
 
-            if let (Some(new_int), Some(old_int)) =
-                (&mut new_intensities, &scan.intensities)
+            if let (Some(new_int), Some(old_int)) = (&mut new_intensities, &scan.intensities)
+                && let Some(&intensity) = old_int.get(i)
             {
-                if let Some(&intensity) = old_int.get(i) {
-                    new_int.push(intensity);
-                }
+                new_int.push(intensity);
             }
         }
 
@@ -149,7 +147,14 @@ mod tests {
         let angle_increment = TAU / n_points as f32;
         let ranges: Vec<f32> = vec![5.0; n_points];
 
-        LaserScan::new(0.0, TAU - angle_increment, angle_increment, 0.15, 12.0, ranges)
+        LaserScan::new(
+            0.0,
+            TAU - angle_increment,
+            angle_increment,
+            0.15,
+            12.0,
+            ranges,
+        )
     }
 
     #[test]
@@ -157,7 +162,7 @@ mod tests {
         let scan = create_uniform_scan(500);
         let config = AngularDownsamplerConfig {
             target_points: 200,
-            min_angle_step: 0.0,  // No minimum
+            min_angle_step: 0.0, // No minimum
         };
         let downsampler = AngularDownsampler::new(config);
 
@@ -194,7 +199,7 @@ mod tests {
 
         let result = downsampler.apply(&scan);
 
-        assert_eq!(result.len(), 100);  // Should be unchanged
+        assert_eq!(result.len(), 100); // Should be unchanged
     }
 
     #[test]
@@ -211,8 +216,8 @@ mod tests {
     fn test_preserves_intensities() {
         let ranges = vec![1.0; 10];
         let intensities: Vec<u8> = (0..10).map(|i| (i * 10) as u8).collect();
-        let scan = LaserScan::new(0.0, TAU, TAU / 10.0, 0.15, 12.0, ranges)
-            .with_intensities(intensities);
+        let scan =
+            LaserScan::new(0.0, TAU, TAU / 10.0, 0.15, 12.0, ranges).with_intensities(intensities);
 
         let config = AngularDownsamplerConfig {
             target_points: 5,
@@ -231,9 +236,9 @@ mod tests {
 
     #[test]
     fn test_uniform_coverage() {
-        let scan = create_uniform_scan(360);  // 1° resolution
+        let scan = create_uniform_scan(360); // 1° resolution
         let config = AngularDownsamplerConfig {
-            target_points: 36,  // 10° resolution
+            target_points: 36, // 10° resolution
             min_angle_step: 0.0,
         };
         let downsampler = AngularDownsampler::new(config);
@@ -257,7 +262,7 @@ mod tests {
         // Request 500 points but with minimum 2° separation
         let config = AngularDownsamplerConfig {
             target_points: 500,
-            min_angle_step: 2.0_f32.to_radians(),  // 2°
+            min_angle_step: 2.0_f32.to_radians(), // 2°
         };
         let downsampler = AngularDownsampler::new(config);
 
@@ -411,7 +416,7 @@ mod tests {
         // Request 3000 points but require minimum 1° separation
         let config = AngularDownsamplerConfig {
             target_points: 3000,
-            min_angle_step: 1.0_f32.to_radians(),  // 1°
+            min_angle_step: 1.0_f32.to_radians(), // 1°
         };
         let downsampler = AngularDownsampler::new(config);
 

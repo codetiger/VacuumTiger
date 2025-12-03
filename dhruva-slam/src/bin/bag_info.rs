@@ -164,15 +164,18 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         println!();
         println!("Message Statistics:");
         println!("  Total messages: {}", total_count);
-        println!("  Sensor status: {} ({:.1}%)",
+        println!(
+            "  Sensor status: {} ({:.1}%)",
             sensor_count,
             100.0 * sensor_count as f64 / total_count.max(1) as f64
         );
-        println!("  LiDAR scans: {} ({:.1}%)",
+        println!(
+            "  LiDAR scans: {} ({:.1}%)",
             lidar_count,
             100.0 * lidar_count as f64 / total_count.max(1) as f64
         );
-        println!("  Odometry: {} ({:.1}%)",
+        println!(
+            "  Odometry: {} ({:.1}%)",
             odometry_count,
             100.0 * odometry_count as f64 / total_count.max(1) as f64
         );
@@ -183,13 +186,19 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             println!("Rates:");
             println!("  Overall: {:.1} Hz", total_count as f64 / duration_secs);
             if sensor_count > 0 {
-                println!("  Sensor status: {:.1} Hz", sensor_count as f64 / duration_secs);
+                println!(
+                    "  Sensor status: {:.1} Hz",
+                    sensor_count as f64 / duration_secs
+                );
             }
             if lidar_count > 0 {
                 println!("  LiDAR: {:.1} Hz", lidar_count as f64 / duration_secs);
             }
             if odometry_count > 0 {
-                println!("  Odometry: {:.1} Hz", odometry_count as f64 / duration_secs);
+                println!(
+                    "  Odometry: {:.1} Hz",
+                    odometry_count as f64 / duration_secs
+                );
             }
         }
 
@@ -228,7 +237,9 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     println!("  Timestamp: {} us", lidar.timestamp_us);
                     println!("  Points: {}", lidar.data.len());
                     if !lidar.data.is_empty() {
-                        let (min_range, max_range) = lidar.data.iter()
+                        let (min_range, max_range) = lidar
+                            .data
+                            .iter()
                             .map(|(_, r, _)| *r)
                             .fold((f32::MAX, f32::MIN), |(min, max), r| {
                                 (min.min(r), max.max(r))
@@ -246,14 +257,16 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let file_size = metadata.len();
     println!();
     println!("File Size:");
-    println!("  {} bytes ({:.2} KB, {:.2} MB)",
+    println!(
+        "  {} bytes ({:.2} KB, {:.2} MB)",
         file_size,
         file_size as f64 / 1024.0,
         file_size as f64 / 1_048_576.0
     );
 
     if message_count > 0 {
-        println!("  Average per message: {:.1} bytes",
+        println!(
+            "  Average per message: {:.1} bytes",
             file_size as f64 / message_count as f64
         );
     }

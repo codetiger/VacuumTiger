@@ -9,9 +9,9 @@
 //! 2. **Scan context matching**: Use global descriptor for place recognition
 //! 3. **Geometric verification**: Validate matches with scan matching
 
-use crate::algorithms::matching::{ScanMatcher, PointToPointIcp, IcpConfig};
+use crate::algorithms::matching::{IcpConfig, PointToPointIcp, ScanMatcher};
+use crate::core::types::{PointCloud2D, Pose2D};
 use crate::engine::slam::keyframe::{Keyframe, ScanContext};
-use crate::core::types::{Pose2D, PointCloud2D};
 
 use super::pose_graph::Information2D;
 
@@ -186,7 +186,8 @@ impl LoopDetector {
         }
 
         // Sort by similarity (descending)
-        potential_matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        potential_matches
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Limit candidates
         potential_matches.truncate(self.config.max_candidates);
@@ -237,7 +238,9 @@ impl LoopDetector {
         let initial_guess = query_pose.inverse().compose(&match_kf.pose);
 
         // Run scan matching
-        let result = self.matcher.match_scans(query_scan, &match_kf.scan, &initial_guess);
+        let result = self
+            .matcher
+            .match_scans(query_scan, &match_kf.scan, &initial_guess);
 
         if !result.converged || result.score < self.config.min_match_score {
             return None;
@@ -249,7 +252,7 @@ impl LoopDetector {
         // Compute information matrix (scaled by confidence)
         let scale = self.config.information_scale * confidence;
         let information = Information2D::from_std_dev(
-            0.1 / scale.sqrt(),  // ~10cm / sqrt(scale)
+            0.1 / scale.sqrt(), // ~10cm / sqrt(scale)
             0.1 / scale.sqrt(),
             0.05 / scale.sqrt(), // ~3 degrees / sqrt(scale)
         );
@@ -271,6 +274,7 @@ impl LoopDetector {
 }
 
 /// Trait for loop detection strategies.
+#[allow(dead_code)]
 pub trait LoopDetection {
     /// Detect loop closures for a new keyframe.
     fn detect_loops(
@@ -390,7 +394,7 @@ mod tests {
     fn test_scan_context_similarity() {
         let scan1 = create_wall_scan(0.0, 0.0);
         let scan2 = create_wall_scan(0.0, 0.0); // Same pattern
-        let scan3 = create_different_scan();    // Different pattern
+        let scan3 = create_different_scan(); // Different pattern
 
         let ctx1 = ScanContext::from_scan(&scan1);
         let ctx2 = ScanContext::from_scan(&scan2);

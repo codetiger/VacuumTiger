@@ -53,18 +53,18 @@
 //! }
 //! ```
 
-mod types;
-mod recorder;
 mod player;
+mod recorder;
 mod simulated_client;
+mod types;
 
-pub use types::{
-    BagHeader, BagInfo, BagMessage, EncoderTicks, SensorStatusMsg,
-    HEADER_SIZE, BAG_MAGIC, BAG_VERSION,
-};
-pub use recorder::BagRecorder;
 pub use player::BagPlayer;
+pub use recorder::BagRecorder;
 pub use simulated_client::SimulatedClient;
+pub use types::{
+    BAG_MAGIC, BAG_VERSION, BagHeader, BagInfo, BagMessage, EncoderTicks, HEADER_SIZE,
+    SensorStatusMsg,
+};
 
 #[cfg(test)]
 mod test_fixtures;

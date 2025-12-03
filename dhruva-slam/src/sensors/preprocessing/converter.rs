@@ -74,7 +74,12 @@ impl ScanConverter {
     /// angular resolution.
     ///
     /// Returns a vector of ranges, with 0.0 for bins with no points.
-    pub fn to_ranges(cloud: &PointCloud2D, angle_min: f32, angle_max: f32, n_bins: usize) -> Vec<f32> {
+    pub fn to_ranges(
+        cloud: &PointCloud2D,
+        angle_min: f32,
+        angle_max: f32,
+        n_bins: usize,
+    ) -> Vec<f32> {
         if n_bins == 0 {
             return Vec::new();
         }
@@ -238,8 +243,8 @@ mod tests {
     fn test_preserves_intensities() {
         let ranges = vec![1.0, 1.0, 1.0];
         let intensities = vec![100, 150, 200];
-        let scan = LaserScan::new(0.0, PI, FRAC_PI_2, 0.1, 10.0, ranges)
-            .with_intensities(intensities);
+        let scan =
+            LaserScan::new(0.0, PI, FRAC_PI_2, 0.1, 10.0, ranges).with_intensities(intensities);
 
         let cloud = ScanConverter::to_point_cloud(&scan);
 
@@ -254,10 +259,10 @@ mod tests {
     fn test_to_ranges() {
         // Create a square (4 points at corners)
         let mut cloud = PointCloud2D::new();
-        cloud.push(Point2D::new(1.0, 0.0));   // angle = 0
-        cloud.push(Point2D::new(0.0, 1.0));   // angle = π/2
-        cloud.push(Point2D::new(-1.0, 0.0));  // angle = π
-        cloud.push(Point2D::new(0.0, -1.0));  // angle = -π/2 (3π/2)
+        cloud.push(Point2D::new(1.0, 0.0)); // angle = 0
+        cloud.push(Point2D::new(0.0, 1.0)); // angle = π/2
+        cloud.push(Point2D::new(-1.0, 0.0)); // angle = π
+        cloud.push(Point2D::new(0.0, -1.0)); // angle = -π/2 (3π/2)
 
         let ranges = ScanConverter::to_ranges(&cloud, 0.0, TAU, 4);
 
@@ -414,8 +419,8 @@ mod tests {
     fn test_to_ranges_multiple_points_same_bin() {
         let mut cloud = PointCloud2D::new();
         // Two points at same angle, different ranges
-        cloud.push(Point2D::new(3.0, 0.0));  // range = 3
-        cloud.push(Point2D::new(5.0, 0.0));  // range = 5
+        cloud.push(Point2D::new(3.0, 0.0)); // range = 3
+        cloud.push(Point2D::new(5.0, 0.0)); // range = 5
 
         let ranges = ScanConverter::to_ranges(&cloud, -0.1, 0.1, 1);
 
@@ -444,8 +449,8 @@ mod tests {
     fn test_preserves_intensities_all_valid() {
         let ranges = vec![1.0, 2.0, 3.0];
         let intensities = vec![10, 20, 30];
-        let scan = LaserScan::new(0.0, PI, FRAC_PI_2, 0.1, 10.0, ranges)
-            .with_intensities(intensities);
+        let scan =
+            LaserScan::new(0.0, PI, FRAC_PI_2, 0.1, 10.0, ranges).with_intensities(intensities);
 
         let cloud = ScanConverter::to_point_cloud(&scan);
 
@@ -456,10 +461,10 @@ mod tests {
 
     #[test]
     fn test_preserves_intensities_skips_invalid() {
-        let ranges = vec![1.0, 0.0, 3.0];  // Middle one invalid
+        let ranges = vec![1.0, 0.0, 3.0]; // Middle one invalid
         let intensities = vec![10, 20, 30];
-        let scan = LaserScan::new(0.0, PI, FRAC_PI_2, 0.1, 10.0, ranges)
-            .with_intensities(intensities);
+        let scan =
+            LaserScan::new(0.0, PI, FRAC_PI_2, 0.1, 10.0, ranges).with_intensities(intensities);
 
         let cloud = ScanConverter::to_point_cloud(&scan);
 

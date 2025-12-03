@@ -9,9 +9,16 @@ mod tcp_publisher;
 
 pub use odometry_pipeline::{OdometryPipeline, OdometryPipelineConfig};
 pub use slam_messages::{
-    SlamCommand, SlamMapMessage, SlamScanMessage, SlamStatusMessage,
+    LoopClosureStats,
+    MappingStats,
+    ParticleFilterStats,
+    ScanMatchStats,
+    SlamCommand,
     // Diagnostics types
-    SlamDiagnosticsMessage, TimingBreakdown, ScanMatchStats,
-    ParticleFilterStats, MappingStats, LoopClosureStats,
+    SlamDiagnosticsMessage,
+    SlamMapMessage,
+    SlamScanMessage,
+    SlamStatusMessage,
+    TimingBreakdown,
 };
 pub use tcp_publisher::{OdometryDiagnostics, OdometryMessage, OdometryPublisher, SlamMessage};

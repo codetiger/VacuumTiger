@@ -5,9 +5,9 @@ use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::types::{BagHeader, BagMessage, SensorStatusMsg, HEADER_SIZE};
-use crate::io::sangam_client::LidarScan;
+use super::types::{BagHeader, BagMessage, HEADER_SIZE, SensorStatusMsg};
 use crate::core::types::Timestamped;
+use crate::io::sangam_client::LidarScan;
 
 /// Error type for bag playback operations.
 #[derive(Debug)]
@@ -90,9 +90,8 @@ impl BagPlayer {
         reader.read_exact(&mut header_buffer)?;
 
         // Deserialize header
-        let header: BagHeader = postcard::from_bytes(&header_buffer).map_err(|e| {
-            PlayerError::InvalidFormat(format!("Failed to parse header: {}", e))
-        })?;
+        let header: BagHeader = postcard::from_bytes(&header_buffer)
+            .map_err(|e| PlayerError::InvalidFormat(format!("Failed to parse header: {}", e)))?;
 
         // Verify magic
         if !header.is_valid() {
@@ -190,13 +189,14 @@ impl BagPlayer {
     ///
     /// If `playback_speed` is > 0, this will block to match the original
     /// recording timing.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<BagMessage>> {
         let msg = self.next_immediate()?;
 
-        if let Some(ref msg) = msg {
-            if self.playback_speed > 0.0 {
-                self.wait_for_timing(msg.timestamp_us());
-            }
+        if let Some(ref msg) = msg
+            && self.playback_speed > 0.0
+        {
+            self.wait_for_timing(msg.timestamp_us());
         }
 
         Ok(msg)
@@ -213,9 +213,8 @@ impl BagPlayer {
 
         let elapsed_real = self.playback_start.unwrap().elapsed();
         let msg_offset_us = msg_time_us.saturating_sub(self.first_msg_time_us.unwrap());
-        let target_elapsed = Duration::from_micros(
-            (msg_offset_us as f64 / self.playback_speed as f64) as u64,
-        );
+        let target_elapsed =
+            Duration::from_micros((msg_offset_us as f64 / self.playback_speed as f64) as u64);
 
         if target_elapsed > elapsed_real {
             std::thread::sleep(target_elapsed - elapsed_real);
@@ -233,24 +232,28 @@ impl BagPlayer {
 
     /// Iterate over only sensor status messages.
     pub fn sensor_status_iter(&mut self) -> impl Iterator<Item = Result<SensorStatusMsg>> + '_ {
-        std::iter::from_fn(move || loop {
-            match self.next_immediate() {
-                Ok(Some(BagMessage::SensorStatus(msg))) => return Some(Ok(msg)),
-                Ok(Some(_)) => continue,
-                Ok(None) => return None,
-                Err(e) => return Some(Err(e)),
+        std::iter::from_fn(move || {
+            loop {
+                match self.next_immediate() {
+                    Ok(Some(BagMessage::SensorStatus(msg))) => return Some(Ok(msg)),
+                    Ok(Some(_)) => continue,
+                    Ok(None) => return None,
+                    Err(e) => return Some(Err(e)),
+                }
             }
         })
     }
 
     /// Iterate over only LiDAR scans.
     pub fn lidar_iter(&mut self) -> impl Iterator<Item = Result<Timestamped<LidarScan>>> + '_ {
-        std::iter::from_fn(move || loop {
-            match self.next_immediate() {
-                Ok(Some(BagMessage::Lidar(scan))) => return Some(Ok(scan)),
-                Ok(Some(_)) => continue,
-                Ok(None) => return None,
-                Err(e) => return Some(Err(e)),
+        std::iter::from_fn(move || {
+            loop {
+                match self.next_immediate() {
+                    Ok(Some(BagMessage::Lidar(scan))) => return Some(Ok(scan)),
+                    Ok(Some(_)) => continue,
+                    Ok(None) => return None,
+                    Err(e) => return Some(Err(e)),
+                }
             }
         })
     }
@@ -272,9 +275,9 @@ impl Iterator for BagPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::types::Pose2D;
     use crate::io::bag::recorder::BagRecorder;
     use crate::io::bag::types::EncoderTicks;
-    use crate::core::types::Pose2D;
     use tempfile::TempDir;
 
     fn create_test_bag(path: &Path, num_messages: u64) {

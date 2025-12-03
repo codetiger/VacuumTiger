@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::io::sangam_client::LidarScan;
 use crate::core::types::{Pose2D, Timestamped};
+use crate::io::sangam_client::LidarScan;
 
 /// Magic bytes at start of bag file.
 pub const BAG_MAGIC: [u8; 4] = *b"DBAG";
@@ -14,12 +14,6 @@ pub const BAG_VERSION: u16 = 1;
 
 /// Size of the bag file header in bytes.
 pub const HEADER_SIZE: usize = 64;
-
-/// Flag indicating the bag file is compressed.
-pub const FLAG_COMPRESSED: u16 = 0x01;
-
-/// Flag indicating the bag file has an index.
-pub const FLAG_HAS_INDEX: u16 = 0x02;
 
 /// Bag file header (64 bytes fixed size).
 ///

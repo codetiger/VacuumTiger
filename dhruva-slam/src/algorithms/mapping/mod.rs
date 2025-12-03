@@ -23,13 +23,13 @@
 //! map.save("map.bin")?;
 //! ```
 
+mod integrator;
 mod occupancy_grid;
 mod ray_tracer;
-mod integrator;
 
-pub use occupancy_grid::{OccupancyGrid, OccupancyGridConfig, CellState};
-pub use ray_tracer::RayTracer;
 pub use integrator::{MapIntegrator, MapIntegratorConfig};
+pub use occupancy_grid::{CellState, OccupancyGrid, OccupancyGridConfig};
+pub use ray_tracer::RayTracer;
 
 use serde::{Deserialize, Serialize};
 
@@ -59,7 +59,12 @@ pub struct MapRegion {
 impl MapRegion {
     /// Create a new region.
     pub fn new(min_x: i32, min_y: i32, max_x: i32, max_y: i32) -> Self {
-        Self { min_x, min_y, max_x, max_y }
+        Self {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+        }
     }
 
     /// Check if a cell is within this region.

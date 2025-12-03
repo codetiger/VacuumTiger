@@ -8,6 +8,6 @@
 //! - [`mapping`]: Occupancy grid mapping and ray tracing
 //! - [`localization`]: Particle filter localization (Monte Carlo Localization)
 
-pub mod matching;
-pub mod mapping;
 pub mod localization;
+pub mod mapping;
+pub mod matching;

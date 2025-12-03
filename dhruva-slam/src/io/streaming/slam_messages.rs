@@ -3,12 +3,12 @@
 //! Defines message structures for streaming SLAM data (status, map, scan, diagnostics)
 //! and receiving SLAM commands from visualization clients.
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde::{Deserialize, Serialize};
 
 use crate::algorithms::mapping::OccupancyGrid;
-use crate::engine::slam::{SlamMode, SlamStatus};
 use crate::core::types::{PointCloud2D, Pose2D};
+use crate::engine::slam::{SlamMode, SlamStatus};
 
 // ============================================================================
 // SLAM Diagnostics Messages
@@ -414,10 +414,7 @@ mod tests {
         match cmd {
             SlamCommand::SetMode { mode } => {
                 assert_eq!(mode, "Localization");
-                assert_eq!(
-                    SlamCommand::parse_mode(&mode),
-                    Some(SlamMode::Localization)
-                );
+                assert_eq!(SlamCommand::parse_mode(&mode), Some(SlamMode::Localization));
             }
             _ => panic!("Expected SetMode command"),
         }

@@ -18,9 +18,11 @@
 //! }
 //! ```
 
-use crate::sensors::odometry::{ComplementaryConfig, ComplementaryFilter, WheelOdometry, WheelOdometryConfig};
-use crate::io::streaming::OdometryDiagnostics;
 use crate::core::types::Pose2D;
+use crate::io::streaming::OdometryDiagnostics;
+use crate::sensors::odometry::{
+    ComplementaryConfig, ComplementaryFilter, WheelOdometry, WheelOdometryConfig,
+};
 
 /// Configuration for the odometry pipeline.
 #[derive(Debug, Clone)]
@@ -167,7 +169,10 @@ impl OdometryPipeline {
     ) -> Option<Pose2D> {
         // Handle calibration phase
         match &mut self.calibration {
-            CalibrationState::Calibrating { samples, target_count } => {
+            CalibrationState::Calibrating {
+                samples,
+                target_count,
+            } => {
                 samples.push(gyro_yaw as i32);
 
                 if samples.len() >= *target_count as usize {
@@ -264,10 +269,8 @@ impl OdometryPipeline {
             };
 
             // Calculate tick rates
-            self.diagnostics.tick_rate_left =
-                self.diagnostics.left_tick_accumulator as f32 / dt;
-            self.diagnostics.tick_rate_right =
-                self.diagnostics.right_tick_accumulator as f32 / dt;
+            self.diagnostics.tick_rate_left = self.diagnostics.left_tick_accumulator as f32 / dt;
+            self.diagnostics.tick_rate_right = self.diagnostics.right_tick_accumulator as f32 / dt;
 
             // Reset accumulators
             self.diagnostics.left_tick_accumulator = 0;
@@ -313,7 +316,7 @@ mod tests {
                 gyro_scale: 0.001,
                 gyro_bias_z: 0.0,
             },
-            output_rate_hz: 50.0, // 20ms interval
+            output_rate_hz: 50.0,   // 20ms interval
             calibration_samples: 0, // Disable calibration for tests
         }
     }
@@ -333,7 +336,10 @@ mod tests {
 
         // Second update at 20ms (50Hz interval) should output first valid data
         let result = pipeline.process(100, 100, 0, 20000);
-        assert!(result.is_some(), "First valid data should output at rate interval");
+        assert!(
+            result.is_some(),
+            "First valid data should output at rate interval"
+        );
 
         // Third update 5ms later - within rate limit, should not output
         let result = pipeline.process(110, 110, 0, 25000);
@@ -341,7 +347,10 @@ mod tests {
 
         // Fourth update at 40ms (20ms after last output) - should output again
         let result = pipeline.process(120, 120, 0, 40000);
-        assert!(result.is_some(), "Should output after rate interval elapsed");
+        assert!(
+            result.is_some(),
+            "Should output after rate interval elapsed"
+        );
     }
 
     #[test]

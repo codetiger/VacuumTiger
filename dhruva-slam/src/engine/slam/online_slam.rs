@@ -7,17 +7,16 @@ use std::time::Instant;
 
 use crate::algorithms::mapping::{OccupancyGrid, OccupancyGridConfig};
 use crate::algorithms::matching::{
-    HybridMatcher, HybridMatcherConfig, ScanMatchResult, ScanMatcher,
-    PointToPointIcp, IcpConfig,
+    HybridMatcher, HybridMatcherConfig, IcpConfig, PointToPointIcp, ScanMatchResult, ScanMatcher,
 };
-use crate::core::types::{Pose2D, PointCloud2D, Covariance2D};
+use crate::core::types::{Covariance2D, PointCloud2D, Pose2D};
 use crate::io::streaming::{
-    SlamDiagnosticsMessage, TimingBreakdown, ScanMatchStats, MappingStats, LoopClosureStats,
+    LoopClosureStats, MappingStats, ScanMatchStats, SlamDiagnosticsMessage, TimingBreakdown,
 };
 
+use super::SlamEngine;
 use super::keyframe::{KeyframeManager, KeyframeManagerConfig};
 use super::submap::{SubmapManager, SubmapManagerConfig};
-use super::SlamEngine;
 
 /// SLAM operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +198,6 @@ pub struct OnlineSlam {
     // ========================================================================
     // Diagnostics tracking
     // ========================================================================
-
     /// Last timing breakdown.
     last_timing: TimingBreakdown,
 
@@ -373,11 +371,8 @@ impl OnlineSlam {
         // Weighted average (simple linear interpolation)
         let x = odom_pose.x * (1.0 - alpha) + match_result.transform.x * alpha;
         let y = odom_pose.y * (1.0 - alpha) + match_result.transform.y * alpha;
-        let theta = crate::core::math::angle_lerp(
-            odom_pose.theta,
-            match_result.transform.theta,
-            alpha,
-        );
+        let theta =
+            crate::core::math::angle_lerp(odom_pose.theta, match_result.transform.theta, alpha);
 
         Pose2D::new(x, y, theta)
     }
@@ -453,17 +448,23 @@ impl SlamEngine for OnlineSlam {
 
         // =========== Scan Matching (timed) ===========
         let match_start = Instant::now();
-        let match_result = if self.config.use_submap_matching && self.submaps.active_submap().is_some() {
-            self.match_to_submap(scan, &predicted_pose)
-        } else {
-            self.match_to_previous_scan(scan, odom_delta)
-        };
+        let match_result =
+            if self.config.use_submap_matching && self.submaps.active_submap().is_some() {
+                self.match_to_submap(scan, &predicted_pose)
+            } else {
+                self.match_to_previous_scan(scan, odom_delta)
+            };
         timing.scan_matching_us = match_start.elapsed().as_micros() as u64;
 
         // Update scan match stats for diagnostics
         if let Some(ref mr) = match_result {
             self.last_scan_match_stats = ScanMatchStats {
-                method: if self.config.use_submap_matching { "submap_icp" } else { "hybrid" }.to_string(),
+                method: if self.config.use_submap_matching {
+                    "submap_icp"
+                } else {
+                    "hybrid"
+                }
+                .to_string(),
                 iterations: mr.iterations,
                 score: mr.score,
                 mse: mr.mse,
@@ -514,14 +515,14 @@ impl SlamEngine for OnlineSlam {
 
             // =========== Keyframe Check (timed) ===========
             let keyframe_start = Instant::now();
-            if self.keyframes.should_create_keyframe(&refined_pose, timestamp_us) {
-                self.keyframes.create_keyframe(
-                    refined_pose,
-                    scan.clone(),
-                    timestamp_us,
-                    submap_id,
-                );
-                self.submaps.add_keyframe_to_active(self.keyframes.len() as u64 - 1);
+            if self
+                .keyframes
+                .should_create_keyframe(&refined_pose, timestamp_us)
+            {
+                self.keyframes
+                    .create_keyframe(refined_pose, scan.clone(), timestamp_us, submap_id);
+                self.submaps
+                    .add_keyframe_to_active(self.keyframes.len() as u64 - 1);
                 result.keyframe_created = true;
             }
             timing.keyframe_check_us = keyframe_start.elapsed().as_micros() as u64;

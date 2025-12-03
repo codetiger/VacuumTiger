@@ -61,25 +61,25 @@
 
 pub mod keyframe;
 mod kidnapped_detector;
+mod online_slam;
 mod recovery_state;
 mod submap;
-mod online_slam;
 
-pub use keyframe::{Keyframe, KeyframeManager, KeyframeManagerConfig as KeyframeConfig, ScanContext};
-pub use kidnapped_detector::{
-    KidnappedDetector, KidnappedDetectorConfig, KidnappedDetection, KidnappedReason,
+pub use keyframe::{
+    Keyframe, KeyframeManager, KeyframeManagerConfig as KeyframeConfig, ScanContext,
 };
+pub use kidnapped_detector::{
+    KidnappedDetection, KidnappedDetector, KidnappedDetectorConfig, KidnappedReason,
+};
+pub use online_slam::{OnlineSlam, OnlineSlamConfig, SlamMode, SlamResult, SlamStatus};
 pub use recovery_state::{
     RecoveryAction, RecoveryConfig, RecoveryState, RecoveryStateMachine, RecoveryStats,
     RecoveryStrategy,
 };
 pub use submap::{Submap, SubmapManager, SubmapManagerConfig as SubmapConfig, SubmapState};
-pub use online_slam::{
-    OnlineSlam, OnlineSlamConfig, SlamMode, SlamResult, SlamStatus,
-};
 
-use crate::core::types::{Pose2D, PointCloud2D};
 use crate::algorithms::mapping::OccupancyGrid;
+use crate::core::types::{PointCloud2D, Pose2D};
 
 /// Trait for SLAM engines.
 ///

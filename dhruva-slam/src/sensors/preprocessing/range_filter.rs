@@ -63,7 +63,10 @@ impl RangeFilter {
     /// Returns a new scan with only valid points.
     pub fn apply(&self, scan: &LaserScan) -> LaserScan {
         let mut new_ranges = Vec::with_capacity(scan.ranges.len());
-        let mut new_intensities = scan.intensities.as_ref().map(|_| Vec::with_capacity(scan.ranges.len()));
+        let mut new_intensities = scan
+            .intensities
+            .as_ref()
+            .map(|_| Vec::with_capacity(scan.ranges.len()));
         let mut new_angle_min = None;
         let mut new_angle_max = 0.0f32;
 
@@ -78,12 +81,10 @@ impl RangeFilter {
 
                 new_ranges.push(range);
 
-                if let (Some(new_int), Some(old_int)) =
-                    (&mut new_intensities, &scan.intensities)
+                if let (Some(new_int), Some(old_int)) = (&mut new_intensities, &scan.intensities)
+                    && let Some(&intensity) = old_int.get(i)
                 {
-                    if let Some(&intensity) = old_int.get(i) {
-                        new_int.push(intensity);
-                    }
+                    new_int.push(intensity);
                 }
             }
         }
@@ -126,16 +127,16 @@ mod tests {
     fn create_test_scan() -> LaserScan {
         // Create scan with various range values including invalid ones
         let ranges = vec![
-            0.05,  // Too close (< 0.1)
-            0.15,  // Valid
-            1.0,   // Valid
-            5.0,   // Valid
-            10.0,  // Valid
-            15.0,  // Too far (> 12.0)
-            0.0,   // Invalid (zero)
-            -1.0,  // Invalid (negative)
-            f32::NAN,  // Invalid (NaN)
-            f32::INFINITY,  // Invalid (infinity)
+            0.05,          // Too close (< 0.1)
+            0.15,          // Valid
+            1.0,           // Valid
+            5.0,           // Valid
+            10.0,          // Valid
+            15.0,          // Too far (> 12.0)
+            0.0,           // Invalid (zero)
+            -1.0,          // Invalid (negative)
+            f32::NAN,      // Invalid (NaN)
+            f32::INFINITY, // Invalid (infinity)
         ];
 
         LaserScan::new(0.0, TAU, TAU / 10.0, 0.1, 12.0, ranges)
@@ -205,10 +206,10 @@ mod tests {
 
     #[test]
     fn test_preserves_intensities() {
-        let ranges = vec![1.0, 0.0, 2.0, 0.0, 3.0];  // 3 valid
+        let ranges = vec![1.0, 0.0, 2.0, 0.0, 3.0]; // 3 valid
         let intensities = vec![100, 200, 150, 250, 175];
-        let scan = LaserScan::new(0.0, TAU, TAU / 5.0, 0.1, 12.0, ranges)
-            .with_intensities(intensities);
+        let scan =
+            LaserScan::new(0.0, TAU, TAU / 5.0, 0.1, 12.0, ranges).with_intensities(intensities);
 
         let filter = RangeFilter::default();
         let filtered = filter.apply(&scan);

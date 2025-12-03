@@ -10,15 +10,15 @@
 //! Run with: `cargo bench`
 //! View HTML reports in: `target/criterion/`
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use std::f32::consts::{PI, TAU};
 
 use dhruva_slam::{
-    math::{angle_diff, angle_lerp, normalize_angle},
     AngularDownsampler, AngularDownsamplerConfig, ComplementaryConfig, ComplementaryFilter,
     LaserScan, OutlierFilter, OutlierFilterConfig, Point2D, PointCloud2D, Pose2D,
     PreprocessorConfig, RangeFilter, RangeFilterConfig, ScanConverter, ScanPreprocessor,
     WheelOdometry, WheelOdometryConfig,
+    math::{angle_diff, angle_lerp, normalize_angle},
 };
 
 // ============================================================================
@@ -55,7 +55,14 @@ fn create_benchmark_scan(n_points: usize) -> LaserScan {
         })
         .collect();
 
-    LaserScan::new(0.0, TAU - angle_increment, angle_increment, 0.15, 12.0, ranges)
+    LaserScan::new(
+        0.0,
+        TAU - angle_increment,
+        angle_increment,
+        0.15,
+        12.0,
+        ranges,
+    )
 }
 
 /// Create a scan with some invalid points for filtering tests
@@ -74,7 +81,14 @@ fn create_noisy_scan(n_points: usize) -> LaserScan {
         })
         .collect();
 
-    LaserScan::new(0.0, TAU - angle_increment, angle_increment, 0.15, 12.0, ranges)
+    LaserScan::new(
+        0.0,
+        TAU - angle_increment,
+        angle_increment,
+        0.15,
+        12.0,
+        ranges,
+    )
 }
 
 // ============================================================================
@@ -137,9 +151,7 @@ fn bench_pose(c: &mut Criterion) {
     });
 
     // Pose inverse
-    group.bench_function("inverse", |b| {
-        b.iter(|| black_box(&pose_a).inverse())
-    });
+    group.bench_function("inverse", |b| b.iter(|| black_box(&pose_a).inverse()));
 
     // Single point transform
     group.bench_function("transform_point", |b| {
@@ -316,22 +328,16 @@ fn bench_preprocessing(c: &mut Criterion) {
         );
 
         // Downsampler
-        group.bench_with_input(
-            BenchmarkId::new("downsampler", size),
-            &scan,
-            |b, scan| {
-                let downsampler = AngularDownsampler::new(AngularDownsamplerConfig::default());
-                b.iter(|| downsampler.apply(black_box(scan)))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("downsampler", size), &scan, |b, scan| {
+            let downsampler = AngularDownsampler::new(AngularDownsamplerConfig::default());
+            b.iter(|| downsampler.apply(black_box(scan)))
+        });
 
         // Scan converter
         group.bench_with_input(
             BenchmarkId::new("scan_converter", size),
             &scan,
-            |b, scan| {
-                b.iter(|| ScanConverter::to_point_cloud(black_box(scan)))
-            },
+            |b, scan| b.iter(|| ScanConverter::to_point_cloud(black_box(scan))),
         );
 
         // Full pipeline
@@ -379,13 +385,9 @@ fn bench_point_cloud(c: &mut Criterion) {
 
         // Transform (creates new cloud)
         let pose = Pose2D::new(1.0, 2.0, 0.5);
-        group.bench_with_input(
-            BenchmarkId::new("transform", size),
-            &cloud,
-            |b, cloud| {
-                b.iter(|| black_box(cloud).transform(black_box(&pose)))
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("transform", size), &cloud, |b, cloud| {
+            b.iter(|| black_box(cloud).transform(black_box(&pose)))
+        });
 
         // Transform in place
         group.bench_with_input(

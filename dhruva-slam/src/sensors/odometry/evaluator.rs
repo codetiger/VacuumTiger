@@ -44,15 +44,19 @@ impl Stats {
         let sum: f32 = values.iter().sum();
         let mean = sum / count as f32;
 
-        let variance: f32 = values.iter()
-            .map(|&x| (x - mean).powi(2))
-            .sum::<f32>() / count as f32;
+        let variance: f32 = values.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / count as f32;
         let std_dev = variance.sqrt();
 
         let min = values.iter().cloned().fold(f32::MAX, f32::min);
         let max = values.iter().cloned().fold(f32::MIN, f32::max);
 
-        Self { count, mean, std_dev, min, max }
+        Self {
+            count,
+            mean,
+            std_dev,
+            min,
+            max,
+        }
     }
 }
 
@@ -208,7 +212,7 @@ impl OdometryEvaluator {
             return EvaluationResult::default();
         }
 
-        let origin = self.origin.unwrap_or(Pose2D::identity());
+        let origin = self.origin.unwrap_or_default();
         let final_pose = self.estimates.last().map(|t| t.data).unwrap_or(origin);
 
         let total_distance = self.total_distance();
@@ -218,7 +222,8 @@ impl OdometryEvaluator {
         let dx = final_pose.x - origin.x;
         let dy = final_pose.y - origin.y;
         let closure_position_error = (dx * dx + dy * dy).sqrt();
-        let closure_heading_error = crate::core::math::angle_diff(origin.theta, final_pose.theta).abs();
+        let closure_heading_error =
+            crate::core::math::angle_diff(origin.theta, final_pose.theta).abs();
 
         // Drift rates
         let position_drift_rate = if total_distance > 0.0 {
@@ -264,7 +269,8 @@ impl OdometryEvaluator {
                 let dx = estimate.data.x - gt.x;
                 let dy = estimate.data.y - gt.y;
                 let pos_error = (dx * dx + dy * dy).sqrt();
-                let heading_error = crate::core::math::angle_diff(estimate.data.theta, gt.theta).abs();
+                let heading_error =
+                    crate::core::math::angle_diff(estimate.data.theta, gt.theta).abs();
 
                 position_errors.push(pos_error);
                 heading_errors.push(heading_error);
@@ -353,7 +359,7 @@ impl OdometryEvaluator {
         }
 
         let segment = &self.estimates[start_idx..end_idx];
-        let origin = segment.first().map(|t| t.data).unwrap_or(Pose2D::identity());
+        let origin = segment.first().map(|t| t.data).unwrap_or_default();
         let final_pose = segment.last().map(|t| t.data).unwrap_or(origin);
 
         // Compute distance in segment
@@ -380,8 +386,16 @@ impl OdometryEvaluator {
             total_rotation,
             position_error: Stats::from_slice(&[position_error]),
             heading_error: Stats::from_slice(&[heading_error]),
-            position_drift_rate: if total_distance > 0.0 { position_error / total_distance } else { 0.0 },
-            heading_drift_rate: if total_rotation > 0.0 { heading_error / total_rotation } else { 0.0 },
+            position_drift_rate: if total_distance > 0.0 {
+                position_error / total_distance
+            } else {
+                0.0
+            },
+            heading_drift_rate: if total_rotation > 0.0 {
+                heading_error / total_rotation
+            } else {
+                0.0
+            },
             closure_position_error: position_error,
             closure_heading_error: heading_error,
             sample_count: segment.len(),
@@ -394,23 +408,23 @@ impl OdometryEvaluator {
     pub fn scenario_bounds(scenario: TestScenario) -> ScenarioBounds {
         match scenario {
             TestScenario::StraightLine2m => ScenarioBounds {
-                max_position_error: 0.05,  // 5cm for 2m travel
-                max_heading_error: 0.035,  // ~2°
+                max_position_error: 0.05,      // 5cm for 2m travel
+                max_heading_error: 0.035,      // ~2°
                 max_position_drift_rate: 0.05, // 5%
             },
             TestScenario::Rotation360 => ScenarioBounds {
-                max_position_error: 0.03,  // 3cm (should stay in place)
-                max_heading_error: 0.035,  // ~2°
+                max_position_error: 0.03, // 3cm (should stay in place)
+                max_heading_error: 0.035, // ~2°
                 max_position_drift_rate: 0.1,
             },
             TestScenario::SquarePath1m => ScenarioBounds {
-                max_position_error: 0.10,  // 10cm closure error
-                max_heading_error: 0.05,   // ~3°
+                max_position_error: 0.10, // 10cm closure error
+                max_heading_error: 0.05,  // ~3°
                 max_position_drift_rate: 0.05,
             },
             TestScenario::FigureEight => ScenarioBounds {
-                max_position_error: 0.15,  // 15cm for complex path
-                max_heading_error: 0.07,   // ~4°
+                max_position_error: 0.15, // 15cm for complex path
+                max_heading_error: 0.07,  // ~4°
                 max_position_drift_rate: 0.07,
             },
         }
@@ -537,7 +551,11 @@ mod tests {
         let result = evaluator.evaluate_closure();
 
         let expected_pos_error = (0.1f32.powi(2) + 0.05f32.powi(2)).sqrt();
-        assert_relative_eq!(result.closure_position_error, expected_pos_error, epsilon = 0.001);
+        assert_relative_eq!(
+            result.closure_position_error,
+            expected_pos_error,
+            epsilon = 0.001
+        );
         assert_relative_eq!(result.closure_heading_error, 0.02, epsilon = 0.001);
     }
 

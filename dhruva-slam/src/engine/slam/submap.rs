@@ -12,8 +12,10 @@
 //! - Memory efficiency (can compress finished submaps)
 //! - Better loop closure (match against complete submaps)
 
-use crate::algorithms::mapping::{OccupancyGrid, OccupancyGridConfig, MapIntegrator, MapIntegratorConfig};
-use crate::core::types::{Pose2D, PointCloud2D};
+use crate::algorithms::mapping::{
+    MapIntegrator, MapIntegratorConfig, OccupancyGrid, OccupancyGridConfig,
+};
+use crate::core::types::{PointCloud2D, Pose2D};
 
 /// State of a submap in its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,7 +141,8 @@ impl Submap {
 
         // Integrate cloud (which expects global coordinates, but we provide submap-local)
         // The robot position is at local_pose, and points are already transformed
-        self.integrator.integrate_cloud(&mut self.grid, &global_cloud, &local_pose);
+        self.integrator
+            .integrate_cloud(&mut self.grid, &global_cloud, &local_pose);
 
         self.num_scans += 1;
         self.end_time_us = timestamp_us;
@@ -214,8 +217,8 @@ impl Default for SubmapManagerConfig {
     fn default() -> Self {
         Self {
             grid_config: OccupancyGridConfig {
-                resolution: 0.05,      // 5cm cells
-                initial_width: 10.0,   // 10m (smaller than global map)
+                resolution: 0.05,    // 5cm cells
+                initial_width: 10.0, // 10m (smaller than global map)
                 initial_height: 10.0,
                 ..OccupancyGridConfig::default()
             },
@@ -382,7 +385,8 @@ impl SubmapManager {
             }
 
             if self.config.overlap_scans > 0 {
-                self.overlap_submaps.push((old_id, self.config.overlap_scans));
+                self.overlap_submaps
+                    .push((old_id, self.config.overlap_scans));
             } else {
                 // No overlap, finish immediately
                 if let Some(submap) = self.get_mut(old_id) {

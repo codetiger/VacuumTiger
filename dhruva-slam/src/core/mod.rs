@@ -8,5 +8,5 @@
 //! - [`types`]: Core data types (poses, scans, odometry)
 //! - [`math`]: Mathematical primitives (angle normalization, interpolation)
 
-pub mod types;
 pub mod math;
+pub mod types;

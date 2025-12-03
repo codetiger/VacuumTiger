@@ -380,11 +380,11 @@ mod tests {
 
         // Create a scan that "sees" the wall at distance 2m from origin
         let scan = LaserScan::new(
-            -0.1,           // angle_min
-            0.1,            // angle_max
-            0.1,            // angle_increment
-            0.1,            // range_min
-            8.0,            // range_max
+            -0.1, // angle_min
+            0.1,  // angle_max
+            0.1,  // angle_increment
+            0.1,  // range_min
+            8.0,  // range_max
             vec![2.0, 2.0, 2.0],
         );
 
@@ -392,7 +392,11 @@ mod tests {
         let pose = Pose2D::new(0.0, 0.0, std::f32::consts::PI / 2.0);
 
         let log_l = model.log_likelihood(&scan, &pose, &map);
-        assert!(log_l.is_finite(), "Log likelihood should be finite: {}", log_l);
+        assert!(
+            log_l.is_finite(),
+            "Log likelihood should be finite: {}",
+            log_l
+        );
     }
 
     #[test]
@@ -408,12 +412,12 @@ mod tests {
 
         // Create a scan that sees the wall
         let scan = LaserScan::new(
-            -0.1,           // angle_min
-            0.1,            // angle_max
-            0.02,           // angle_increment
-            0.1,            // range_min
-            8.0,            // range_max
-            vec![2.0; 11],  // Wall at 2m
+            -0.1,          // angle_min
+            0.1,           // angle_max
+            0.02,          // angle_increment
+            0.1,           // range_min
+            8.0,           // range_max
+            vec![2.0; 11], // Wall at 2m
         );
 
         // Correct pose: at origin, facing wall
@@ -451,12 +455,12 @@ mod tests {
         let model = LikelihoodFieldModel::from_map(SensorModelConfig::default(), &map);
 
         let empty_scan = LaserScan::new(
-            0.0,            // angle_min
-            0.0,            // angle_max
-            0.1,            // angle_increment
-            0.1,            // range_min
-            8.0,            // range_max
-            vec![],         // empty ranges
+            0.0,    // angle_min
+            0.0,    // angle_max
+            0.1,    // angle_increment
+            0.1,    // range_min
+            8.0,    // range_max
+            vec![], // empty ranges
         );
 
         let pose = Pose2D::identity();

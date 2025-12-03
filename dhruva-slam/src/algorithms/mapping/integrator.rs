@@ -5,8 +5,8 @@
 //! 2. Mark cells along ray as free
 //! 3. Mark endpoint as occupied (if valid range)
 
+use super::{MapRegion, OccupancyGrid, RayTracer};
 use crate::core::types::{LaserScan, PointCloud2D, Pose2D};
-use super::{OccupancyGrid, RayTracer, MapRegion};
 
 /// Configuration for map integrator.
 #[derive(Debug, Clone)]
@@ -237,14 +237,8 @@ impl MapIntegrator {
         }
 
         let mark_endpoint = range <= self.config.max_range;
-        self.ray_tracer.trace_ray(
-            grid,
-            robot_x,
-            robot_y,
-            point_x,
-            point_y,
-            mark_endpoint,
-        );
+        self.ray_tracer
+            .trace_ray(grid, robot_x, robot_y, point_x, point_y, mark_endpoint);
     }
 }
 
@@ -359,7 +353,14 @@ mod tests {
         ranges[2] = 0.6; // Valid
 
         let angle_increment = TAU / 36.0;
-        let scan = LaserScan::new(0.0, TAU - angle_increment, angle_increment, 0.15, 12.0, ranges);
+        let scan = LaserScan::new(
+            0.0,
+            TAU - angle_increment,
+            angle_increment,
+            0.15,
+            12.0,
+            ranges,
+        );
 
         integrator.integrate_scan(&mut grid, &scan, &Pose2D::identity());
 
@@ -384,7 +385,14 @@ mod tests {
         ranges[1] = 10.0; // Beyond max_free_range, ignored entirely
 
         let angle_increment = TAU / 36.0;
-        let scan = LaserScan::new(0.0, TAU - angle_increment, angle_increment, 0.15, 12.0, ranges);
+        let scan = LaserScan::new(
+            0.0,
+            TAU - angle_increment,
+            angle_increment,
+            0.15,
+            12.0,
+            ranges,
+        );
 
         integrator.integrate_scan(&mut grid, &scan, &Pose2D::identity());
 

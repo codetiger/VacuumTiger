@@ -14,17 +14,17 @@
 //! - [`LaserScan`]: Raw LiDAR scan in polar coordinates
 //! - [`PointCloud2D`]: Collection of 2D points in Cartesian coordinates
 
-mod pose;
-mod timestamped;
 mod odometry;
+mod pose;
 mod scan;
+mod timestamped;
 
 // Phase 1 types
 pub use pose::{Point2D, Pose2D};
 pub use timestamped::Timestamped;
 
 // Phase 2 types
-pub use odometry::{Twist2D, ImuReading, Covariance2D};
+pub use odometry::{Covariance2D, ImuReading, Twist2D};
 
 // Phase 3 types
 pub use scan::{LaserScan, PointCloud2D};

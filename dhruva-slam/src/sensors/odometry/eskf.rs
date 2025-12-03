@@ -37,9 +37,9 @@ pub struct ProcessNoise {
 impl Default for ProcessNoise {
     fn default() -> Self {
         Self {
-            position_var_per_meter: 0.01,    // 10% of distance as std dev
-            heading_var_per_radian: 0.01,    // ~6° std dev per radian turned
-            gyro_var_per_second: 0.0001,     // Small gyro noise
+            position_var_per_meter: 0.01, // 10% of distance as std dev
+            heading_var_per_radian: 0.01, // ~6° std dev per radian turned
+            gyro_var_per_second: 0.0001,  // Small gyro noise
         }
     }
 }
@@ -83,8 +83,8 @@ impl Default for EskfConfig {
             measurement_noise: MeasurementNoise::default(),
             gyro_scale: 0.1 * (std::f32::consts::PI / 180.0), // 0.1 deg/s per unit
             gyro_bias_z: 0.0,
-            initial_position_variance: 0.01,  // 10cm std dev
-            initial_heading_variance: 0.01,   // ~6° std dev
+            initial_position_variance: 0.01, // 10cm std dev
+            initial_heading_variance: 0.01,  // ~6° std dev
         }
     }
 }
@@ -210,7 +210,8 @@ impl Eskf {
         self.nominal = self.nominal.compose(&encoder_delta);
 
         // Compute motion magnitude for process noise scaling
-        let distance = (encoder_delta.x * encoder_delta.x + encoder_delta.y * encoder_delta.y).sqrt();
+        let distance =
+            (encoder_delta.x * encoder_delta.x + encoder_delta.y * encoder_delta.y).sqrt();
         let rotation = encoder_delta.theta.abs();
 
         // Process noise covariance Q
@@ -253,15 +254,15 @@ impl Eskf {
 
         // F * (P * F^T)
         let new_p = [
-            pft00 + f02 * pft20 + q_xx,  // [0,0]
-            pft01 + f02 * pft21,          // [0,1]
-            pft02 + f02 * pft22,          // [0,2]
-            pft10 + f12 * pft20,          // [1,0]
-            pft11 + f12 * pft21 + q_yy,  // [1,1]
-            pft12 + f12 * pft22,          // [1,2]
-            pft20,                         // [2,0]
-            pft21,                         // [2,1]
-            pft22 + q_tt,                 // [2,2]
+            pft00 + f02 * pft20 + q_xx, // [0,0]
+            pft01 + f02 * pft21,        // [0,1]
+            pft02 + f02 * pft22,        // [0,2]
+            pft10 + f12 * pft20,        // [1,0]
+            pft11 + f12 * pft21 + q_yy, // [1,1]
+            pft12 + f12 * pft22,        // [1,2]
+            pft20,                      // [2,0]
+            pft21,                      // [2,1]
+            pft22 + q_tt,               // [2,2]
         ];
 
         self.covariance = Covariance2D::from_array(new_p);
@@ -308,9 +309,9 @@ impl Eskf {
         // Kalman gain: K = P * H^T * S^-1
         // Since H = [0, 0, 1], K = P[:, 2] / S
         let p = self.covariance.as_slice();
-        let k0 = p[2] / s;  // K[0]
-        let k1 = p[5] / s;  // K[1]
-        let k2 = p[8] / s;  // K[2]
+        let k0 = p[2] / s; // K[0]
+        let k1 = p[5] / s; // K[1]
+        let k2 = p[8] / s; // K[2]
 
         // Innovation (measurement residual)
         // Compare encoder-derived heading change with gyro-derived
@@ -337,15 +338,15 @@ impl Eskf {
         //             | 0   1   -k1 |
         //             | 0   0  1-k2 |
         let new_p = [
-            p[0] - k0 * p[6],                    // [0,0]
-            p[1] - k0 * p[7],                    // [0,1]
-            p[2] - k0 * p[8],                    // [0,2]
-            p[3] - k1 * p[6],                    // [1,0]
-            p[4] - k1 * p[7],                    // [1,1]
-            p[5] - k1 * p[8],                    // [1,2]
-            (1.0 - k2) * p[6],                   // [2,0]
-            (1.0 - k2) * p[7],                   // [2,1]
-            (1.0 - k2) * p[8],                   // [2,2]
+            p[0] - k0 * p[6],  // [0,0]
+            p[1] - k0 * p[7],  // [0,1]
+            p[2] - k0 * p[8],  // [0,2]
+            p[3] - k1 * p[6],  // [1,0]
+            p[4] - k1 * p[7],  // [1,1]
+            p[5] - k1 * p[8],  // [1,2]
+            (1.0 - k2) * p[6], // [2,0]
+            (1.0 - k2) * p[7], // [2,1]
+            (1.0 - k2) * p[8], // [2,2]
         ];
 
         self.covariance = Covariance2D::from_array(new_p);
@@ -364,9 +365,7 @@ impl Eskf {
     pub fn update(&mut self, encoder_delta: Pose2D, gyro_z_raw: i16, timestamp_us: u64) -> Pose2D {
         // Compute dt
         let dt = match self.last_timestamp_us {
-            Some(last) if timestamp_us > last => {
-                (timestamp_us - last) as f32 / 1_000_000.0
-            }
+            Some(last) if timestamp_us > last => (timestamp_us - last) as f32 / 1_000_000.0,
             _ => 0.0,
         };
         self.last_timestamp_us = Some(timestamp_us);
@@ -391,9 +390,7 @@ impl Eskf {
     ) -> Pose2D {
         // Compute dt
         let dt = match self.last_timestamp_us {
-            Some(last) if timestamp_us > last => {
-                (timestamp_us - last) as f32 / 1_000_000.0
-            }
+            Some(last) if timestamp_us > last => (timestamp_us - last) as f32 / 1_000_000.0,
             _ => 0.0,
         };
         self.last_timestamp_us = Some(timestamp_us);
@@ -552,8 +549,12 @@ mod tests {
         let cov_after = eskf.covariance().var_theta();
 
         // Covariance should decrease after update
-        assert!(cov_after < cov_before,
-            "Covariance should decrease: {} -> {}", cov_before, cov_after);
+        assert!(
+            cov_after < cov_before,
+            "Covariance should decrease: {} -> {}",
+            cov_before,
+            cov_after
+        );
     }
 
     #[test]
@@ -619,8 +620,12 @@ mod tests {
         let final_cov = eskf.covariance().var_x();
 
         // Covariance should have grown
-        assert!(final_cov > initial_cov,
-            "Covariance should grow: {} -> {}", initial_cov, final_cov);
+        assert!(
+            final_cov > initial_cov,
+            "Covariance should grow: {} -> {}",
+            initial_cov,
+            final_cov
+        );
     }
 
     #[test]
@@ -654,7 +659,11 @@ mod tests {
 
         // With gyro at bias, net rotation should be minimal
         let pose = eskf.pose();
-        assert!(pose.theta.abs() < 0.1, "Theta should be small: {}", pose.theta);
+        assert!(
+            pose.theta.abs() < 0.1,
+            "Theta should be small: {}",
+            pose.theta
+        );
     }
 
     #[test]
@@ -676,7 +685,7 @@ mod tests {
 
         // Same timestamp (dt = 0)
         eskf.update(Pose2D::new(0.1, 0.0, 0.0), 100, 1000);
-        let pose1 = eskf.pose();
+        let _ = eskf.pose();
 
         // Same timestamp again - gyro update should be skipped
         eskf.update(Pose2D::new(0.1, 0.0, 0.0), 100, 1000);

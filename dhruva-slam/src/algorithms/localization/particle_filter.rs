@@ -195,7 +195,9 @@ impl ParticleFilter {
     /// Call this with odometry delta when the robot moves.
     pub fn predict(&mut self, odom_delta: &Pose2D) {
         for particle in &mut self.particles {
-            particle.pose = self.motion_model.sample(&particle.pose, odom_delta, &mut self.rng);
+            particle.pose = self
+                .motion_model
+                .sample(&particle.pose, odom_delta, &mut self.rng);
         }
     }
 
@@ -324,8 +326,18 @@ impl ParticleFilter {
             let n = self.particles.len() as f32;
             let mean_x: f32 = self.particles.iter().map(|p| p.pose.x).sum::<f32>() / n;
             let mean_y: f32 = self.particles.iter().map(|p| p.pose.y).sum::<f32>() / n;
-            let mean_sin: f32 = self.particles.iter().map(|p| p.pose.theta.sin()).sum::<f32>() / n;
-            let mean_cos: f32 = self.particles.iter().map(|p| p.pose.theta.cos()).sum::<f32>() / n;
+            let mean_sin: f32 = self
+                .particles
+                .iter()
+                .map(|p| p.pose.theta.sin())
+                .sum::<f32>()
+                / n;
+            let mean_cos: f32 = self
+                .particles
+                .iter()
+                .map(|p| p.pose.theta.cos())
+                .sum::<f32>()
+                / n;
             Pose2D::new(mean_x, mean_y, mean_sin.atan2(mean_cos))
         }
     }
@@ -578,12 +590,12 @@ mod tests {
 
         // Create a simple scan
         let scan = LaserScan::new(
-            -1.0,                // angle_min
-            1.0,                 // angle_max
-            0.1,                 // angle_increment
-            0.1,                 // range_min
-            8.0,                 // range_max
-            vec![4.0; 21],       // ranges - sees wall at 4m
+            -1.0,          // angle_min
+            1.0,           // angle_max
+            0.1,           // angle_increment
+            0.1,           // range_min
+            8.0,           // range_max
+            vec![4.0; 21], // ranges - sees wall at 4m
         );
 
         // Update should trigger resampling

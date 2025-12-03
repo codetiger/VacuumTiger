@@ -114,16 +114,16 @@ pub mod io;
 // ============================================================================
 
 // Core types
-pub use core::types::{Point2D, Pose2D, Timestamped};
+pub use core::math;
 pub use core::types::{Covariance2D, ImuReading, Twist2D};
 pub use core::types::{LaserScan, PointCloud2D};
-pub use core::math;
+pub use core::types::{Point2D, Pose2D, Timestamped};
 
 // Sensors - Odometry
 pub use sensors::odometry::{
-    ComplementaryConfig, ComplementaryFilter, Eskf, EskfConfig, EvaluationResult,
-    MeasurementNoise, OdometryEvaluator, ProcessNoise, ScenarioBounds, Stats, TestScenario,
-    WheelOdometry, WheelOdometryConfig,
+    ComplementaryConfig, ComplementaryFilter, Eskf, EskfConfig, EvaluationResult, MeasurementNoise,
+    OdometryEvaluator, ProcessNoise, ScenarioBounds, Stats, TestScenario, WheelOdometry,
+    WheelOdometryConfig,
 };
 
 // Sensors - Preprocessing
@@ -136,8 +136,8 @@ pub use sensors::preprocessing::{
 // Algorithms - Matching
 pub use algorithms::matching::{
     CorrelativeConfig, CorrelativeMatcher, IcpConfig, MultiResolutionConfig,
-    MultiResolutionMatcher, PointToLineIcp, PointToLineIcpConfig, PointToPointIcp,
-    ScanMatchResult, ScanMatcher,
+    MultiResolutionMatcher, PointToLineIcp, PointToLineIcpConfig, PointToPointIcp, ScanMatchResult,
+    ScanMatcher,
 };
 
 // Algorithms - Mapping
@@ -157,8 +157,8 @@ pub use engine::slam::{
     Keyframe, KeyframeConfig, KeyframeManager, KidnappedDetection, KidnappedDetector,
     KidnappedDetectorConfig, KidnappedReason, OnlineSlam, OnlineSlamConfig, RecoveryAction,
     RecoveryConfig, RecoveryState, RecoveryStateMachine, RecoveryStats, RecoveryStrategy,
-    ScanContext, SlamEngine, SlamMode, SlamResult, SlamStatus, Submap, SubmapConfig,
-    SubmapManager, SubmapState,
+    ScanContext, SlamEngine, SlamMode, SlamResult, SlamStatus, Submap, SubmapConfig, SubmapManager,
+    SubmapState,
 };
 
 // Engine - Graph

@@ -29,11 +29,9 @@
 //! ```
 
 mod motion_model;
-mod sensor_model;
 mod particle_filter;
+mod sensor_model;
 
 pub use motion_model::{MotionModel, MotionModelConfig};
-pub use sensor_model::{SensorModel, LikelihoodFieldModel, SensorModelConfig};
-pub use particle_filter::{
-    Particle, ParticleFilter, ParticleFilterConfig, ParticleFilterState,
-};
+pub use particle_filter::{Particle, ParticleFilter, ParticleFilterConfig, ParticleFilterState};
+pub use sensor_model::{LikelihoodFieldModel, SensorModel, SensorModelConfig};

@@ -1,7 +1,7 @@
 //! LiDAR scan and point cloud types.
 
-use serde::{Deserialize, Serialize};
 use super::pose::{Point2D, Pose2D};
+use serde::{Deserialize, Serialize};
 
 /// Raw LiDAR scan in polar coordinates.
 ///
@@ -70,7 +70,7 @@ impl LaserScan {
         }
 
         // Sort by angle to ensure proper ordering
-        let mut sorted: Vec<_> = scan.iter().copied().collect();
+        let mut sorted: Vec<_> = scan.to_vec();
         sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
         let angle_min = sorted.first().map(|p| p.0).unwrap_or(0.0);
@@ -126,19 +126,26 @@ impl LaserScan {
         let intensities = &self.intensities;
         self.ranges.iter().enumerate().map(move |(i, &range)| {
             let angle = self.angle_min + i as f32 * self.angle_increment;
-            let intensity = intensities.as_ref().and_then(|v| v.get(i).copied()).unwrap_or(0);
+            let intensity = intensities
+                .as_ref()
+                .and_then(|v| v.get(i).copied())
+                .unwrap_or(0);
             (angle, range, intensity)
         })
     }
 
     /// Iterate over valid points only (filters out invalid ranges).
     pub fn iter_valid(&self) -> impl Iterator<Item = (f32, f32, u8)> + '_ {
-        self.iter().filter(|(_, range, _)| self.is_valid_range(*range))
+        self.iter()
+            .filter(|(_, range, _)| self.is_valid_range(*range))
     }
 
     /// Count valid points.
     pub fn valid_count(&self) -> usize {
-        self.ranges.iter().filter(|&&r| self.is_valid_range(r)).count()
+        self.ranges
+            .iter()
+            .filter(|&&r| self.is_valid_range(r))
+            .count()
     }
 }
 
@@ -243,7 +250,10 @@ impl PointCloud2D {
     pub fn iter_with_intensity(&self) -> impl Iterator<Item = (&Point2D, u8)> + '_ {
         let intensities = &self.intensities;
         self.points.iter().enumerate().map(move |(i, p)| {
-            let intensity = intensities.as_ref().and_then(|v| v.get(i).copied()).unwrap_or(0);
+            let intensity = intensities
+                .as_ref()
+                .and_then(|v| v.get(i).copied())
+                .unwrap_or(0);
             (p, intensity)
         })
     }
@@ -378,8 +388,8 @@ mod tests {
     fn test_laser_scan_iter() {
         let ranges = vec![1.0, 2.0, 3.0];
         let intensities = vec![100, 150, 200];
-        let scan = LaserScan::new(0.0, TAU, TAU / 3.0, 0.1, 10.0, ranges)
-            .with_intensities(intensities);
+        let scan =
+            LaserScan::new(0.0, TAU, TAU / 3.0, 0.1, 10.0, ranges).with_intensities(intensities);
 
         let points: Vec<_> = scan.iter().collect();
         assert_eq!(points.len(), 3);

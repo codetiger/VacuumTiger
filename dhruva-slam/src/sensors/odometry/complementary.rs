@@ -244,7 +244,7 @@ mod tests {
     fn test_config() -> ComplementaryConfig {
         ComplementaryConfig {
             alpha: 0.98,
-            gyro_scale: 0.001,     // 1 raw unit = 0.001 rad/s
+            gyro_scale: 0.001, // 1 raw unit = 0.001 rad/s
             gyro_bias_z: 0.0,
         }
     }
@@ -565,7 +565,11 @@ mod tests {
 
         // Should produce negative theta (CW rotation)
         // dtheta_fused = 0.98 * (-0.01) + 0.02 * 0 ≈ -0.0098
-        assert!(pose.theta < 0.0, "Expected negative theta, got {}", pose.theta);
+        assert!(
+            pose.theta < 0.0,
+            "Expected negative theta, got {}",
+            pose.theta
+        );
     }
 
     #[test]

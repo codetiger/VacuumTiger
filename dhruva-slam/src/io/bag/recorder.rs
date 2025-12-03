@@ -5,11 +5,10 @@ use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use super::types::{
-    BagHeader, BagInfo, BagMessage, EncoderTicks, SensorStatusMsg, BAG_MAGIC, BAG_VERSION,
-    HEADER_SIZE,
+    BAG_MAGIC, BAG_VERSION, BagHeader, BagInfo, BagMessage, HEADER_SIZE, SensorStatusMsg,
 };
-use crate::io::sangam_client::LidarScan;
 use crate::core::types::{Pose2D, Timestamped};
+use crate::io::sangam_client::LidarScan;
 
 /// Error type for bag recording operations.
 #[derive(Debug)]
@@ -209,25 +208,10 @@ impl BagRecorder {
     }
 }
 
-/// Helper to create sensor status from SangamIO message components.
-pub fn sensor_status_from_sangam(
-    timestamp_us: u64,
-    encoder_left: u16,
-    encoder_right: u16,
-    gyro_raw: [i16; 3],
-    accel_raw: [i16; 3],
-) -> SensorStatusMsg {
-    SensorStatusMsg {
-        timestamp_us,
-        encoder: EncoderTicks::new(encoder_left, encoder_right),
-        gyro_raw,
-        accel_raw,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::bag::types::EncoderTicks;
     use std::fs;
     use tempfile::TempDir;
 

@@ -83,9 +83,9 @@ pub struct OccupancyGridConfig {
 impl Default for OccupancyGridConfig {
     fn default() -> Self {
         Self {
-            resolution: 0.05,       // 5cm cells
-            initial_width: 20.0,    // 20m
-            initial_height: 20.0,   // 20m
+            resolution: 0.05,     // 5cm cells
+            initial_width: 20.0,  // 20m
+            initial_height: 20.0, // 20m
             log_odds_occupied: 0.9,
             log_odds_free: -0.7,
             log_odds_max: 50.0,
@@ -272,8 +272,8 @@ impl OccupancyGrid {
             self.config.log_odds_free
         };
 
-        self.cells[idx] = (self.cells[idx] + delta)
-            .clamp(self.config.log_odds_min, self.config.log_odds_max);
+        self.cells[idx] =
+            (self.cells[idx] + delta).clamp(self.config.log_odds_min, self.config.log_odds_max);
 
         // Track updated region
         let cx_i = cx as i32;
@@ -343,7 +343,13 @@ impl OccupancyGrid {
     }
 
     /// Resize the grid, preserving existing data.
-    fn resize(&mut self, new_width: usize, new_height: usize, new_origin_x: f32, new_origin_y: f32) {
+    fn resize(
+        &mut self,
+        new_width: usize,
+        new_height: usize,
+        new_origin_x: f32,
+        new_origin_y: f32,
+    ) {
         let mut new_cells = vec![0.0f32; new_width * new_height];
 
         // Calculate offset in cell coordinates
@@ -356,7 +362,8 @@ impl OccupancyGrid {
                 let new_x = old_x as i32 + dx;
                 let new_y = old_y as i32 + dy;
 
-                if new_x >= 0 && new_y >= 0
+                if new_x >= 0
+                    && new_y >= 0
                     && (new_x as usize) < new_width
                     && (new_y as usize) < new_height
                 {
@@ -800,7 +807,11 @@ mod tests {
         let loaded = OccupancyGrid::load(&temp_path, config).unwrap();
 
         assert_eq!(loaded.dimensions(), grid.dimensions());
-        assert_relative_eq!(loaded.get_log_odds(5, 5), original_occupied, epsilon = 0.001);
+        assert_relative_eq!(
+            loaded.get_log_odds(5, 5),
+            original_occupied,
+            epsilon = 0.001
+        );
         assert_relative_eq!(loaded.get_log_odds(10, 10), original_free, epsilon = 0.001);
 
         // Clean up

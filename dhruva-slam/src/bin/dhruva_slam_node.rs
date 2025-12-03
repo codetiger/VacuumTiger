@@ -16,19 +16,19 @@
 //! ```
 
 use dhruva_slam::{
-    ComplementaryConfig, OdometryPipeline, OdometryPipelineConfig, OdometryPublisher,
-    OnlineSlam, OnlineSlamConfig, Point2D, PointCloud2D, Pose2D, SangamClient,
-    SlamEngine, SlamMode, WheelOdometryConfig,
+    ComplementaryConfig, OdometryPipeline, OdometryPipelineConfig, OdometryPublisher, OnlineSlam,
+    OnlineSlamConfig, Point2D, PointCloud2D, Pose2D, SangamClient, SlamEngine, SlamMode,
+    WheelOdometryConfig,
 };
 use serde::Deserialize;
 use std::fs;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// Configuration file structure
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct Config {
     #[serde(default)]
     source: SourceConfig,
@@ -38,17 +38,6 @@ struct Config {
     odometry: OdometryConfig,
     #[serde(default)]
     slam: SlamConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            source: SourceConfig::default(),
-            output: OutputConfig::default(),
-            odometry: OdometryConfig::default(),
-            slam: SlamConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,11 +203,11 @@ fn load_config(args: &Args) -> Config {
         None => {
             // Try default paths
             for path in &["dhruva-slam.toml", "/etc/dhruva-slam.toml"] {
-                if let Ok(contents) = fs::read_to_string(path) {
-                    if let Ok(cfg) = toml::from_str(&contents) {
-                        eprintln!("Loaded config from {}", path);
-                        return apply_overrides(cfg, args);
-                    }
+                if let Ok(contents) = fs::read_to_string(path)
+                    && let Ok(cfg) = toml::from_str(&contents)
+                {
+                    eprintln!("Loaded config from {}", path);
+                    return apply_overrides(cfg, args);
                 }
             }
             Config::default()
@@ -239,11 +228,7 @@ fn apply_overrides(mut config: Config, args: &Args) -> Config {
 }
 
 /// Convert lidar scan to PointCloud2D
-fn lidar_to_pointcloud(
-    scan: &[(f32, f32, u8)],
-    min_range: f32,
-    max_range: f32,
-) -> PointCloud2D {
+fn lidar_to_pointcloud(scan: &[(f32, f32, u8)], min_range: f32, max_range: f32) -> PointCloud2D {
     let mut cloud = PointCloud2D::with_capacity(scan.len());
 
     for &(angle, distance, quality) in scan {
@@ -415,58 +400,57 @@ fn run_main_loop(
             }
         }
         // Process lidar messages (SLAM)
-        else if msg.group_id() == "lidar" {
-            if let Some(slam_engine) = slam.as_mut() {
-                if let Some(lidar_data) = msg.as_lidar() {
-                    // Convert lidar scan to point cloud (already filtered by range/quality)
-                    let scan_cloud = lidar_to_pointcloud(
-                        lidar_data.data,
-                        config.slam.min_range,
-                        config.slam.max_range,
-                    );
+        else if msg.group_id() == "lidar"
+            && let Some(slam_engine) = slam.as_mut()
+            && let Some(lidar_data) = msg.as_lidar()
+        {
+            // Convert lidar scan to point cloud (already filtered by range/quality)
+            let scan_cloud = lidar_to_pointcloud(
+                lidar_data.data,
+                config.slam.min_range,
+                config.slam.max_range,
+            );
 
-                    // Skip if scan is too sparse
-                    if scan_cloud.len() < 50 {
-                        continue;
-                    }
-
-                    // Compute odometry delta since last SLAM update
-                    let current_pose = pipeline.pose();
-                    let odom_delta = prev_pose.inverse().compose(&current_pose);
-                    prev_pose = current_pose;
-
-                    // Process scan through SLAM
-                    let result = slam_engine.process_scan(&scan_cloud, &odom_delta, timestamp_us);
-
-                    // Publish scan with SLAM-corrected pose
-                    publisher.publish_slam_scan(&scan_cloud, &result.pose, timestamp_us);
-
-                    lidar_count += 1;
-                }
+            // Skip if scan is too sparse
+            if scan_cloud.len() < 50 {
+                continue;
             }
+
+            // Compute odometry delta since last SLAM update
+            let current_pose = pipeline.pose();
+            let odom_delta = prev_pose.inverse().compose(&current_pose);
+            prev_pose = current_pose;
+
+            // Process scan through SLAM
+            let result = slam_engine.process_scan(&scan_cloud, &odom_delta, timestamp_us);
+
+            // Publish scan with SLAM-corrected pose
+            publisher.publish_slam_scan(&scan_cloud, &result.pose, timestamp_us);
+
+            lidar_count += 1;
         }
 
         // Publish SLAM status and diagnostics at configured rate
-        if let Some(slam_engine) = slam.as_ref() {
-            if last_status_time.elapsed() >= status_interval {
-                let status = slam_engine.status();
-                publisher.publish_slam_status(&status);
+        if let Some(slam_engine) = slam.as_ref()
+            && last_status_time.elapsed() >= status_interval
+        {
+            let status = slam_engine.status();
+            publisher.publish_slam_status(&status);
 
-                // Publish diagnostics at the same rate as status
-                let diagnostics = slam_engine.diagnostics(timestamp_us);
-                publisher.publish_slam_diagnostics(&diagnostics);
+            // Publish diagnostics at the same rate as status
+            let diagnostics = slam_engine.diagnostics(timestamp_us);
+            publisher.publish_slam_diagnostics(&diagnostics);
 
-                last_status_time = Instant::now();
-            }
+            last_status_time = Instant::now();
         }
 
         // Publish SLAM map at configured rate
-        if let Some(slam_engine) = slam.as_mut() {
-            if last_map_time.elapsed() >= map_interval {
-                let map = slam_engine.global_map();
-                publisher.publish_slam_map(map, timestamp_us);
-                last_map_time = Instant::now();
-            }
+        if let Some(slam_engine) = slam.as_mut()
+            && last_map_time.elapsed() >= map_interval
+        {
+            let map = slam_engine.global_map();
+            publisher.publish_slam_map(map, timestamp_us);
+            last_map_time = Instant::now();
         }
 
         // Log statistics periodically

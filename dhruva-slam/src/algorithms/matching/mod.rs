@@ -28,17 +28,17 @@
 //! }
 //! ```
 
-mod icp;
 mod correlative;
+mod icp;
 mod multi_resolution;
 mod point_to_line_icp;
 
-pub use icp::{PointToPointIcp, IcpConfig};
-pub use correlative::{CorrelativeMatcher, CorrelativeConfig};
-pub use multi_resolution::{MultiResolutionMatcher, MultiResolutionConfig};
+pub use correlative::{CorrelativeConfig, CorrelativeMatcher};
+pub use icp::{IcpConfig, PointToPointIcp};
+pub use multi_resolution::{MultiResolutionConfig, MultiResolutionMatcher};
 pub use point_to_line_icp::{PointToLineIcp, PointToLineIcpConfig};
 
-use crate::core::types::{PointCloud2D, Pose2D, Covariance2D};
+use crate::core::types::{Covariance2D, PointCloud2D, Pose2D};
 
 /// Result of a scan matching operation.
 #[derive(Debug, Clone)]
@@ -136,22 +136,12 @@ pub struct HybridMatcher {
 }
 
 /// Configuration for hybrid matcher.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HybridMatcherConfig {
     pub correlative: CorrelativeConfig,
     pub icp: IcpConfig,
     /// If true, always run correlative first.
     pub always_correlative: bool,
-}
-
-impl Default for HybridMatcherConfig {
-    fn default() -> Self {
-        Self {
-            correlative: CorrelativeConfig::default(),
-            icp: IcpConfig::default(),
-            always_correlative: false,
-        }
-    }
 }
 
 impl HybridMatcher {

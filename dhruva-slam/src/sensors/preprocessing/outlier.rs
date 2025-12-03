@@ -75,9 +75,9 @@ impl OutlierFilter {
         let start = index.saturating_sub(self.config.neighbor_count);
         let end = (index + self.config.neighbor_count + 1).min(n);
 
-        for i in start..end {
-            if i != index && ranges[i].is_finite() {
-                neighbors.push(ranges[i]);
+        for (i, &range) in ranges.iter().enumerate().take(end).skip(start) {
+            if i != index && range.is_finite() {
+                neighbors.push(range);
             }
         }
 
@@ -125,12 +125,10 @@ impl OutlierFilter {
 
                 new_ranges.push(scan.ranges[i]);
 
-                if let (Some(new_int), Some(old_int)) =
-                    (&mut new_intensities, &scan.intensities)
+                if let (Some(new_int), Some(old_int)) = (&mut new_intensities, &scan.intensities)
+                    && let Some(&intensity) = old_int.get(i)
                 {
-                    if let Some(&intensity) = old_int.get(i) {
-                        new_int.push(intensity);
-                    }
+                    new_int.push(intensity);
                 }
             }
         }
@@ -176,7 +174,14 @@ mod tests {
         let angle_increment = TAU / n_points as f32;
         let ranges = vec![base_range; n_points];
 
-        LaserScan::new(0.0, TAU - angle_increment, angle_increment, 0.15, 12.0, ranges)
+        LaserScan::new(
+            0.0,
+            TAU - angle_increment,
+            angle_increment,
+            0.15,
+            12.0,
+            ranges,
+        )
     }
 
     #[test]
@@ -195,7 +200,7 @@ mod tests {
         let mut scan = create_smooth_scan(100, 5.0);
 
         // Add a large spike in the middle
-        scan.ranges[50] = 10.0;  // 5m deviation from 5m base
+        scan.ranges[50] = 10.0; // 5m deviation from 5m base
 
         let filter = OutlierFilter::default();
         let result = filter.apply(&scan);
@@ -209,9 +214,9 @@ mod tests {
         let mut scan = create_smooth_scan(100, 5.0);
 
         // Add several isolated spikes
-        scan.ranges[20] = 0.5;   // Much closer
-        scan.ranges[50] = 10.0;  // Much farther
-        scan.ranges[80] = 8.0;   // Farther
+        scan.ranges[20] = 0.5; // Much closer
+        scan.ranges[50] = 10.0; // Much farther
+        scan.ranges[80] = 8.0; // Farther
 
         let filter = OutlierFilter::default();
         let result = filter.apply(&scan);
@@ -224,10 +229,17 @@ mod tests {
     fn test_preserves_gradual_changes() {
         let angle_increment = TAU / 100.0;
         let ranges: Vec<f32> = (0..100)
-            .map(|i| 5.0 + 0.05 * i as f32)  // Gradual increase
+            .map(|i| 5.0 + 0.05 * i as f32) // Gradual increase
             .collect();
 
-        let scan = LaserScan::new(0.0, TAU - angle_increment, angle_increment, 0.15, 12.0, ranges);
+        let scan = LaserScan::new(
+            0.0,
+            TAU - angle_increment,
+            angle_increment,
+            0.15,
+            12.0,
+            ranges,
+        );
 
         let filter = OutlierFilter::default();
         let result = filter.apply(&scan);
@@ -241,7 +253,7 @@ mod tests {
         let mut scan = create_smooth_scan(100, 5.0);
 
         // Add a small deviation
-        scan.ranges[50] = 5.2;  // 0.2m deviation
+        scan.ranges[50] = 5.2; // 0.2m deviation
 
         // Default threshold (0.3m) should keep it
         let filter_default = OutlierFilter::default();
@@ -270,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_very_short_scan() {
-        let ranges = vec![5.0, 10.0];  // Only 2 points
+        let ranges = vec![5.0, 10.0]; // Only 2 points
         let scan = LaserScan::new(0.0, 1.0, 0.5, 0.15, 12.0, ranges);
 
         let filter = OutlierFilter::default();
@@ -307,7 +319,7 @@ mod tests {
     #[test]
     fn test_preserves_intensities() {
         let mut scan = create_smooth_scan(10, 5.0);
-        scan.ranges[5] = 10.0;  // Add outlier
+        scan.ranges[5] = 10.0; // Add outlier
         scan.intensities = Some(vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100]);
 
         let filter = OutlierFilter::default();
@@ -333,7 +345,7 @@ mod tests {
         let scan = LaserScan::new(0.0, TAU, TAU / 10.0, 0.15, 12.0, ranges);
 
         let config = OutlierFilterConfig {
-            neighbor_count: 1,      // Look at 1 neighbor each side
+            neighbor_count: 1,       // Look at 1 neighbor each side
             distance_threshold: 0.5, // 0.5m threshold
         };
         let filter = OutlierFilter::new(config);
@@ -370,7 +382,7 @@ mod tests {
         //
         // Even small deviations can make all 3 points outliers with small thresholds.
         // This test verifies the filter handles minimum length scans gracefully.
-        let ranges = vec![5.0, 5.1, 5.0];  // Very small deviation
+        let ranges = vec![5.0, 5.1, 5.0]; // Very small deviation
         let scan = LaserScan::new(0.0, 1.0, 0.5, 0.15, 12.0, ranges);
 
         let config = OutlierFilterConfig {
@@ -384,7 +396,12 @@ mod tests {
         // - Index 0: neighbor=[5.1], |5-5.1|=0.1 < 0.2 → NOT outlier
         // - Index 1: neighbors=[5.0, 5.0], median=5.0, |5.1-5|=0.1 < 0.2 → NOT outlier
         // - Index 2: neighbor=[5.1], |5-5.1|=0.1 < 0.2 → NOT outlier
-        assert_eq!(result.len(), 3, "Expected 3 points preserved, got {}", result.len());
+        assert_eq!(
+            result.len(),
+            3,
+            "Expected 3 points preserved, got {}",
+            result.len()
+        );
     }
 
     #[test]
@@ -404,7 +421,7 @@ mod tests {
     #[test]
     fn test_outlier_at_start() {
         let mut scan = create_smooth_scan(20, 5.0);
-        scan.ranges[0] = 15.0;  // First point is outlier
+        scan.ranges[0] = 15.0; // First point is outlier
 
         let filter = OutlierFilter::default();
         let result = filter.apply(&scan);
@@ -415,7 +432,7 @@ mod tests {
     #[test]
     fn test_outlier_at_end() {
         let mut scan = create_smooth_scan(20, 5.0);
-        scan.ranges[19] = 15.0;  // Last point is outlier
+        scan.ranges[19] = 15.0; // Last point is outlier
 
         let filter = OutlierFilter::default();
         let result = filter.apply(&scan);
@@ -449,7 +466,7 @@ mod tests {
         let filter = OutlierFilter::new(config);
 
         let mut scan = create_smooth_scan(10, 5.0);
-        scan.ranges[5] = 15.0;  // Outlier
+        scan.ranges[5] = 15.0; // Outlier
 
         let result = filter.apply(&scan);
 
@@ -467,7 +484,7 @@ mod tests {
         let filter = OutlierFilter::new(config);
 
         let mut scan = create_smooth_scan(10, 5.0);
-        scan.ranges[5] = 15.0;  // Outlier
+        scan.ranges[5] = 15.0; // Outlier
 
         let result = filter.apply(&scan);
 

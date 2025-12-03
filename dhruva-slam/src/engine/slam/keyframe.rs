@@ -4,7 +4,7 @@
 //! and map optimization. Not every scan becomes a keyframe - only scans that
 //! represent sufficient motion or rotation from the previous keyframe.
 
-use crate::core::types::{Pose2D, PointCloud2D};
+use crate::core::types::{PointCloud2D, Pose2D};
 
 /// A keyframe containing a pose and associated scan data.
 #[derive(Debug, Clone)]
@@ -115,7 +115,7 @@ impl ScanContext {
 
         for point in scan.iter() {
             let range = (point.x * point.x + point.y * point.y).sqrt();
-            if range > Self::MAX_RANGE || range < 0.1 {
+            if !(0.1..=Self::MAX_RANGE).contains(&range) {
                 continue;
             }
 
@@ -259,8 +259,8 @@ pub struct KeyframeManagerConfig {
 impl Default for KeyframeManagerConfig {
     fn default() -> Self {
         Self {
-            min_translation: 0.5,  // 50cm
-            min_rotation: 0.5,     // ~30 degrees
+            min_translation: 0.5, // 50cm
+            min_rotation: 0.5,    // ~30 degrees
             max_keyframes: 1000,
             min_interval_us: 500_000, // 500ms minimum
         }
@@ -300,11 +300,7 @@ impl KeyframeManager {
     ///
     /// Returns true if the motion since the last keyframe exceeds
     /// the configured thresholds.
-    pub fn should_create_keyframe(
-        &self,
-        current_pose: &Pose2D,
-        timestamp_us: u64,
-    ) -> bool {
+    pub fn should_create_keyframe(&self, current_pose: &Pose2D, timestamp_us: u64) -> bool {
         // Always create first keyframe
         let last_pose = match &self.last_keyframe_pose {
             Some(pose) => pose,
@@ -462,7 +458,10 @@ mod tests {
         let scan = create_test_scan();
         let context = ScanContext::from_scan(&scan);
 
-        assert_eq!(context.descriptor.len(), ScanContext::DEFAULT_SECTORS * ScanContext::DEFAULT_RINGS);
+        assert_eq!(
+            context.descriptor.len(),
+            ScanContext::DEFAULT_SECTORS * ScanContext::DEFAULT_RINGS
+        );
         assert_eq!(context.ring_key.len(), ScanContext::DEFAULT_RINGS);
     }
 
@@ -472,7 +471,11 @@ mod tests {
         let context = ScanContext::from_scan(&scan);
 
         let similarity = context.similarity(&context);
-        assert!(similarity > 0.99, "Self-similarity should be ~1.0: {}", similarity);
+        assert!(
+            similarity > 0.99,
+            "Self-similarity should be ~1.0: {}",
+            similarity
+        );
     }
 
     #[test]

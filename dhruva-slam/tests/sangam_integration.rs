@@ -8,8 +8,8 @@
 
 #[allow(unused_imports)]
 use dhruva_slam::{
-    ComplementaryConfig, ComplementaryFilter, LaserScan, Pose2D, PreprocessorConfig,
-    SangamClient, ScanPreprocessor, WheelOdometry, WheelOdometryConfig, WireFormat,
+    ComplementaryConfig, ComplementaryFilter, LaserScan, Pose2D, PreprocessorConfig, SangamClient,
+    ScanPreprocessor, WheelOdometry, WheelOdometryConfig, WireFormat,
 };
 use std::time::Duration;
 
@@ -195,9 +195,7 @@ fn test_wheel_odometry_hardware() {
     // If robot was stationary, distance and rotation should be minimal
     // Allow for small noise in encoders
     if message_count > 0 {
-        println!(
-            "\nIf robot was stationary, expect near-zero values (encoder noise only)."
-        );
+        println!("\nIf robot was stationary, expect near-zero values (encoder noise only).");
     }
 }
 
@@ -370,7 +368,8 @@ fn test_scan_preprocessing_hardware() {
     let mut total_output_points = 0usize;
 
     // Process up to 10 scans (lidar comes at ~5Hz, so this takes ~2 seconds)
-    for _ in 0..500 {  // May need many sensor_status messages to get 10 lidar
+    for _ in 0..500 {
+        // May need many sensor_status messages to get 10 lidar
         match client.recv() {
             Ok(msg) => {
                 if let Some(lidar) = msg.as_lidar() {
@@ -445,7 +444,8 @@ fn test_preprocessing_performance() {
 
     let mut processing_times = Vec::new();
 
-    for _ in 0..1000 {  // Look for up to 50 lidar scans
+    for _ in 0..1000 {
+        // Look for up to 50 lidar scans
         match client.recv() {
             Ok(msg) => {
                 if let Some(lidar) = msg.as_lidar() {

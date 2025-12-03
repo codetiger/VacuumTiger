@@ -57,10 +57,7 @@ fn simulate_straight_line(distance_m: f32, config: &WheelOdometryConfig) -> Vec<
 }
 
 /// Simulate encoder ticks for rotating in place by a given angle
-fn simulate_rotation_in_place(
-    angle_rad: f32,
-    config: &WheelOdometryConfig,
-) -> Vec<(u16, u16)> {
+fn simulate_rotation_in_place(angle_rad: f32, config: &WheelOdometryConfig) -> Vec<(u16, u16)> {
     // For rotation in place:
     // arc_length per wheel = (wheel_base / 2) * angle
     let arc_length = (config.wheel_base / 2.0) * angle_rad.abs();
