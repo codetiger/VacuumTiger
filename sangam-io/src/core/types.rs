@@ -103,7 +103,6 @@ impl SensorGroupData {
 
 /// Actions that can be performed on components (sensors and actuators)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
 pub enum ComponentAction {
     /// Turn on/activate the component with optional config (e.g., mode)
     Enable {
@@ -128,7 +127,6 @@ pub enum ComponentAction {
 
 /// Commands to device
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
 pub enum Command {
     // Unified Component Control
     /// Control any component (sensor or actuator) with standard actions

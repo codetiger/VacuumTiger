@@ -1,31 +1,26 @@
-//! Configuration loading from JSON
+//! Configuration loading from TOML
 //!
 //! # Configuration File Format
 //!
-//! The configuration file is JSON-formatted with the following structure:
+//! The configuration file is TOML-formatted with the following structure:
 //!
-//! ```json
-//! {
-//!   "device": {
-//!     "type": "crl-200s",
-//!     "name": "robot-01",
-//!     "hardware": {
-//!       "gd32_port": "/dev/ttyS3",
-//!       "lidar_port": "/dev/ttyS1",
-//!       "heartbeat_interval_ms": 20
-//!     }
-//!   },
-//!   "network": {
-//!     "bind_address": "0.0.0.0:5555",
-//!     "wire_format": "json"
-//!   }
-//! }
+//! ```toml
+//! [device]
+//! type = "crl200s"
+//! name = "CRL-200S Vacuum Robot"
+//!
+//! [device.hardware]
+//! gd32_port = "/dev/ttyS3"
+//! lidar_port = "/dev/ttyS1"
+//! heartbeat_interval_ms = 20
+//!
+//! [network]
+//! bind_address = "0.0.0.0:5555"
 //! ```
 //!
-//! See `hardware.json` for complete example.
+//! See `sangamio.toml` for complete example.
 
 use crate::error::{Error, Result};
-use crate::streaming::WireFormat;
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
@@ -99,31 +94,6 @@ pub struct NetworkConfig {
     ///
     /// **Required**: Yes
     pub bind_address: String,
-
-    /// Wire format for message serialization
-    ///
-    /// **Valid values**: "json" (default), "postcard"
-    /// **Optional**: Defaults to "json" if not specified
-    #[serde(default)]
-    pub wire_format: WireFormatConfig,
-}
-
-/// Wire format configuration (deserializable from string)
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum WireFormatConfig {
-    Postcard,
-    #[default]
-    Json,
-}
-
-impl From<WireFormatConfig> for WireFormat {
-    fn from(config: WireFormatConfig) -> Self {
-        match config {
-            WireFormatConfig::Postcard => WireFormat::Postcard,
-            WireFormatConfig::Json => WireFormat::Json,
-        }
-    }
 }
 
 /// Root configuration
@@ -134,12 +104,12 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load configuration from JSON file
+    /// Load configuration from TOML file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(path)
+        let content = fs::read_to_string(&path)
             .map_err(|e| Error::Config(format!("Failed to read config: {}", e)))?;
 
-        let config: Config = serde_json::from_str(&content)
+        let config: Config = toml::from_str(&content)
             .map_err(|e| Error::Config(format!("Failed to parse config: {}", e)))?;
 
         Ok(config)

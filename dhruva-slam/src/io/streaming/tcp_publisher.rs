@@ -1,13 +1,13 @@
 //! TCP publisher for streaming odometry data to visualization clients.
 //!
 //! Broadcasts pose and diagnostics messages to connected TCP clients using
-//! length-prefixed JSON framing (compatible with SangamIO protocol).
+//! length-prefixed Protobuf framing.
 //!
 //! # Wire Protocol
 //!
 //! ```text
 //! ┌──────────────────┬──────────────────────────┐
-//! │ Length (4 bytes) │ JSON Payload (variable)  │
+//! │ Length (4 bytes) │ Protobuf Payload         │
 //! │ Big-endian u32   │                          │
 //! └──────────────────┴──────────────────────────┘
 //! ```
@@ -28,6 +28,7 @@
 use crate::algorithms::mapping::OccupancyGrid;
 use crate::core::types::{PointCloud2D, Pose2D};
 use crate::engine::slam::SlamStatus;
+use prost::Message;
 use serde::Serialize;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
@@ -37,9 +38,14 @@ use std::thread;
 use std::time::Duration;
 use thiserror::Error;
 
-use super::slam_messages::{
-    SlamDiagnosticsMessage, SlamMapMessage, SlamScanMessage, SlamStatusMessage,
-};
+use super::slam_messages::SlamDiagnosticsMessage;
+
+// Include generated protobuf types
+pub mod proto {
+    pub mod dhruva {
+        include!(concat!(env!("OUT_DIR"), "/dhruva.rs"));
+    }
+}
 
 /// Publisher errors
 #[derive(Error, Debug)]
@@ -48,12 +54,18 @@ pub enum PublisherError {
     Io(#[from] std::io::Error),
 
     #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
+    Serialization(String),
+}
+
+impl From<prost::EncodeError> for PublisherError {
+    fn from(e: prost::EncodeError) -> Self {
+        PublisherError::Serialization(e.to_string())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, PublisherError>;
 
-/// Odometry pose message payload
+/// Odometry pose message payload (for internal use)
 #[derive(Debug, Clone, Serialize)]
 pub struct OdometryPose {
     pub x: f32,
@@ -99,18 +111,18 @@ pub enum OdometryMessage {
     Diagnostics(OdometryDiagnostics),
 }
 
-/// Message types for SLAM streaming
+/// Message types for SLAM streaming (for serde compatibility in tests)
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "topic", content = "payload")]
 pub enum SlamMessage {
     #[serde(rename = "slam/status")]
-    Status(SlamStatusMessage),
+    Status(super::slam_messages::SlamStatusMessage),
 
     #[serde(rename = "slam/map")]
-    Map(SlamMapMessage),
+    Map(super::slam_messages::SlamMapMessage),
 
     #[serde(rename = "slam/scan")]
-    Scan(SlamScanMessage),
+    Scan(super::slam_messages::SlamScanMessage),
 
     #[serde(rename = "slam/diagnostics")]
     Diagnostics(SlamDiagnosticsMessage),
@@ -203,62 +215,204 @@ impl OdometryPublisher {
 
     /// Publish a pose message to all connected clients.
     pub fn publish_pose(&self, pose: &Pose2D, timestamp_us: u64) {
-        let msg = OdometryMessage::Pose(OdometryPose::from_pose(pose, timestamp_us));
-        self.broadcast_odometry(&msg);
+        let msg = proto::dhruva::DhruvaMessage {
+            topic: "odometry/pose".to_string(),
+            payload: Some(proto::dhruva::dhruva_message::Payload::OdometryPose(
+                proto::dhruva::OdometryPose {
+                    x: pose.x,
+                    y: pose.y,
+                    theta: pose.theta,
+                    timestamp_us,
+                },
+            )),
+        };
+        self.broadcast_proto(&msg);
     }
 
     /// Publish diagnostics to all connected clients.
     pub fn publish_diagnostics(&self, diagnostics: &OdometryDiagnostics) {
-        let msg = OdometryMessage::Diagnostics(diagnostics.clone());
-        self.broadcast_odometry(&msg);
+        let msg = proto::dhruva::DhruvaMessage {
+            topic: "odometry/diagnostics".to_string(),
+            payload: Some(proto::dhruva::dhruva_message::Payload::OdometryDiagnostics(
+                proto::dhruva::OdometryDiagnostics {
+                    drift_rate: diagnostics.drift_rate,
+                    tick_rate_left: diagnostics.tick_rate_left,
+                    tick_rate_right: diagnostics.tick_rate_right,
+                    distance_traveled: diagnostics.distance_traveled,
+                    gyro_bias: diagnostics.gyro_bias,
+                },
+            )),
+        };
+        self.broadcast_proto(&msg);
     }
 
     /// Publish SLAM status to all connected clients.
     pub fn publish_slam_status(&self, status: &SlamStatus) {
-        let msg = SlamMessage::Status(SlamStatusMessage::from_status(status));
-        self.broadcast_slam(&msg);
+        let mode = match status.mode {
+            crate::engine::slam::SlamMode::Mapping => "Mapping",
+            crate::engine::slam::SlamMode::Localization => "Localization",
+            crate::engine::slam::SlamMode::Idle => "Idle",
+        };
+
+        let msg = proto::dhruva::DhruvaMessage {
+            topic: "slam/status".to_string(),
+            payload: Some(proto::dhruva::dhruva_message::Payload::SlamStatus(
+                proto::dhruva::SlamStatus {
+                    mode: mode.to_string(),
+                    num_scans: status.num_scans,
+                    num_keyframes: status.num_keyframes as u32,
+                    num_submaps: status.num_submaps as u32,
+                    num_finished_submaps: status.num_finished_submaps as u32,
+                    match_score: status.last_match_score,
+                    is_lost: status.is_lost,
+                    memory_usage_bytes: status.memory_usage as u64,
+                },
+            )),
+        };
+        self.broadcast_proto(&msg);
     }
 
     /// Publish SLAM map to all connected clients.
     pub fn publish_slam_map(&self, grid: &OccupancyGrid, timestamp_us: u64) {
-        let msg = SlamMessage::Map(SlamMapMessage::from_grid(grid, timestamp_us));
-        self.broadcast_slam(&msg);
+        let (width, height) = grid.dimensions();
+        let (origin_x, origin_y) = grid.origin();
+        let config = grid.config();
+
+        // Convert log-odds to u8 encoding
+        let mut cells_u8 = Vec::with_capacity(width * height);
+        for y in 0..height {
+            for x in 0..width {
+                let log_odds = grid.get_log_odds(x, y);
+                let cell_value = Self::log_odds_to_u8(log_odds, config);
+                cells_u8.push(cell_value);
+            }
+        }
+
+        let msg = proto::dhruva::DhruvaMessage {
+            topic: "slam/map".to_string(),
+            payload: Some(proto::dhruva::dhruva_message::Payload::SlamMap(
+                proto::dhruva::SlamMap {
+                    resolution: config.resolution,
+                    width: width as u32,
+                    height: height as u32,
+                    origin_x,
+                    origin_y,
+                    cells: cells_u8,
+                    timestamp_us,
+                },
+            )),
+        };
+        self.broadcast_proto(&msg);
+    }
+
+    /// Convert log-odds value to u8 cell encoding.
+    fn log_odds_to_u8(
+        log_odds: f32,
+        config: &crate::algorithms::mapping::OccupancyGridConfig,
+    ) -> u8 {
+        if log_odds.abs() < 0.01 {
+            0
+        } else if log_odds <= config.free_threshold {
+            let confidence = (-log_odds / config.log_odds_min.abs()).clamp(0.0, 1.0);
+            (1.0 + confidence * 126.0) as u8
+        } else if log_odds >= config.occupied_threshold {
+            let confidence = (log_odds / config.log_odds_max).clamp(0.0, 1.0);
+            (128.0 + confidence * 127.0) as u8
+        } else {
+            0
+        }
     }
 
     /// Publish SLAM scan to all connected clients.
     pub fn publish_slam_scan(&self, scan: &PointCloud2D, pose: &Pose2D, timestamp_us: u64) {
-        let msg = SlamMessage::Scan(SlamScanMessage::from_scan(scan, pose, timestamp_us));
-        self.broadcast_slam(&msg);
+        let cos_theta = pose.theta.cos();
+        let sin_theta = pose.theta.sin();
+
+        // Transform points to global frame
+        let points: Vec<proto::dhruva::Point2D> = scan
+            .points
+            .iter()
+            .map(|p| {
+                let global_x = pose.x + p.x * cos_theta - p.y * sin_theta;
+                let global_y = pose.y + p.x * sin_theta + p.y * cos_theta;
+                proto::dhruva::Point2D {
+                    x: global_x,
+                    y: global_y,
+                }
+            })
+            .collect();
+
+        let msg = proto::dhruva::DhruvaMessage {
+            topic: "slam/scan".to_string(),
+            payload: Some(proto::dhruva::dhruva_message::Payload::SlamScan(
+                proto::dhruva::SlamScan {
+                    points,
+                    pose: Some(proto::dhruva::Pose2D {
+                        x: pose.x,
+                        y: pose.y,
+                        theta: pose.theta,
+                    }),
+                    timestamp_us,
+                },
+            )),
+        };
+        self.broadcast_proto(&msg);
     }
 
     /// Publish SLAM diagnostics to all connected clients.
     pub fn publish_slam_diagnostics(&self, diagnostics: &SlamDiagnosticsMessage) {
-        let msg = SlamMessage::Diagnostics(diagnostics.clone());
-        self.broadcast_slam(&msg);
+        let msg = proto::dhruva::DhruvaMessage {
+            topic: "slam/diagnostics".to_string(),
+            payload: Some(proto::dhruva::dhruva_message::Payload::SlamDiagnostics(
+                proto::dhruva::SlamDiagnostics {
+                    timestamp_us: diagnostics.timestamp_us,
+                    timing: Some(proto::dhruva::TimingBreakdown {
+                        total_us: diagnostics.timing.total_us,
+                        preprocessing_us: diagnostics.timing.preprocessing_us,
+                        scan_matching_us: diagnostics.timing.scan_matching_us,
+                        map_update_us: diagnostics.timing.map_update_us,
+                        particle_filter_us: diagnostics.timing.particle_filter_us,
+                        keyframe_check_us: diagnostics.timing.keyframe_check_us,
+                        avg_total_us: diagnostics.timing.avg_total_us,
+                    }),
+                    scan_match: Some(proto::dhruva::ScanMatchStats {
+                        method: diagnostics.scan_match.method.clone(),
+                        iterations: diagnostics.scan_match.iterations,
+                        score: diagnostics.scan_match.score,
+                        mse: diagnostics.scan_match.mse,
+                        converged: diagnostics.scan_match.converged,
+                        correspondences: diagnostics.scan_match.correspondences as u32,
+                        inlier_ratio: diagnostics.scan_match.inlier_ratio,
+                    }),
+                    mapping: Some(proto::dhruva::MappingStats {
+                        cells_updated: diagnostics.mapping.cells_updated,
+                        map_size_bytes: diagnostics.mapping.map_size_bytes as u64,
+                        occupied_cells: diagnostics.mapping.occupied_cells,
+                        free_cells: diagnostics.mapping.free_cells,
+                        active_submap_id: diagnostics.mapping.active_submap_id,
+                        num_submaps: diagnostics.mapping.num_submaps as u32,
+                    }),
+                    loop_closure: Some(proto::dhruva::LoopClosureStats {
+                        candidates_evaluated: diagnostics.loop_closure.candidates_evaluated,
+                        closures_accepted: diagnostics.loop_closure.closures_accepted,
+                        last_closure_score: diagnostics.loop_closure.last_closure_score,
+                        pose_graph_nodes: diagnostics.loop_closure.pose_graph_nodes as u32,
+                        pose_graph_edges: diagnostics.loop_closure.pose_graph_edges as u32,
+                    }),
+                },
+            )),
+        };
+        self.broadcast_proto(&msg);
     }
 
-    /// Broadcast an odometry message to all connected clients.
-    fn broadcast_odometry(&self, msg: &OdometryMessage) {
-        let bytes = match serde_json::to_vec(msg) {
-            Ok(b) => b,
-            Err(e) => {
-                log::error!("Failed to serialize message: {}", e);
-                return;
-            }
-        };
-        self.broadcast_bytes(&bytes);
-    }
-
-    /// Broadcast a SLAM message to all connected clients.
-    fn broadcast_slam(&self, msg: &SlamMessage) {
-        let bytes = match serde_json::to_vec(msg) {
-            Ok(b) => b,
-            Err(e) => {
-                log::error!("Failed to serialize message: {}", e);
-                return;
-            }
-        };
-        self.broadcast_bytes(&bytes);
+    /// Broadcast a protobuf message to all connected clients.
+    fn broadcast_proto(&self, msg: &proto::dhruva::DhruvaMessage) {
+        let mut buf = Vec::with_capacity(msg.encoded_len());
+        if let Err(e) = msg.encode(&mut buf) {
+            log::error!("Failed to encode protobuf message: {}", e);
+            return;
+        }
+        self.broadcast_bytes(&buf);
     }
 
     /// Broadcast raw bytes to all connected clients.
@@ -325,64 +479,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_odometry_pose_serialization() {
-        let msg = OdometryMessage::Pose(OdometryPose {
-            x: 1.234,
-            y: 0.567,
-            theta: 0.785,
-            timestamp_us: 1234567890,
-        });
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("odometry/pose"));
-        assert!(json.contains("1.234"));
+    fn test_odometry_pose_creation() {
+        let pose = Pose2D::new(1.234, 0.567, 0.785);
+        let odom_pose = OdometryPose::from_pose(&pose, 1234567890);
+        assert_eq!(odom_pose.x, 1.234);
+        assert_eq!(odom_pose.y, 0.567);
+        assert_eq!(odom_pose.theta, 0.785);
+        assert_eq!(odom_pose.timestamp_us, 1234567890);
     }
 
     #[test]
-    fn test_diagnostics_serialization() {
-        let msg = OdometryMessage::Diagnostics(OdometryDiagnostics {
-            drift_rate: 0.02,
-            tick_rate_left: 450.0,
-            tick_rate_right: 448.0,
-            distance_traveled: 5.67,
-            gyro_bias: 0.001,
-        });
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("odometry/diagnostics"));
-        assert!(json.contains("drift_rate"));
-    }
-
-    #[test]
-    fn test_slam_status_serialization() {
-        let msg = SlamMessage::Status(SlamStatusMessage {
-            mode: "Mapping".to_string(),
-            num_scans: 1234,
-            num_keyframes: 45,
-            num_submaps: 3,
-            num_finished_submaps: 2,
-            match_score: 0.78,
-            is_lost: false,
-            memory_usage_bytes: 5242880,
-        });
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("slam/status"));
-        assert!(json.contains("\"mode\":\"Mapping\""));
-        assert!(json.contains("\"num_scans\":1234"));
-    }
-
-    #[test]
-    fn test_slam_scan_serialization() {
-        let msg = SlamMessage::Scan(SlamScanMessage {
-            points: vec![[1.0, 2.0], [3.0, 4.0]],
-            pose: [1.234, 0.567, 0.785],
-            timestamp_us: 1234567890,
-        });
-
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("slam/scan"));
-        assert!(json.contains("points"));
-        assert!(json.contains("pose"));
+    fn test_diagnostics_default() {
+        let diag = OdometryDiagnostics::default();
+        assert_eq!(diag.drift_rate, 0.0);
+        assert_eq!(diag.distance_traveled, 0.0);
     }
 }

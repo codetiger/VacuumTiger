@@ -1,0 +1,14 @@
+# SangamIO Configuration
+# Hardware abstraction daemon for CRL-200S robot vacuum
+
+[device]
+type = "crl200s"
+name = "CRL-200S Vacuum Robot"
+
+[device.hardware]
+gd32_port = "/dev/ttyS3"
+lidar_port = "/dev/ttyS1"
+heartbeat_interval_ms = 20
+
+[network]
+bind_address = "0.0.0.0:5555"

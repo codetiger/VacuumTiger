@@ -8,7 +8,7 @@ use std::path::Path;
 
 use super::player::{BagPlayer, PlayerError};
 use super::types::BagMessage;
-use crate::io::sangam_client::{ClientError, Message, Payload, SensorValue};
+use crate::io::sangam_client::{ClientError, Message, SensorValue};
 
 /// A SangamClient replacement that reads from a bag file.
 ///
@@ -105,42 +105,53 @@ impl SimulatedClient {
         match bag_msg {
             BagMessage::SensorStatus(status) => {
                 let mut values = HashMap::new();
+                // U16 values are stored as U32 in protobuf
                 values.insert(
                     "wheel_left".to_string(),
-                    SensorValue::U16(status.encoder.left),
+                    SensorValue::U32(status.encoder.left as u32),
                 );
                 values.insert(
                     "wheel_right".to_string(),
-                    SensorValue::U16(status.encoder.right),
+                    SensorValue::U32(status.encoder.right as u32),
                 );
-                values.insert("gyro_x".to_string(), SensorValue::I16(status.gyro_raw[0]));
-                values.insert("gyro_y".to_string(), SensorValue::I16(status.gyro_raw[1]));
-                values.insert("gyro_z".to_string(), SensorValue::I16(status.gyro_raw[2]));
-                values.insert("accel_x".to_string(), SensorValue::I16(status.accel_raw[0]));
-                values.insert("accel_y".to_string(), SensorValue::I16(status.accel_raw[1]));
-                values.insert("accel_z".to_string(), SensorValue::I16(status.accel_raw[2]));
+                // I16 values are stored as I32 in protobuf
+                values.insert(
+                    "gyro_x".to_string(),
+                    SensorValue::I32(status.gyro_raw[0] as i32),
+                );
+                values.insert(
+                    "gyro_y".to_string(),
+                    SensorValue::I32(status.gyro_raw[1] as i32),
+                );
+                values.insert(
+                    "gyro_z".to_string(),
+                    SensorValue::I32(status.gyro_raw[2] as i32),
+                );
+                values.insert(
+                    "accel_x".to_string(),
+                    SensorValue::I32(status.accel_raw[0] as i32),
+                );
+                values.insert(
+                    "accel_y".to_string(),
+                    SensorValue::I32(status.accel_raw[1] as i32),
+                );
+                values.insert(
+                    "accel_z".to_string(),
+                    SensorValue::I32(status.accel_raw[2] as i32),
+                );
 
-                Message {
-                    topic: "sensors/sensor_status".to_string(),
-                    payload: Payload::SensorGroup {
-                        group_id: "sensor_status".to_string(),
-                        timestamp_us: status.timestamp_us,
-                        values,
-                    },
-                }
+                Message::new(
+                    "sensors/sensor_status",
+                    "sensor_status",
+                    status.timestamp_us,
+                    values,
+                )
             }
             BagMessage::Lidar(scan) => {
                 let mut values = HashMap::new();
                 values.insert("scan".to_string(), SensorValue::PointCloud2D(scan.data));
 
-                Message {
-                    topic: "sensors/lidar".to_string(),
-                    payload: Payload::SensorGroup {
-                        group_id: "lidar".to_string(),
-                        timestamp_us: scan.timestamp_us,
-                        values,
-                    },
-                }
+                Message::new("sensors/lidar", "lidar", scan.timestamp_us, values)
             }
             BagMessage::Odometry(pose) => {
                 // Odometry not directly in SangamIO format, but useful for ground truth
@@ -149,14 +160,7 @@ impl SimulatedClient {
                 values.insert("y".to_string(), SensorValue::F32(pose.data.y));
                 values.insert("theta".to_string(), SensorValue::F32(pose.data.theta));
 
-                Message {
-                    topic: "sensors/odometry".to_string(),
-                    payload: Payload::SensorGroup {
-                        group_id: "odometry".to_string(),
-                        timestamp_us: pose.timestamp_us,
-                        values,
-                    },
-                }
+                Message::new("sensors/odometry", "odometry", pose.timestamp_us, values)
             }
         }
     }

@@ -40,7 +40,7 @@
 //! ## Phase 1: Foundation
 //! - Core types: Pose2D, Point2D, Timestamped<T>
 //! - Math primitives: angle normalization, pose composition
-//! - SangamIO client: TCP connection with JSON/Postcard wire format
+//! - SangamIO client: TCP connection with Protobuf wire format
 //!
 //! ## Phase 2: Odometry
 //! - New types: Twist2D, ImuReading, Covariance2D
@@ -169,7 +169,7 @@ pub use engine::graph::{
 };
 
 // I/O - SangamIO client
-pub use io::sangam_client::{LidarPoint, LidarScan, SangamClient, WireFormat};
+pub use io::sangam_client::{LidarPoint, LidarScan, SangamClient};
 
 // I/O - Bag
 pub use io::bag::{BagHeader, BagInfo, BagMessage, BagPlayer, BagRecorder, SimulatedClient};

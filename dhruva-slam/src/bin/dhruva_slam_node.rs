@@ -266,6 +266,7 @@ fn main() {
 
     log::info!("dhruva-slam-node starting...");
     log::info!("  SangamIO: {}", config.source.sangam_address);
+    log::info!("  Wire format: Protobuf");
     log::info!("  Publish port: {}", config.output.bind_port);
     log::info!("  Output rate: {} Hz", config.output.odometry_rate_hz);
     log::info!("  SLAM enabled: {}", config.slam.enabled);
@@ -307,7 +308,7 @@ fn run_main_loop(
         config.source.sangam_address
     );
     let mut client = SangamClient::connect(&config.source.sangam_address)?;
-    log::info!("Connected to SangamIO");
+    log::info!("Connected to SangamIO (format: Protobuf)");
 
     // Start publisher
     let publisher = OdometryPublisher::new(config.output.bind_port)?;

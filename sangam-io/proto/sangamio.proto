@@ -1,0 +1,83 @@
+syntax = "proto3";
+package sangamio;
+
+// Top-level message wrapper for all SangamIO TCP communication
+message Message {
+  string topic = 1;
+  oneof payload {
+    SensorGroup sensor_group = 2;
+    Command command = 3;
+  }
+}
+
+// Sensor data from robot (outbound @ 500Hz for telemetry, 5Hz for lidar)
+message SensorGroup {
+  string group_id = 1;
+  uint64 timestamp_us = 2;
+  map<string, SensorValue> values = 3;
+}
+
+// Tagged union for sensor values - matches Rust SensorValue enum
+message SensorValue {
+  oneof value {
+    bool bool_val = 1;
+    uint32 u32_val = 2;
+    uint64 u64_val = 3;
+    int32 i32_val = 4;
+    int64 i64_val = 5;
+    float f32_val = 6;
+    double f64_val = 7;
+    string string_val = 8;
+    bytes bytes_val = 9;
+    Vector3 vector3_val = 10;
+    PointCloud2D pointcloud_val = 11;
+  }
+}
+
+message Vector3 {
+  float x = 1;
+  float y = 2;
+  float z = 3;
+}
+
+// LiDAR point cloud data
+message PointCloud2D {
+  repeated LidarPoint points = 1;
+}
+
+message LidarPoint {
+  float angle_rad = 1;
+  float distance_m = 2;
+  uint32 quality = 3;
+}
+
+// Commands to robot (inbound)
+message Command {
+  oneof command {
+    ComponentControl component_control = 1;
+    ProtocolSync protocol_sync = 2;
+    Shutdown shutdown = 3;
+  }
+}
+
+// Empty messages for simple commands
+message ProtocolSync {}
+message Shutdown {}
+
+// Component control command (motors, actuators, sensors)
+message ComponentControl {
+  string id = 1;  // "drive", "vacuum", "lidar", "main_brush", "side_brush", etc.
+  ComponentAction action = 2;
+}
+
+message ComponentAction {
+  ActionType type = 1;
+  map<string, SensorValue> config = 2;  // Optional configuration parameters
+
+  enum ActionType {
+    ENABLE = 0;
+    DISABLE = 1;
+    RESET = 2;
+    CONFIGURE = 3;
+  }
+}

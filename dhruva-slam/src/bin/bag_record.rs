@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use dhruva_slam::io::bag::{BagRecorder, EncoderTicks, SensorStatusMsg};
-use dhruva_slam::{SangamClient, Timestamped, WireFormat};
+use dhruva_slam::{SangamClient, Timestamped};
 
 fn main() {
     env_logger::init();
@@ -44,14 +44,12 @@ struct Config {
     sangam_address: String,
     output_path: String,
     duration_secs: Option<u64>,
-    wire_format: WireFormat,
 }
 
 fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut sangam_address = None;
     let mut output_path = None;
     let mut duration_secs = None;
-    let mut wire_format = WireFormat::Json;
 
     let mut i = 1;
     while i < args.len() {
@@ -81,22 +79,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                         .map_err(|_| format!("Invalid duration: {}", args[i]))?,
                 );
             }
-            "--format" | "-f" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err("Missing value for --format".to_string());
-                }
-                wire_format = match args[i].to_lowercase().as_str() {
-                    "json" => WireFormat::Json,
-                    "postcard" => WireFormat::Postcard,
-                    _ => {
-                        return Err(format!(
-                            "Invalid format: {} (use json or postcard)",
-                            args[i]
-                        ));
-                    }
-                };
-            }
             "--help" | "-h" => {
                 return Err("Help requested".to_string());
             }
@@ -114,7 +96,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         sangam_address,
         output_path,
         duration_secs,
-        wire_format,
     })
 }
 
@@ -129,7 +110,6 @@ OPTIONS:
     -s, --sangam <ADDRESS>   SangamIO address (e.g., 192.168.68.101:5555)
     -o, --output <PATH>      Output bag file path
     -d, --duration <SECS>    Recording duration in seconds (default: until Ctrl-C)
-    -f, --format <FORMAT>    Wire format: json or postcard (default: json)
     -h, --help               Show this help message
 
 EXAMPLES:
@@ -152,8 +132,8 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     println!("Connecting to SangamIO at {}...", config.sangam_address);
-    let mut client = SangamClient::connect_with_format(&config.sangam_address, config.wire_format)?;
-    println!("Connected!");
+    let mut client = SangamClient::connect(&config.sangam_address)?;
+    println!("Connected! (wire format: Protobuf)");
 
     println!("Creating bag file: {}", config.output_path);
     let mut recorder = BagRecorder::create(&config.output_path)?;
@@ -184,11 +164,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         // Receive message with timeout
         match client.recv() {
             Ok(msg) => {
-                let timestamp_us = match &msg.payload {
-                    dhruva_slam::io::sangam_client::Payload::SensorGroup {
-                        timestamp_us, ..
-                    } => *timestamp_us,
-                };
+                let timestamp_us = msg.timestamp_us();
 
                 // Check if it's sensor status or lidar
                 if let Some((left, right)) = msg.encoder_ticks() {

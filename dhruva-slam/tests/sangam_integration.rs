@@ -3,27 +3,26 @@
 //! These tests require a live SangamIO daemon running on the robot.
 //! Run with: cargo test -- --ignored
 //!
-//! Note: The wire format must match SangamIO's hardware.json configuration.
-//! Default is JSON (wire_format: "json").
+//! Note: Wire format is Protobuf (length-prefixed binary).
 
 #[allow(unused_imports)]
 use dhruva_slam::{
     ComplementaryConfig, ComplementaryFilter, LaserScan, Pose2D, PreprocessorConfig, SangamClient,
-    ScanPreprocessor, WheelOdometry, WheelOdometryConfig, WireFormat,
+    ScanPreprocessor, WheelOdometry, WheelOdometryConfig,
 };
 use std::time::Duration;
 
-/// Test connecting to SangamIO and receiving messages (JSON format).
+/// Test connecting to SangamIO and receiving messages (Protobuf format).
 ///
 /// Run with: cargo test test_sangam_connection -- --ignored
 #[test]
 #[ignore]
 fn test_sangam_connection() {
-    // Connect with JSON format (matches default SangamIO config)
+    // Connect to SangamIO (Protobuf wire format)
     let mut client =
         SangamClient::connect("192.168.68.101:5555").expect("Failed to connect to SangamIO");
 
-    println!("Using wire format: {:?}", client.wire_format());
+    println!("Connected to SangamIO (Protobuf format)");
 
     client
         .set_timeout(Some(Duration::from_secs(5)))

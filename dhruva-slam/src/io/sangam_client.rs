@@ -1,28 +1,23 @@
 //! SangamIO TCP client for receiving sensor data.
 //!
-//! Connects to SangamIO daemon and receives sensor messages.
-//! Supports both JSON and Postcard wire formats.
+//! Connects to SangamIO daemon and receives sensor messages using Protobuf.
 //!
 //! # Wire Protocol
 //!
 //! ```text
 //! ┌──────────────────┬──────────────────────────┐
 //! │ Length (4 bytes) │ Payload (variable)       │
-//! │ Big-endian u32   │ JSON or Postcard binary  │
+//! │ Big-endian u32   │ Protobuf binary          │
 //! └──────────────────┴──────────────────────────┘
 //! ```
 //!
 //! # Example
 //!
 //! ```ignore
-//! use dhruva_slam::sangam_client::{SangamClient, WireFormat};
+//! use dhruva_slam::sangam_client::SangamClient;
 //! use std::time::Duration;
 //!
-//! // Connect with JSON format (default for SangamIO)
-//! let mut client = SangamClient::connect_with_format(
-//!     "192.168.68.101:5555",
-//!     WireFormat::Json
-//! )?;
+//! let mut client = SangamClient::connect("192.168.68.101:5555")?;
 //! client.set_timeout(Some(Duration::from_secs(5)))?;
 //!
 //! loop {
@@ -34,12 +29,19 @@
 //! ```
 
 use crate::core::types::Timestamped;
-use serde::Deserialize;
+use prost::Message as ProstMessage;
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::TcpStream;
 use std::time::Duration;
 use thiserror::Error;
+
+// Include generated protobuf types
+pub mod proto {
+    pub mod sangamio {
+        include!(concat!(env!("OUT_DIR"), "/sangamio.rs"));
+    }
+}
 
 /// Client errors
 #[derive(Error, Debug)]
@@ -57,67 +59,20 @@ pub enum ClientError {
     BufferTooSmall(usize),
 }
 
-impl From<postcard::Error> for ClientError {
-    fn from(e: postcard::Error) -> Self {
-        ClientError::Deserialize(e.to_string())
-    }
-}
-
-impl From<serde_json::Error> for ClientError {
-    fn from(e: serde_json::Error) -> Self {
+impl From<prost::DecodeError> for ClientError {
+    fn from(e: prost::DecodeError) -> Self {
         ClientError::Deserialize(e.to_string())
     }
 }
 
 pub type Result<T> = std::result::Result<T, ClientError>;
 
-/// Supported wire formats for SangamIO communication.
-///
-/// Must match the `wire_format` setting in SangamIO's hardware.json.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum WireFormat {
-    /// JSON format - human-readable, default for SangamIO
-    ///
-    /// Pros: Easy to debug, widely supported
-    /// Cons: Larger messages, slower serialization
-    #[default]
-    Json,
-
-    /// Postcard binary format - compact and fast
-    ///
-    /// Pros: Small messages, fast serialization
-    /// Cons: Binary format, harder to debug
-    Postcard,
-}
-
-/// SangamIO message (mirrors sangam-io/src/streaming/messages.rs)
-#[derive(Debug, Deserialize)]
-pub struct Message {
-    pub topic: String,
-    pub payload: Payload,
-}
-
-/// Message payload (only SensorGroup for now)
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-pub enum Payload {
-    SensorGroup {
-        group_id: String,
-        timestamp_us: u64,
-        values: HashMap<String, SensorValue>,
-    },
-}
-
-/// Sensor value types (subset of sangam-io types we need)
-#[derive(Debug, Clone, Deserialize)]
+/// Sensor value types (converted from protobuf)
+#[derive(Debug, Clone)]
 pub enum SensorValue {
     Bool(bool),
-    U8(u8),
-    U16(u16),
     U32(u32),
     U64(u64),
-    I8(i8),
-    I16(i16),
     I32(i32),
     I64(i64),
     F32(f32),
@@ -135,39 +90,64 @@ pub type LidarPoint = (f32, f32, u8);
 /// A complete LiDAR scan as a vector of points.
 pub type LidarScan = Vec<LidarPoint>;
 
-impl Payload {
-    /// Get group_id from payload.
-    #[inline]
-    fn group_id(&self) -> &str {
-        let Payload::SensorGroup { group_id, .. } = self;
-        group_id
-    }
-
-    /// Get timestamp from payload.
-    #[inline]
-    fn timestamp_us(&self) -> u64 {
-        let Payload::SensorGroup { timestamp_us, .. } = self;
-        *timestamp_us
-    }
-
-    /// Get values from payload.
-    #[inline]
-    fn values(&self) -> &HashMap<String, SensorValue> {
-        let Payload::SensorGroup { values, .. } = self;
-        values
-    }
+/// Parsed message from SangamIO
+#[derive(Debug)]
+pub struct Message {
+    topic: String,
+    group_id: String,
+    timestamp_us: u64,
+    values: HashMap<String, SensorValue>,
 }
 
 impl Message {
+    /// Create a new message (used by SimulatedClient)
+    pub fn new(
+        topic: &str,
+        group_id: &str,
+        timestamp_us: u64,
+        values: HashMap<String, SensorValue>,
+    ) -> Self {
+        Self {
+            topic: topic.to_string(),
+            group_id: group_id.to_string(),
+            timestamp_us,
+            values,
+        }
+    }
+
+    /// Create from protobuf message
+    fn from_proto(msg: proto::sangamio::Message) -> Result<Self> {
+        match msg.payload {
+            Some(proto::sangamio::message::Payload::SensorGroup(sg)) => {
+                let values: HashMap<String, SensorValue> = sg
+                    .values
+                    .into_iter()
+                    .map(|(k, v)| (k, SensorValue::from_proto(v)))
+                    .collect();
+
+                Ok(Self {
+                    topic: msg.topic,
+                    group_id: sg.group_id,
+                    timestamp_us: sg.timestamp_us,
+                    values,
+                })
+            }
+            Some(proto::sangamio::message::Payload::Command(_)) => Err(ClientError::Deserialize(
+                "Received command message from server".to_string(),
+            )),
+            None => Err(ClientError::Deserialize("Empty payload".to_string())),
+        }
+    }
+
     /// Extract lidar point cloud if this is a lidar message.
     ///
     /// Returns timestamped reference to LidarScan (Vec of (angle_rad, distance_m, quality)).
     pub fn as_lidar(&self) -> Option<Timestamped<&LidarScan>> {
-        if self.payload.group_id() != "lidar" {
+        if self.group_id != "lidar" {
             return None;
         }
-        if let Some(SensorValue::PointCloud2D(points)) = self.payload.values().get("scan") {
-            Some(Timestamped::new(points, self.payload.timestamp_us()))
+        if let Some(SensorValue::PointCloud2D(points)) = self.values.get("scan") {
+            Some(Timestamped::new(points, self.timestamp_us))
         } else {
             None
         }
@@ -175,18 +155,17 @@ impl Message {
 
     /// Extract wheel encoder ticks (left, right) if this is a sensor_status message.
     ///
-    /// Returns raw U16 tick values.
+    /// Returns raw U16 tick values (stored as U32 in protobuf).
     pub fn encoder_ticks(&self) -> Option<(u16, u16)> {
-        if self.payload.group_id() != "sensor_status" {
+        if self.group_id != "sensor_status" {
             return None;
         }
-        let values = self.payload.values();
-        let left = match values.get("wheel_left") {
-            Some(SensorValue::U16(v)) => *v,
+        let left = match self.values.get("wheel_left") {
+            Some(SensorValue::U32(v)) => *v as u16,
             _ => return None,
         };
-        let right = match values.get("wheel_right") {
-            Some(SensorValue::U16(v)) => *v,
+        let right = match self.values.get("wheel_right") {
+            Some(SensorValue::U32(v)) => *v as u16,
             _ => return None,
         };
         Some((left, right))
@@ -197,13 +176,13 @@ impl Message {
     /// **Note**: This returns `gyro_z` which is actually the Roll axis on CRL-200S.
     /// For yaw (heading), use [`gyro_yaw_raw`] instead.
     ///
-    /// Returns raw I16 value from IMU. Needs calibration/conversion to rad/s.
+    /// Returns raw I16 value from IMU (stored as I32 in protobuf).
     pub fn gyro_z_raw(&self) -> Option<i16> {
-        if self.payload.group_id() != "sensor_status" {
+        if self.group_id != "sensor_status" {
             return None;
         }
-        if let Some(SensorValue::I16(v)) = self.payload.values().get("gyro_z") {
-            Some(*v)
+        if let Some(SensorValue::I32(v)) = self.values.get("gyro_z") {
+            Some(*v as i16)
         } else {
             None
         }
@@ -218,12 +197,12 @@ impl Message {
     ///
     /// Returns raw I16 value in 0.1 deg/s units.
     pub fn gyro_yaw_raw(&self) -> Option<i16> {
-        if self.payload.group_id() != "sensor_status" {
+        if self.group_id != "sensor_status" {
             return None;
         }
         // Yaw rate is in gyro_x on CRL-200S
-        if let Some(SensorValue::I16(v)) = self.payload.values().get("gyro_x") {
-            Some(*v)
+        if let Some(SensorValue::I32(v)) = self.values.get("gyro_x") {
+            Some(*v as i16)
         } else {
             None
         }
@@ -231,22 +210,21 @@ impl Message {
 
     /// Extract full gyroscope raw reading [x, y, z].
     ///
-    /// Returns raw I16 values from IMU. Needs calibration/conversion to rad/s.
+    /// Returns raw I16 values from IMU.
     pub fn gyro_raw(&self) -> Option<[i16; 3]> {
-        if self.payload.group_id() != "sensor_status" {
+        if self.group_id != "sensor_status" {
             return None;
         }
-        let values = self.payload.values();
-        let x = match values.get("gyro_x") {
-            Some(SensorValue::I16(v)) => *v,
+        let x = match self.values.get("gyro_x") {
+            Some(SensorValue::I32(v)) => *v as i16,
             _ => return None,
         };
-        let y = match values.get("gyro_y") {
-            Some(SensorValue::I16(v)) => *v,
+        let y = match self.values.get("gyro_y") {
+            Some(SensorValue::I32(v)) => *v as i16,
             _ => return None,
         };
-        let z = match values.get("gyro_z") {
-            Some(SensorValue::I16(v)) => *v,
+        let z = match self.values.get("gyro_z") {
+            Some(SensorValue::I32(v)) => *v as i16,
             _ => return None,
         };
         Some([x, y, z])
@@ -254,43 +232,77 @@ impl Message {
 
     /// Extract accelerometer raw reading [x, y, z].
     ///
-    /// Returns raw I16 values from IMU. Needs calibration/conversion to m/s².
+    /// Returns raw I16 values from IMU.
     pub fn accel_raw(&self) -> Option<[i16; 3]> {
-        if self.payload.group_id() != "sensor_status" {
+        if self.group_id != "sensor_status" {
             return None;
         }
-        let values = self.payload.values();
-        let x = match values.get("accel_x") {
-            Some(SensorValue::I16(v)) => *v,
+        let x = match self.values.get("accel_x") {
+            Some(SensorValue::I32(v)) => *v as i16,
             _ => return None,
         };
-        let y = match values.get("accel_y") {
-            Some(SensorValue::I16(v)) => *v,
+        let y = match self.values.get("accel_y") {
+            Some(SensorValue::I32(v)) => *v as i16,
             _ => return None,
         };
-        let z = match values.get("accel_z") {
-            Some(SensorValue::I16(v)) => *v,
+        let z = match self.values.get("accel_z") {
+            Some(SensorValue::I32(v)) => *v as i16,
             _ => return None,
         };
         Some([x, y, z])
     }
 
+    /// Get the topic of this message (e.g., "sensors/sensor_status").
+    #[inline]
+    pub fn topic(&self) -> &str {
+        &self.topic
+    }
+
     /// Get the group_id of this message.
     #[inline]
     pub fn group_id(&self) -> &str {
-        self.payload.group_id()
+        &self.group_id
     }
 
     /// Get timestamp in microseconds since epoch.
     #[inline]
     pub fn timestamp_us(&self) -> u64 {
-        self.payload.timestamp_us()
+        self.timestamp_us
     }
 
     /// Get raw access to sensor values.
     #[inline]
     pub fn values(&self) -> &HashMap<String, SensorValue> {
-        self.payload.values()
+        &self.values
+    }
+}
+
+impl SensorValue {
+    /// Convert from protobuf sensor value
+    fn from_proto(value: proto::sangamio::SensorValue) -> Self {
+        match value.value {
+            Some(proto::sangamio::sensor_value::Value::BoolVal(v)) => SensorValue::Bool(v),
+            Some(proto::sangamio::sensor_value::Value::U32Val(v)) => SensorValue::U32(v),
+            Some(proto::sangamio::sensor_value::Value::U64Val(v)) => SensorValue::U64(v),
+            Some(proto::sangamio::sensor_value::Value::I32Val(v)) => SensorValue::I32(v),
+            Some(proto::sangamio::sensor_value::Value::I64Val(v)) => SensorValue::I64(v),
+            Some(proto::sangamio::sensor_value::Value::F32Val(v)) => SensorValue::F32(v),
+            Some(proto::sangamio::sensor_value::Value::F64Val(v)) => SensorValue::F64(v),
+            Some(proto::sangamio::sensor_value::Value::StringVal(v)) => SensorValue::String(v),
+            Some(proto::sangamio::sensor_value::Value::BytesVal(v)) => SensorValue::Bytes(v),
+            Some(proto::sangamio::sensor_value::Value::Vector3Val(v)) => {
+                SensorValue::Vector3([v.x, v.y, v.z])
+            }
+            Some(proto::sangamio::sensor_value::Value::PointcloudVal(v)) => {
+                SensorValue::PointCloud2D(
+                    v.points
+                        .into_iter()
+                        .map(|p| (p.angle_rad, p.distance_m, p.quality as u8))
+                        .collect(),
+                )
+            }
+            None => SensorValue::Bool(false), // Default fallback
+        }
     }
 }
 
@@ -302,63 +314,25 @@ const MAX_BUFFER_SIZE: usize = 1024 * 1024;
 
 /// TCP client for SangamIO daemon.
 ///
-/// Supports both JSON and Postcard wire formats. The format must match
-/// the `wire_format` setting in SangamIO's hardware.json configuration.
+/// Uses Protobuf wire format for efficient binary communication.
 pub struct SangamClient {
     stream: TcpStream,
     buffer: Vec<u8>,
-    format: WireFormat,
 }
 
 impl SangamClient {
-    /// Connect to SangamIO daemon using JSON wire format (default).
-    ///
-    /// This is a convenience method equivalent to:
-    /// ```ignore
-    /// SangamClient::connect_with_format(addr, WireFormat::Json)
-    /// ```
+    /// Connect to SangamIO daemon.
     ///
     /// # Example
     /// ```ignore
     /// let client = SangamClient::connect("192.168.68.101:5555")?;
     /// ```
     pub fn connect(addr: &str) -> Result<Self> {
-        Self::connect_with_format(addr, WireFormat::Json)
-    }
-
-    /// Connect to SangamIO daemon with specified wire format.
-    ///
-    /// The format must match the `wire_format` setting in SangamIO's
-    /// hardware.json configuration file.
-    ///
-    /// # Example
-    /// ```ignore
-    /// use dhruva_slam::sangam_client::{SangamClient, WireFormat};
-    ///
-    /// // For hardware.json with "wire_format": "json"
-    /// let client = SangamClient::connect_with_format(
-    ///     "192.168.68.101:5555",
-    ///     WireFormat::Json
-    /// )?;
-    ///
-    /// // For hardware.json with "wire_format": "postcard"
-    /// let client = SangamClient::connect_with_format(
-    ///     "192.168.68.101:5555",
-    ///     WireFormat::Postcard
-    /// )?;
-    /// ```
-    pub fn connect_with_format(addr: &str, format: WireFormat) -> Result<Self> {
         let stream = TcpStream::connect(addr)?;
         Ok(Self {
             stream,
             buffer: vec![0u8; DEFAULT_BUFFER_SIZE],
-            format,
         })
-    }
-
-    /// Get the current wire format.
-    pub fn wire_format(&self) -> WireFormat {
-        self.format
     }
 
     /// Set read timeout for the connection.
@@ -377,14 +351,6 @@ impl SangamClient {
     /// Get the peer address of this connection.
     pub fn peer_addr(&self) -> Result<std::net::SocketAddr> {
         Ok(self.stream.peer_addr()?)
-    }
-
-    /// Deserialize message bytes using the configured wire format.
-    fn deserialize(&self, bytes: &[u8]) -> Result<Message> {
-        match self.format {
-            WireFormat::Json => Ok(serde_json::from_slice(bytes)?),
-            WireFormat::Postcard => Ok(postcard::from_bytes(bytes)?),
-        }
     }
 
     /// Receive the next message (blocking).
@@ -407,8 +373,9 @@ impl SangamClient {
         // Read payload
         self.stream.read_exact(&mut self.buffer[..len])?;
 
-        // Deserialize using configured format
-        self.deserialize(&self.buffer[..len])
+        // Decode protobuf message
+        let proto_msg = proto::sangamio::Message::decode(&self.buffer[..len])?;
+        Message::from_proto(proto_msg)
     }
 
     /// Receive with timeout, returns None on timeout.
@@ -449,13 +416,8 @@ mod tests {
     fn test_sensor_value_sizes() {
         // Ensure SensorValue variants compile and have expected structure
         let _bool = SensorValue::Bool(true);
-        let _u16 = SensorValue::U16(1000);
+        let _u32 = SensorValue::U32(1000);
         let _vec3 = SensorValue::Vector3([1.0, 2.0, 3.0]);
         let _points = SensorValue::PointCloud2D(vec![(0.0, 1.0, 100)]);
-    }
-
-    #[test]
-    fn test_wire_format_default() {
-        assert_eq!(WireFormat::default(), WireFormat::Json);
     }
 }

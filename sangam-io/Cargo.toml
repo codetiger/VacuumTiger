@@ -14,8 +14,8 @@ protocol_debug = []
 [dependencies]
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-postcard = { version = "1.0", features = ["alloc"] }
+toml = "0.8"
+prost = "0.13"
 
 # Serial port
 serialport = "4.2"
@@ -32,3 +32,6 @@ thiserror = "1.0"
 
 # Signal handling
 ctrlc = "3.4"
+
+[build-dependencies]
+prost-build = "0.13"

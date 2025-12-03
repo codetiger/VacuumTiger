@@ -2,7 +2,6 @@
 
 use crate::core::types::SensorGroupData;
 use crate::error::Result;
-use crate::streaming::messages::Message;
 use crate::streaming::wire::Serializer;
 use std::collections::HashMap;
 use std::io::Write;
@@ -66,9 +65,8 @@ impl TcpPublisher {
 
                 let last = last_sent.get(group_id).copied().unwrap_or(0);
                 if data.timestamp_us > last {
-                    // Create and send message
-                    let msg = Message::sensor_group(&data);
-                    if let Err(e) = self.send_message(&mut stream, &msg) {
+                    // Serialize and send message
+                    if let Err(e) = self.send_sensor_group(&mut stream, &data) {
                         log::error!("Failed to send sensor data: {}", e);
                         return Err(e);
                     }
@@ -96,9 +94,9 @@ impl TcpPublisher {
         Ok(())
     }
 
-    /// Send a message to the client
-    fn send_message(&self, stream: &mut TcpStream, msg: &Message) -> Result<()> {
-        let bytes = self.serializer.serialize(msg)?;
+    /// Send a sensor group to the client
+    fn send_sensor_group(&self, stream: &mut TcpStream, data: &SensorGroupData) -> Result<()> {
+        let bytes = self.serializer.serialize_sensor_group(data)?;
         let len = (bytes.len() as u32).to_be_bytes();
 
         stream.write_all(&len)?;

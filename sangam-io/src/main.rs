@@ -9,7 +9,7 @@ mod streaming;
 use crate::config::Config;
 use crate::devices::create_device;
 use crate::error::Result;
-use crate::streaming::{create_serializer, TcpPublisher, TcpReceiver, WireFormat};
+use crate::streaming::{create_serializer, TcpPublisher, TcpReceiver};
 use std::env;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,9 +56,7 @@ fn main() -> Result<()> {
     })
     .map_err(|e| error::Error::Other(format!("Error setting Ctrl-C handler: {}", e)))?;
 
-    // Get wire format from config
-    let wire_format: WireFormat = config.network.wire_format.into();
-    log::info!("Wire format: {:?}", wire_format);
+    log::info!("Wire format: Protobuf");
 
     // Start TCP listener
     let bind_addr = &config.network.bind_address;
@@ -82,8 +80,8 @@ fn main() -> Result<()> {
                 let driver_clone = Arc::clone(&driver);
 
                 // Create serializers for each thread
-                let pub_serializer = create_serializer(wire_format);
-                let recv_serializer = create_serializer(wire_format);
+                let pub_serializer = create_serializer();
+                let recv_serializer = create_serializer();
 
                 // Spawn publisher thread
                 let pub_running = Arc::clone(&running);

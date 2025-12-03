@@ -25,11 +25,8 @@
 //!
 //! ## Protocol Errors (Log and Continue)
 //!
-//! - **`Json`**: Message deserialization failed. Log the error and discard the
-//!   malformed message. The connection remains usable for future messages.
-//!
-//! - **`Serialization`**: Failed to serialize outbound message. Log and skip
-//!   this specific message.
+//! - **`Serialization`**: Message serialization/deserialization failed. Log the error
+//!   and discard the malformed message. The connection remains usable for future messages.
 //!
 //! ## Configuration Errors (Fix and Restart)
 //!
@@ -59,9 +56,6 @@ pub enum Error {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
 
     #[error("Thread panic")]
     ThreadPanic,

@@ -3,7 +3,6 @@
 use crate::core::driver::DeviceDriver;
 use crate::core::types::Command;
 use crate::error::{Error, Result};
-use crate::streaming::messages::{Message, Payload};
 use crate::streaming::wire::Serializer;
 use std::io::Read;
 use std::net::TcpStream;
@@ -48,15 +47,15 @@ impl TcpReceiver {
                 break;
             }
 
-            match self.read_message(&mut stream) {
-                Ok(Some(msg)) => {
-                    log::info!("Received message: {:?}", msg.topic);
-                    if let Err(e) = self.handle_message(msg) {
-                        log::error!("Failed to handle message: {}", e);
+            match self.read_command(&mut stream) {
+                Ok(Some(cmd)) => {
+                    log::info!("Received command: {:?}", cmd);
+                    if let Err(e) = self.handle_command(cmd) {
+                        log::error!("Failed to handle command: {}", e);
                     }
                 }
                 Ok(None) => {
-                    // Timeout, continue loop
+                    // Timeout or non-command message, continue loop
                 }
                 Err(e) => {
                     // Check if it's a connection closed error
@@ -78,8 +77,8 @@ impl TcpReceiver {
         Ok(())
     }
 
-    /// Read a message from the client
-    fn read_message(&self, stream: &mut TcpStream) -> Result<Option<Message>> {
+    /// Read a command from the client
+    fn read_command(&self, stream: &mut TcpStream) -> Result<Option<Command>> {
         // Read length prefix
         let mut len_buf = [0u8; 4];
         match stream.read_exact(&mut len_buf) {
@@ -109,34 +108,20 @@ impl TcpReceiver {
         let mut buf = vec![0u8; len];
         stream.read_exact(&mut buf)?;
 
-        // Deserialize
-        let msg: Message = self.serializer.deserialize(&buf)?;
-        Ok(Some(msg))
-    }
-
-    /// Handle a received message
-    fn handle_message(&self, msg: Message) -> Result<()> {
-        match msg.payload {
-            Payload::Command { command } => {
-                log::debug!("Received command: {:?}", command);
-                let result = self.handle_command(command);
-                if result.is_ok() {
-                    log::trace!("Command executed successfully");
-                } else {
-                    log::error!("Command execution failed: {:?}", result);
-                }
-                result
-            }
-            Payload::SensorGroup { .. } => {
-                log::warn!("Received unexpected SensorGroup message from client");
-                Ok(())
-            }
-        }
+        // Deserialize command
+        self.serializer.deserialize_command(&buf)
     }
 
     /// Handle a command
     fn handle_command(&self, cmd: Command) -> Result<()> {
+        log::debug!("Executing command: {:?}", cmd);
         let mut driver = self.driver.lock().map_err(|_| Error::ThreadPanic)?;
-        driver.send_command(cmd)
+        let result = driver.send_command(cmd);
+        if result.is_ok() {
+            log::trace!("Command executed successfully");
+        } else {
+            log::error!("Command execution failed: {:?}", result);
+        }
+        result
     }
 }

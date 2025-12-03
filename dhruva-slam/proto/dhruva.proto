@@ -1,0 +1,120 @@
+syntax = "proto3";
+package dhruva;
+
+// Top-level message wrapper for DhruvaSLAM TCP output (port 5557)
+message DhruvaMessage {
+  string topic = 1;
+  oneof payload {
+    OdometryPose odometry_pose = 2;
+    OdometryDiagnostics odometry_diagnostics = 3;
+    SlamStatus slam_status = 4;
+    SlamMap slam_map = 5;
+    SlamScan slam_scan = 6;
+    SlamDiagnostics slam_diagnostics = 7;
+  }
+}
+
+// Odometry pose output (50Hz) - topic: "odometry/pose"
+message OdometryPose {
+  float x = 1;           // meters
+  float y = 2;           // meters
+  float theta = 3;       // radians
+  uint64 timestamp_us = 4;
+}
+
+// Odometry diagnostics (1Hz) - topic: "odometry/diagnostics"
+message OdometryDiagnostics {
+  float drift_rate = 1;        // rad/s estimated drift
+  float tick_rate_left = 2;    // ticks/s
+  float tick_rate_right = 3;   // ticks/s
+  float distance_traveled = 4; // meters total
+  float gyro_bias = 5;         // rad/s calibrated bias
+}
+
+// SLAM status (5Hz) - topic: "slam/status"
+message SlamStatus {
+  string mode = 1;                   // "Mapping", "Localization", "Idle"
+  uint64 num_scans = 2;
+  uint32 num_keyframes = 3;
+  uint32 num_submaps = 4;
+  uint32 num_finished_submaps = 5;
+  float match_score = 6;             // 0.0 - 1.0
+  bool is_lost = 7;
+  uint64 memory_usage_bytes = 8;
+}
+
+// SLAM occupancy grid map (1Hz) - topic: "slam/map"
+message SlamMap {
+  float resolution = 1;     // meters per cell
+  uint32 width = 2;         // cells
+  uint32 height = 3;        // cells
+  float origin_x = 4;       // world X of cell (0,0)
+  float origin_y = 5;       // world Y of cell (0,0)
+  bytes cells = 6;          // occupancy grid: 0=unknown, 1-127=free, 128-255=occupied
+  uint64 timestamp_us = 7;
+}
+
+// SLAM scan in global frame (5Hz) - topic: "slam/scan"
+message SlamScan {
+  repeated Point2D points = 1;
+  Pose2D pose = 2;
+  uint64 timestamp_us = 3;
+}
+
+// Basic geometry types
+message Point2D {
+  float x = 1;
+  float y = 2;
+}
+
+message Pose2D {
+  float x = 1;
+  float y = 2;
+  float theta = 3;
+}
+
+// SLAM diagnostics (5Hz) - topic: "slam/diagnostics"
+message SlamDiagnostics {
+  uint64 timestamp_us = 1;
+  TimingBreakdown timing = 2;
+  ScanMatchStats scan_match = 3;
+  MappingStats mapping = 4;
+  LoopClosureStats loop_closure = 5;
+}
+
+message TimingBreakdown {
+  uint64 total_us = 1;
+  uint64 preprocessing_us = 2;
+  uint64 scan_matching_us = 3;
+  uint64 map_update_us = 4;
+  uint64 particle_filter_us = 5;
+  uint64 keyframe_check_us = 6;
+  float avg_total_us = 7;
+}
+
+message ScanMatchStats {
+  string method = 1;          // "icp", "correlative", "hybrid"
+  uint32 iterations = 2;
+  float score = 3;            // 0.0 - 1.0
+  float mse = 4;              // mean squared error
+  bool converged = 5;
+  uint32 correspondences = 6;
+  float inlier_ratio = 7;
+}
+
+message MappingStats {
+  uint32 cells_updated = 1;
+  uint64 map_size_bytes = 2;
+  uint32 occupied_cells = 3;
+  uint32 free_cells = 4;
+  optional uint64 active_submap_id = 5;
+  uint32 num_submaps = 6;
+}
+
+message LoopClosureStats {
+  uint32 candidates_evaluated = 1;
+  uint32 closures_accepted = 2;
+  float last_closure_score = 3;
+  uint32 pose_graph_nodes = 4;
+  uint32 pose_graph_edges = 5;
+}

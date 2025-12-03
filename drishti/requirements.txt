@@ -1,8 +1,8 @@
 # Drishti - Real-time Robot Status Visualization System
 # Python dependencies
 
-# MessagePack serialization
-msgpack>=1.0.0
+# Protocol Buffers for wire format
+protobuf>=4.0
 
 # UI Framework
 PyQt5>=5.15.0

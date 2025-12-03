@@ -13,4 +13,4 @@ pub mod sangam_client;
 pub mod streaming;
 
 // Re-export common types
-pub use sangam_client::{LidarPoint, LidarScan, SangamClient, WireFormat};
+pub use sangam_client::{LidarPoint, LidarScan, SangamClient};
