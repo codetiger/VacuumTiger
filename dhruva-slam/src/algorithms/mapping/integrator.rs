@@ -310,7 +310,7 @@ mod tests {
         integrator.integrate_scan(&mut grid, &scan, &robot_pose);
 
         // Check that cells around robot are free
-        let (rx, ry) = grid.world_to_cell(1.0, 1.0).unwrap();
+        let (_, _) = grid.world_to_cell(1.0, 1.0).unwrap();
         // Robot cell itself may be free or unknown depending on scan
     }
 

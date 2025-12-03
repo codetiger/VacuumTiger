@@ -159,7 +159,7 @@ mod tests {
     use crate::core::types::Point2D;
     use approx::assert_relative_eq;
 
-    fn create_L_shape(n: usize, length: f32) -> PointCloud2D {
+    fn create_l_shape(n: usize, length: f32) -> PointCloud2D {
         let mut cloud = PointCloud2D::with_capacity(2 * n);
         for i in 0..n {
             let x = (i as f32 / (n - 1) as f32) * length;
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_identity() {
-        let cloud = create_L_shape(30, 2.0);
+        let cloud = create_l_shape(30, 2.0);
         let matcher = MultiResolutionMatcher::new(MultiResolutionConfig::default());
 
         let result = matcher.match_scans(&cloud, &cloud, &Pose2D::identity());
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_small_transform() {
-        let source = create_L_shape(30, 2.0);
+        let source = create_l_shape(30, 2.0);
         let transform = Pose2D::new(0.1, 0.08, 0.05);
         let target = source.transform(&transform);
 
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_fewer_iterations_than_single_level() {
-        let source = create_L_shape(30, 2.0);
+        let source = create_l_shape(30, 2.0);
         let transform = Pose2D::new(0.2, 0.15, 0.1);
         let target = source.transform(&transform);
 
@@ -270,7 +270,7 @@ mod tests {
     #[test]
     fn test_empty_clouds() {
         let empty = PointCloud2D::new();
-        let cloud = create_L_shape(20, 1.0);
+        let cloud = create_l_shape(20, 1.0);
         let matcher = MultiResolutionMatcher::new(MultiResolutionConfig::default());
 
         assert!(

@@ -497,7 +497,7 @@ mod tests {
 
     /// Create an L-shaped point cloud (two perpendicular walls)
     /// Adds slight noise to avoid kiddo bucket size issues with collinear points
-    fn create_L_shape(n: usize, length: f32) -> PointCloud2D {
+    fn create_l_shape(n: usize, length: f32) -> PointCloud2D {
         let mut cloud = PointCloud2D::with_capacity(2 * n);
         // Horizontal wall with tiny y variation
         for i in 0..n {
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn test_identity_transform() {
-        let cloud = create_L_shape(50, 2.0);
+        let cloud = create_l_shape(50, 2.0);
         let icp = PointToLineIcp::new(PointToLineIcpConfig::default());
 
         let result = icp.match_scans(&cloud, &cloud, &Pose2D::identity());
@@ -642,7 +642,7 @@ mod tests {
 
     #[test]
     fn test_small_translation() {
-        let source = create_L_shape(50, 2.0);
+        let source = create_l_shape(50, 2.0);
         let transform = Pose2D::new(0.1, 0.05, 0.0);
         let target = source.transform(&transform);
 
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_small_rotation() {
-        let source = create_L_shape(50, 2.0);
+        let source = create_l_shape(50, 2.0);
         let transform = Pose2D::new(0.0, 0.0, 0.1);
         let target = source.transform(&transform);
 
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_combined_transform() {
-        let source = create_L_shape(50, 2.0);
+        let source = create_l_shape(50, 2.0);
         let transform = Pose2D::new(0.1, -0.08, 0.08);
         let target = source.transform(&transform);
 
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn test_with_initial_guess() {
-        let source = create_L_shape(50, 2.0);
+        let source = create_l_shape(50, 2.0);
         let transform = Pose2D::new(0.3, 0.2, 0.15);
         let target = source.transform(&transform);
 
@@ -715,7 +715,7 @@ mod tests {
     #[test]
     fn test_empty_clouds() {
         let empty = PointCloud2D::new();
-        let cloud = create_L_shape(50, 2.0);
+        let cloud = create_l_shape(50, 2.0);
         let icp = PointToLineIcp::new(PointToLineIcpConfig::default());
 
         let result1 = icp.match_scans(&empty, &cloud, &Pose2D::identity());
