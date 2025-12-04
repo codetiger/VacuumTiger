@@ -2,6 +2,12 @@
 //!
 //! This module contains the reader loop that parses incoming packets from the GD32
 //! and updates sensor data in real-time.
+//!
+//! # Thread Model
+//!
+//! The reader runs on a dedicated OS thread, continuously polling the serial port.
+//! It shares the port mutex with the heartbeat thread but minimizes lock hold time
+//! (~100μs per packet parse).
 
 use super::packet::version_request_packet;
 use super::protocol::{PacketReader, RxPacket};
@@ -33,13 +39,19 @@ use std::time::Duration;
 ///
 /// # Version Request Flow
 ///
-/// 1. Wait for first packet of any type (indicates GD32 is awake)
-/// 2. Send version request (CMD=0x42)
+/// 1. Wait for first packet of any type (indicates GD32 is awake and initialized)
+/// 2. Send version request (CMD=0x42) - sent exactly once, not retried on failure
 /// 3. Parse version response payload (string + i32 code)
 /// 4. Set `version_received` flag to prevent repeated requests
 ///
-/// This approach (from sangam-io2-backup) ensures we don't request version before
-/// the GD32 is ready, which would result in lost commands.
+/// **Why wait for first packet?** The GD32 requires its ~5 second wake/init sequence
+/// before it will respond to commands. Sending version request too early results in
+/// the command being silently dropped. By waiting for the first status packet (0x15),
+/// we know the GD32 is ready.
+///
+/// **Failure handling:** If the version request fails to send (e.g., serial error),
+/// it is NOT retried. The daemon will continue without version info. This is
+/// acceptable because version info is diagnostic only.
 ///
 /// # Data Updates
 ///
@@ -345,7 +357,4 @@ fn handle_status_packet(packet: &RxPacket, sensor_data: &Arc<Mutex<SensorGroupDa
             payload[OFFSET_TILT_Z + 1],
         ])),
     );
-
-    // Raw packet bytes for debugging/reverse engineering
-    data.set("raw_packet", SensorValue::Bytes(payload.to_vec()));
 }

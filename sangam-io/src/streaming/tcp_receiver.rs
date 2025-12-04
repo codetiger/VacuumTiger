@@ -14,7 +14,12 @@ pub struct TcpReceiver {
     serializer: Serializer,
     driver: Arc<Mutex<Box<dyn DeviceDriver>>>,
     running: Arc<AtomicBool>,
+    /// Reusable buffer for reading command payloads (avoids allocation per command)
+    read_buffer: Vec<u8>,
 }
+
+/// Initial capacity for command read buffer (typical command size)
+const INITIAL_BUFFER_CAPACITY: usize = 256;
 
 impl TcpReceiver {
     /// Create a new TCP receiver
@@ -27,11 +32,13 @@ impl TcpReceiver {
             serializer,
             driver,
             running,
+            // Pre-allocate buffer to avoid allocation on first command
+            read_buffer: Vec::with_capacity(INITIAL_BUFFER_CAPACITY),
         }
     }
 
     /// Run the receiver loop for a connected client
-    pub fn run(&self, mut stream: TcpStream) -> Result<()> {
+    pub fn run(&mut self, mut stream: TcpStream) -> Result<()> {
         log::info!("TCP receiver started for client: {:?}", stream.peer_addr());
 
         // Set read timeout so we can check shutdown flag
@@ -78,7 +85,9 @@ impl TcpReceiver {
     }
 
     /// Read a command from the client
-    fn read_command(&self, stream: &mut TcpStream) -> Result<Option<Command>> {
+    ///
+    /// Uses a reusable internal buffer to avoid allocation per command.
+    fn read_command(&mut self, stream: &mut TcpStream) -> Result<Option<Command>> {
         // Read length prefix
         let mut len_buf = [0u8; 4];
         match stream.read_exact(&mut len_buf) {
@@ -104,12 +113,13 @@ impl TcpReceiver {
             return Err(Error::Other(format!("Message too large: {} bytes", len)));
         }
 
-        // Read payload
-        let mut buf = vec![0u8; len];
-        stream.read_exact(&mut buf)?;
+        // Reuse buffer - resize only if needed (no allocation if capacity sufficient)
+        self.read_buffer.clear();
+        self.read_buffer.resize(len, 0);
+        stream.read_exact(&mut self.read_buffer)?;
 
         // Deserialize command
-        self.serializer.deserialize_command(&buf)
+        self.serializer.deserialize_command(&self.read_buffer)
     }
 
     /// Handle a command

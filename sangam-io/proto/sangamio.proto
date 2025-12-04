@@ -1,83 +1,114 @@
 syntax = "proto3";
 package sangamio;
 
-// Top-level message wrapper for all SangamIO TCP communication
+// Top-level message wrapper for all SangamIO TCP communication.
+// Every message sent over TCP (inbound or outbound) is wrapped in this type.
 message Message {
+  // Topic identifier for routing messages.
+  // Outbound topics: "sensors/sensor_status", "sensors/device_version", "sensors/lidar"
+  // Inbound topics: "command"
   string topic = 1;
   oneof payload {
-    SensorGroup sensor_group = 2;
-    Command command = 3;
+    SensorGroup sensor_group = 2;  // Outbound sensor data
+    Command command = 3;           // Inbound commands
   }
 }
 
-// Sensor data from robot (outbound @ 500Hz for telemetry, 5Hz for lidar)
+// Sensor data container published by the daemon.
+// Streaming rates: 500Hz for telemetry, 5Hz for lidar scans.
 message SensorGroup {
+  // Group identifier matching topic suffix (e.g., "sensor_status", "lidar")
   string group_id = 1;
+  // Microseconds since Unix epoch (1970-01-01 00:00:00 UTC).
+  // Resolution: 1 microsecond. Updated each time sensor data is captured.
   uint64 timestamp_us = 2;
+  // Key-value pairs of sensor readings. Keys are sensor names (e.g., "bumper_left", "gyro_z").
   map<string, SensorValue> values = 3;
 }
 
-// Tagged union for sensor values - matches Rust SensorValue enum
+// Tagged union for sensor values - matches Rust SensorValue enum.
+// Each variant maps to a specific hardware data type.
 message SensorValue {
   oneof value {
-    bool bool_val = 1;
-    uint32 u32_val = 2;
-    uint64 u64_val = 3;
-    int32 i32_val = 4;
-    int64 i64_val = 5;
-    float f32_val = 6;
-    double f64_val = 7;
-    string string_val = 8;
-    bytes bytes_val = 9;
-    Vector3 vector3_val = 10;
-    PointCloud2D pointcloud_val = 11;
+    bool bool_val = 1;       // Binary sensors (bumpers, cliffs, buttons)
+    uint32 u32_val = 2;      // Note: Protobuf encodes u8/u16 as u32
+    uint64 u64_val = 3;      // Large counters, timestamps
+    int32 i32_val = 4;       // Note: Protobuf encodes i8/i16 as i32
+    int64 i64_val = 5;       // Large signed values
+    float f32_val = 6;       // Analog sensors (voltage, velocity)
+    double f64_val = 7;      // High-precision values
+    string string_val = 8;   // Version strings, identifiers
+    bytes bytes_val = 9;     // Raw binary data
+    Vector3 vector3_val = 10;      // 3D vectors (IMU data)
+    PointCloud2D pointcloud_val = 11;  // Lidar scans
   }
 }
 
+// 3D vector for IMU data (gyroscope, accelerometer, tilt)
 message Vector3 {
-  float x = 1;
-  float y = 2;
-  float z = 3;
+  float x = 1;  // X-axis component
+  float y = 2;  // Y-axis component
+  float z = 3;  // Z-axis component
 }
 
-// LiDAR point cloud data
+// LiDAR point cloud data - one complete 360-degree scan
 message PointCloud2D {
+  // Points in the scan, ordered by angle (0 to 2*pi)
   repeated LidarPoint points = 1;
 }
 
+// Single LiDAR measurement point
 message LidarPoint {
-  float angle_rad = 1;
-  float distance_m = 2;
-  uint32 quality = 3;
+  float angle_rad = 1;    // Angle in radians (0 = front, CW positive)
+  float distance_m = 2;   // Distance in meters (0 = no return / invalid)
+  uint32 quality = 3;     // Signal quality/intensity (0-255, higher = stronger)
 }
 
-// Commands to robot (inbound)
+// Commands sent to the robot daemon (inbound from clients)
 message Command {
   oneof command {
-    ComponentControl component_control = 1;
-    ProtocolSync protocol_sync = 2;
-    Shutdown shutdown = 3;
+    ComponentControl component_control = 1;  // Control components (most common)
+    ProtocolSync protocol_sync = 2;          // Wake/sync GD32 MCU
+    Shutdown shutdown = 3;                   // Graceful daemon shutdown
   }
 }
 
-// Empty messages for simple commands
+// Protocol sync command - wakes GD32 and synchronizes communication.
+// Send once at startup before other commands. GD32 echoes back after ~270ms.
 message ProtocolSync {}
+
+// Graceful shutdown command - stops all components and exits daemon.
 message Shutdown {}
 
-// Component control command (motors, actuators, sensors)
+// Unified component control command for all sensors and actuators.
+// See COMMANDS.md for complete command reference.
 message ComponentControl {
-  string id = 1;  // "drive", "vacuum", "lidar", "main_brush", "side_brush", etc.
+  // Component identifier. Valid values:
+  // Motion: "drive"
+  // Actuators: "vacuum", "main_brush", "side_brush", "water_pump", "led", "lidar"
+  // Sensors: "imu", "compass", "cliff_ir"
+  // Power: "main_board", "charger", "mcu"
+  string id = 1;
+  // Action to perform on the component
   ComponentAction action = 2;
 }
 
+// Action specification for ComponentControl commands
 message ComponentAction {
   ActionType type = 1;
-  map<string, SensorValue> config = 2;  // Optional configuration parameters
+  // Configuration parameters (key-value pairs).
+  // Common keys by component:
+  // - drive: "linear" (F32 m/s), "angular" (F32 rad/s), "left"/"right" (F32 m/s for tank)
+  // - vacuum/brush: "speed" (U8 0-100%)
+  // - led: "state" (U8 0-18)
+  // - lidar: "pwm" (U8 0-100%)
+  // Note: Protobuf encodes U8 values as U32 - daemon handles both types.
+  map<string, SensorValue> config = 2;
 
   enum ActionType {
-    ENABLE = 0;
-    DISABLE = 1;
-    RESET = 2;
-    CONFIGURE = 3;
+    ENABLE = 0;    // Turn on/activate component
+    DISABLE = 1;   // Turn off/deactivate component
+    RESET = 2;     // Reset to defaults / emergency stop (drive) / calibrate (sensors)
+    CONFIGURE = 3; // Set parameters without changing enable state
   }
 }

@@ -129,28 +129,40 @@ pub enum ComponentAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
     // Unified Component Control
-    /// Control any component (sensor or actuator) with standard actions
+    /// Control any component (sensor or actuator) with standard actions.
+    ///
+    /// Component IDs are defined in [`crate::devices::crl200s::gd32::commands`] module.
+    /// See also `proto/sangamio.proto` for the protobuf schema.
     ///
     /// # Motion Control (id: "drive")
     /// - `Configure { linear: F32, angular: F32 }` - velocity mode (m/s, rad/s)
     /// - `Configure { left: F32, right: F32 }` - tank drive mode (m/s)
-    /// - `Disable` - stop (zero velocity)
+    /// - `Enable { mode: U8 }` - enter motor mode (default 0x02 = navigation)
+    /// - `Disable` - stop (zero velocity) and exit motor mode
     /// - `Reset` - emergency stop (immediate halt, all actuators off)
     ///
-    /// # Actuators
-    /// - `wheel_motor`: Enable/Disable motor mode
-    /// - `vacuum`, `main_brush`, `side_brush`: Enable/Disable/Configure(speed)
-    /// - `led`: Configure(state)
-    /// - `lidar`: Enable/Disable
+    /// # Actuators (speed 0-100%)
+    /// - `vacuum`: Suction motor - Enable/Disable/Configure(speed)
+    /// - `main_brush`: Main brush roller - Enable/Disable/Configure(speed)
+    /// - `side_brush`: Side brush spinner - Enable/Disable/Configure(speed)
+    /// - `water_pump`: Mop water pump - Enable/Disable/Configure(speed)
+    /// - `led`: Status LED - Configure(state: 0-18)
+    /// - `lidar`: Lidar motor - Enable(pwm)/Disable/Configure(pwm)
     ///
     /// # Sensors
-    /// - `imu`: Enable (query state), Reset (factory calibrate)
-    /// - `compass`: Enable (query state), Reset (start calibration)
-    /// - `cliff_ir`: Enable/Disable/Configure(direction)
+    /// - `imu`: Enable (query calibration state), Reset (factory calibrate)
+    /// - `compass`: Enable (query calibration state), Reset (start calibration)
+    /// - `cliff_ir`: Enable/Disable IR emitters, Configure(direction)
+    ///
+    /// # Power Management
+    /// - `main_board`: A33 power - Enable/Disable/Reset (WARNING: terminates daemon!)
+    /// - `charger`: Charger rail - Enable/Disable
+    /// - `mcu`: GD32 MCU - Enable (wake ack), Disable (sleep), Reset (clear errors)
     ComponentControl {
-        /// Component identifier (e.g., "drive", "vacuum", "imu", "cliff_ir")
+        /// Component identifier (e.g., "drive", "vacuum", "imu", "cliff_ir").
+        /// See module docs for complete list of valid IDs.
         id: String,
-        /// Action to perform
+        /// Action to perform on the component
         action: ComponentAction,
     },
 

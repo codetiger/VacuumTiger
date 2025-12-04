@@ -5,9 +5,25 @@
 //! - **Delta2D**: Lidar sensor via `/dev/ttyS1`
 //!
 //! # Sensor Groups Published
-//! - `sensor_status`: Bumpers, cliffs, encoders, IMU @ 500Hz
-//! - `device_version`: Firmware version (one-time)
-//! - `lidar`: Point cloud @ 5Hz
+//!
+//! ## `sensor_status` (500Hz from GD32)
+//! Published on topic `sensors/sensor_status`. Contains all real-time sensor data:
+//! - **Bumpers**: `bumper_left`, `bumper_right` (Bool)
+//! - **Cliffs**: `cliff_left_side`, `cliff_left_front`, `cliff_right_front`, `cliff_right_side` (Bool)
+//! - **Battery**: `battery_voltage` (F32 volts), `battery_level` (U8 %), `is_charging` (Bool)
+//! - **Encoders**: `wheel_left`, `wheel_right` (U16 ticks)
+//! - **IMU**: `gyro_x/y/z`, `accel_x/y/z`, `tilt_x/y/z` (I16 raw)
+//! - **Buttons**: `start_button`, `dock_button` (U16)
+//! - **Misc**: `dustbox_attached`, `is_dock_connected` (Bool)
+//!
+//! ## `device_version` (one-time from GD32)
+//! Published on topic `sensors/device_version` after first GD32 packet:
+//! - `version_string`: GD32 firmware version (String)
+//! - `version_code`: Numeric version code (I32)
+//!
+//! ## `lidar` (5Hz from Delta2D)
+//! Published on topic `sensors/lidar`. Contains 360-degree scan:
+//! - `scan`: PointCloud2D with (angle_rad, distance_m, quality) tuples
 
 pub mod constants;
 pub mod delta2d;
@@ -60,23 +76,27 @@ impl DeviceDriver for CRL200SDriver {
 
         let mut sensor_data = HashMap::new();
 
-        // Create GD32 status sensor group
+        // Create GD32 status sensor group (500Hz telemetry)
+        // Contains: bumpers, cliffs, battery, encoders, IMU, buttons
+        // See module docs for complete field list
         let sensor_status = SensorGroupData::new("sensor_status");
         let gd32_data = Arc::new(Mutex::new(sensor_status));
         sensor_data.insert("sensor_status".to_string(), gd32_data.clone());
-        log::info!("Created sensor group 'sensor_status'");
+        log::info!("Created sensor group 'sensor_status' (bumpers, cliffs, IMU @ 500Hz)");
 
-        // Create GD32 version sensor group
+        // Create GD32 version sensor group (one-time after boot)
+        // Contains: version_string, version_code
         let device_version = SensorGroupData::new("device_version");
         let version_data = Arc::new(Mutex::new(device_version));
         sensor_data.insert("device_version".to_string(), version_data.clone());
-        log::info!("Created sensor group 'device_version'");
+        log::info!("Created sensor group 'device_version' (GD32 firmware version)");
 
-        // Create lidar sensor group
+        // Create lidar sensor group (5Hz scan data)
+        // Contains: scan (PointCloud2D)
         let lidar_group = SensorGroupData::new("lidar");
         let lidar_data = Arc::new(Mutex::new(lidar_group));
         sensor_data.insert("lidar".to_string(), lidar_data.clone());
-        log::info!("Created sensor group 'lidar'");
+        log::info!("Created sensor group 'lidar' (360° point cloud @ 5Hz)");
 
         // Initialize GD32 motor controller
         let mut gd32 = GD32Driver::new(

@@ -48,7 +48,7 @@ cargo build --release
 cargo run --release
 
 # Run with custom config
-cargo run --release -- my_config.json
+cargo run --release -- sangamio.toml
 
 # Enable verbose logging
 RUST_LOG=debug cargo run --release
@@ -81,7 +81,7 @@ cat target/armv7-unknown-linux-musleabihf/release/sangam-io | \
   ssh root@vacuum "cat > /usr/sbin/sangamio && chmod +x /usr/sbin/sangamio"
 
 # Deploy configuration
-ssh root@vacuum "cat > /etc/hardware.json" < hardware.json
+ssh root@vacuum "cat > /etc/sangamio.toml" < sangamio.toml
 
 # Disable original firmware (rename to prevent auto-restart)
 ssh root@vacuum "mv /usr/sbin/AuxCtrl /usr/sbin/AuxCtrl.bak && killall -9 AuxCtrl"
@@ -174,7 +174,7 @@ while True:
 sangam-io/
 ├── src/
 │   ├── main.rs              # Entry point, TCP listener
-│   ├── config.rs            # JSON configuration loading
+│   ├── config.rs            # TOML configuration loading
 │   ├── error.rs             # Error types
 │   │
 │   ├── core/

@@ -89,7 +89,10 @@ pub(super) fn heartbeat_loop(
     let mut pkt = TxPacket::new(); // For variable commands (velocity, actuators)
 
     // Counter for periodic STM32 data request (0x0D)
-    // At 20ms interval, 75 cycles = 1.5 seconds (matching R2D MITM log frequency)
+    // The stock R2D firmware sends 0x0D requests approximately every 1.5 seconds,
+    // as observed in MITM captures (see COMMANDS.md "Request STM32 Data" entry).
+    // This appears to be a keep-alive/diagnostic query - response contents are TBD.
+    // At 20ms heartbeat interval: 1500ms / 20ms = 75 cycles between requests.
     let stm32_request_interval = 1500 / interval_ms;
     let mut stm32_request_counter: u64 = 0;
 

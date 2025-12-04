@@ -72,7 +72,10 @@ impl TcpPublisher {
                     }
 
                     log::trace!("Sent {} (ts: {} -> {})", group_id, last, data.timestamp_us);
-                    last_sent.insert(group_id.clone(), data.timestamp_us);
+                    // Use get_mut to update in-place, avoiding String clone on every update
+                    if let Some(ts) = last_sent.get_mut(group_id) {
+                        *ts = data.timestamp_us;
+                    }
                     sent_any = true;
                 } else {
                     log::trace!(

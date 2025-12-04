@@ -107,7 +107,7 @@ fn main() -> Result<()> {
                 let _recv_handle = thread::Builder::new()
                     .name("tcp-receiver".to_string())
                     .spawn(move || {
-                        let receiver =
+                        let mut receiver =
                             TcpReceiver::new(recv_serializer, driver_clone, recv_running);
                         if let Err(e) = receiver.run(stream) {
                             log::error!("Receiver error: {}", e);

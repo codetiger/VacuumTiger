@@ -22,6 +22,20 @@
 //!   - Conversion: multiply by 1000
 //!
 //! These conversions are defined by the GD32F103 firmware protocol.
+//!
+//! # Protobuf Type Handling
+//!
+//! Protobuf3 does not have native u8/u16/i8/i16 types. All small integers are
+//! encoded as u32/i32. This module handles both representations:
+//!
+//! - **U8 values** (speed, pwm, state): Accept both `SensorValue::U8` and `SensorValue::U32`
+//! - Clients may send either depending on their protobuf implementation
+//! - Example: `config.get("speed")` checks for both U8 and U32 variants
+//!
+//! # Component IDs
+//!
+//! Valid component IDs are defined as constants below. See [`handle_component_control`]
+//! for the complete dispatch table.
 
 use super::packet::{protocol_sync_packet, TxPacket};
 use super::state::ComponentState;
@@ -41,19 +55,38 @@ const VELOCITY_TO_DEVICE_UNITS: f32 = 1000.0;
 /// Default IMU calibration payload observed in R2D logs
 const IMU_DEFAULT_PAYLOAD: [u8; 4] = [0x10, 0x0E, 0x00, 0x00];
 
-// Component IDs - use these instead of string literals to catch typos at compile time
+// ============================================================================
+// Component IDs
+// ============================================================================
+// Use these constants instead of string literals to catch typos at compile time.
+// These must match the IDs used in the protobuf `ComponentControl.id` field.
+// See also: proto/sangamio.proto ComponentControl message documentation.
+
+/// Motion control - velocity mode or tank drive
 const ID_DRIVE: &str = "drive";
+/// Vacuum suction motor (0-100%)
 const ID_VACUUM: &str = "vacuum";
+/// Main brush roller (0-100%)
 const ID_MAIN_BRUSH: &str = "main_brush";
+/// Side brush spinner (0-100%)
 const ID_SIDE_BRUSH: &str = "side_brush";
+/// Mopping water pump (0-100%)
 const ID_WATER_PUMP: &str = "water_pump";
+/// Status LED patterns (0-18)
 const ID_LED: &str = "led";
+/// Lidar motor power and PWM
 const ID_LIDAR: &str = "lidar";
+/// IMU calibration queries and resets
 const ID_IMU: &str = "imu";
+/// Compass/magnetometer calibration
 const ID_COMPASS: &str = "compass";
+/// Cliff IR sensor enable/direction
 const ID_CLIFF_IR: &str = "cliff_ir";
+/// A33 main board power control (WARNING: affects daemon!)
 const ID_MAIN_BOARD: &str = "main_board";
+/// Charger power rail control
 const ID_CHARGER: &str = "charger";
+/// GD32 MCU sleep/wake/error reset
 const ID_MCU: &str = "mcu";
 
 // ============================================================================

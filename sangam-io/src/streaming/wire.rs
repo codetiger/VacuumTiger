@@ -78,14 +78,20 @@ pub fn create_serializer() -> Serializer {
 // Conversion implementations for proto types
 impl proto::Message {
     /// Create a sensor group message from internal types
+    ///
+    /// Uses references where possible to minimize allocations in hot path (~500Hz).
     pub fn from_sensor_group(data: &SensorGroupData) -> Self {
         use std::collections::HashMap;
 
-        let values: HashMap<String, proto::SensorValue> = data
-            .values
-            .iter()
-            .map(|(k, v)| (k.clone(), proto::SensorValue::from(v.clone())))
-            .collect();
+        // Pre-allocate HashMap with exact capacity to avoid reallocation
+        let mut values: HashMap<String, proto::SensorValue> =
+            HashMap::with_capacity(data.values.len());
+
+        // Convert values using references - only clone the key string,
+        // SensorValue conversion uses references where possible
+        for (k, v) in &data.values {
+            values.insert(k.clone(), proto::SensorValue::from_ref(v));
+        }
 
         Self {
             topic: format!("sensors/{}", data.group_id),
@@ -95,6 +101,53 @@ impl proto::Message {
                 values,
             })),
         }
+    }
+}
+
+impl proto::SensorValue {
+    /// Convert from a reference to SensorValue - avoids cloning for primitive types
+    ///
+    /// This is the preferred method in hot paths (~500Hz) as it only clones
+    /// heap-allocated data (String, Bytes, PointCloud2D) when necessary.
+    pub fn from_ref(value: &crate::core::types::SensorValue) -> Self {
+        use crate::core::types::SensorValue as SV;
+
+        let value = match value {
+            // Primitive types - zero-cost copy
+            SV::Bool(v) => proto::sensor_value::Value::BoolVal(*v),
+            SV::U8(v) => proto::sensor_value::Value::U32Val(*v as u32),
+            SV::U16(v) => proto::sensor_value::Value::U32Val(*v as u32),
+            SV::U32(v) => proto::sensor_value::Value::U32Val(*v),
+            SV::U64(v) => proto::sensor_value::Value::U64Val(*v),
+            SV::I8(v) => proto::sensor_value::Value::I32Val(*v as i32),
+            SV::I16(v) => proto::sensor_value::Value::I32Val(*v as i32),
+            SV::I32(v) => proto::sensor_value::Value::I32Val(*v),
+            SV::I64(v) => proto::sensor_value::Value::I64Val(*v),
+            SV::F32(v) => proto::sensor_value::Value::F32Val(*v),
+            SV::F64(v) => proto::sensor_value::Value::F64Val(*v),
+            SV::Vector3(arr) => proto::sensor_value::Value::Vector3Val(proto::Vector3 {
+                x: arr[0],
+                y: arr[1],
+                z: arr[2],
+            }),
+            // Heap types - must clone
+            SV::String(v) => proto::sensor_value::Value::StringVal(v.clone()),
+            SV::Bytes(v) => proto::sensor_value::Value::BytesVal(v.clone()),
+            SV::PointCloud2D(points) => {
+                proto::sensor_value::Value::PointcloudVal(proto::PointCloud2D {
+                    points: points
+                        .iter()
+                        .map(|(angle, dist, quality)| proto::LidarPoint {
+                            angle_rad: *angle,
+                            distance_m: *dist,
+                            quality: *quality as u32,
+                        })
+                        .collect(),
+                })
+            }
+        };
+
+        proto::SensorValue { value: Some(value) }
     }
 }
 

@@ -1,14 +1,37 @@
 # SangamIO Configuration
 # Hardware abstraction daemon for CRL-200S robot vacuum
+#
+# This file configures the SangamIO daemon that runs on the robot.
+# Deploy to /etc/sangamio.toml on the target device.
 
 [device]
+# Device type - determines which driver to load
+# Currently supported: "crl200s"
 type = "crl200s"
+
+# Human-readable device name (for logging)
 name = "CRL-200S Vacuum Robot"
 
 [device.hardware]
+# Serial port for GD32F103 motor controller
+# Default on CRL-200S: /dev/ttyS3
+# Baud rate: 115200 (fixed in firmware)
 gd32_port = "/dev/ttyS3"
+
+# Serial port for Delta-2D lidar sensor
+# Default on CRL-200S: /dev/ttyS1
+# Baud rate: 115200 (fixed in firmware)
 lidar_port = "/dev/ttyS1"
+
+# GD32 heartbeat interval in milliseconds
+# CRITICAL: Must be 20-50ms or motors will stop (hardware watchdog)
+# Recommended: 20 (provides safety margin)
+# See src/devices/crl200s/gd32/heartbeat.rs for details
 heartbeat_interval_ms = 20
 
 [network]
+# TCP server bind address for client connections
+# Format: "host:port"
+# Use "0.0.0.0:5555" to listen on all interfaces
+# Clients connect here to receive sensor streams and send commands
 bind_address = "0.0.0.0:5555"
