@@ -6,32 +6,32 @@
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────┐
-//! │                      bin/                            │  ← Executables
+//! │                      bin/                           │  ← Executables
 //! └─────────────────────────────────────────────────────┘
 //!                          │
 //! ┌─────────────────────────────────────────────────────┐
-//! │                      io/                             │  ← Infrastructure
-//! │         (sangam_client, bag, streaming)              │
+//! │                      io/                            │  ← Infrastructure
+//! │         (sangam_client, bag, streaming)             │
 //! └─────────────────────────────────────────────────────┘
 //!                          │
 //! ┌─────────────────────────────────────────────────────┐
-//! │                    engine/                           │  ← Orchestration
-//! │              (slam, graph optimization)              │
+//! │                    engine/                          │  ← Orchestration
+//! │              (slam, graph optimization)             │
 //! └─────────────────────────────────────────────────────┘
 //!                          │
 //! ┌─────────────────────────────────────────────────────┐
-//! │                  algorithms/                         │  ← Core algorithms
-//! │         (matching, mapping, localization)            │
+//! │                  algorithms/                        │  ← Core algorithms
+//! │         (matching, mapping, localization)           │
 //! └─────────────────────────────────────────────────────┘
 //!                          │
 //! ┌─────────────────────────────────────────────────────┐
-//! │                   sensors/                           │  ← Sensor processing
-//! │            (odometry, preprocessing)                 │
+//! │                   sensors/                          │  ← Sensor processing
+//! │            (odometry, preprocessing)                │
 //! └─────────────────────────────────────────────────────┘
 //!                          │
 //! ┌─────────────────────────────────────────────────────┐
-//! │                     core/                            │  ← Foundation
-//! │                (types, math)                         │
+//! │                     core/                           │  ← Foundation
+//! │                (types, math)                        │
 //! └─────────────────────────────────────────────────────┘
 //! ```
 //!

@@ -176,37 +176,40 @@ impl MapIntegrator {
             grid.ensure_contains(robot_pose.x, robot_pose.y);
         }
 
-        for (i, point) in cloud.points.iter().enumerate() {
+        // Pre-compute squared thresholds to avoid sqrt in hot loop
+        let min_range_sq = self.config.min_range * self.config.min_range;
+        let max_range_sq = self.config.max_range * self.config.max_range;
+        let robot_x = robot_pose.x;
+        let robot_y = robot_pose.y;
+
+        for i in 0..cloud.len() {
             // Skip points if configured
             if self.config.point_skip > 1 && i % self.config.point_skip != 0 {
                 continue;
             }
 
-            // Compute range from robot to point
-            let dx = point.x - robot_pose.x;
-            let dy = point.y - robot_pose.y;
-            let range = (dx * dx + dy * dy).sqrt();
+            let point_x = cloud.xs[i];
+            let point_y = cloud.ys[i];
 
-            // Skip if too close
-            if range < self.config.min_range {
+            // Compute squared range from robot to point (avoid sqrt)
+            let dx = point_x - robot_x;
+            let dy = point_y - robot_y;
+            let range_sq = dx * dx + dy * dy;
+
+            // Skip if too close (using squared comparison)
+            if range_sq < min_range_sq {
                 continue;
             }
 
             // Ensure grid contains point
             if self.config.auto_resize {
-                grid.ensure_contains(point.x, point.y);
+                grid.ensure_contains(point_x, point_y);
             }
 
-            // Trace ray
-            let mark_endpoint = range <= self.config.max_range;
-            self.ray_tracer.trace_ray(
-                grid,
-                robot_pose.x,
-                robot_pose.y,
-                point.x,
-                point.y,
-                mark_endpoint,
-            );
+            // Trace ray (using squared comparison for max_range)
+            let mark_endpoint = range_sq <= max_range_sq;
+            self.ray_tracer
+                .trace_ray(grid, robot_x, robot_y, point_x, point_y, mark_endpoint);
         }
 
         grid.take_updated_region()
@@ -226,9 +229,11 @@ impl MapIntegrator {
     ) {
         let dx = point_x - robot_x;
         let dy = point_y - robot_y;
-        let range = (dx * dx + dy * dy).sqrt();
+        let range_sq = dx * dx + dy * dy;
 
-        if range < self.config.min_range {
+        // Use squared comparisons to avoid sqrt
+        let min_range_sq = self.config.min_range * self.config.min_range;
+        if range_sq < min_range_sq {
             return;
         }
 
@@ -236,7 +241,8 @@ impl MapIntegrator {
             grid.ensure_contains(point_x, point_y);
         }
 
-        let mark_endpoint = range <= self.config.max_range;
+        let max_range_sq = self.config.max_range * self.config.max_range;
+        let mark_endpoint = range_sq <= max_range_sq;
         self.ray_tracer
             .trace_ray(grid, robot_x, robot_y, point_x, point_y, mark_endpoint);
     }

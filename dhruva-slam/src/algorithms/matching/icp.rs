@@ -40,8 +40,8 @@ impl CachedKdTree {
     /// Build a k-d tree from a point cloud.
     pub fn from_cloud(cloud: &PointCloud2D) -> Self {
         let mut tree: KdTree<f32, 2> = KdTree::new();
-        for (i, point) in cloud.points.iter().enumerate() {
-            tree.add(&[point.x, point.y], i as u64);
+        for i in 0..cloud.len() {
+            tree.add(&[cloud.xs[i], cloud.ys[i]], i as u64);
         }
         Self {
             tree,
@@ -122,6 +122,8 @@ pub struct PointToPointIcp {
     config: IcpConfig,
     /// Preallocated buffer for correspondences (reused across iterations).
     correspondence_buffer: Vec<(usize, usize, f32)>,
+    /// Preallocated buffer for transformed source cloud (reused across iterations).
+    transformed_source: PointCloud2D,
 }
 
 impl PointToPointIcp {
@@ -133,6 +135,7 @@ impl PointToPointIcp {
         Self {
             config,
             correspondence_buffer: Vec::with_capacity(Self::TYPICAL_SCAN_POINTS),
+            transformed_source: PointCloud2D::with_capacity(Self::TYPICAL_SCAN_POINTS),
         }
     }
 
@@ -144,31 +147,41 @@ impl PointToPointIcp {
     /// Build a k-d tree from a point cloud.
     fn build_kdtree(cloud: &PointCloud2D) -> KdTree<f32, 2> {
         let mut tree: KdTree<f32, 2> = KdTree::new();
-        for (i, point) in cloud.points.iter().enumerate() {
-            tree.add(&[point.x, point.y], i as u64);
+        for i in 0..cloud.len() {
+            tree.add(&[cloud.xs[i], cloud.ys[i]], i as u64);
         }
         tree
     }
 
-    /// Find correspondences between source and target using k-d tree.
+    /// Transform source cloud and store in preallocated buffer.
+    ///
+    /// Uses SIMD-accelerated transform from PointCloud2D.
+    fn transform_source(&mut self, source: &PointCloud2D, transform: &Pose2D) {
+        // Use SIMD-accelerated transform and store result
+        // Reuse xs/ys vectors to avoid allocation
+        let transformed = source.transform(transform);
+        self.transformed_source.xs.clear();
+        self.transformed_source.ys.clear();
+        self.transformed_source
+            .xs
+            .extend_from_slice(&transformed.xs);
+        self.transformed_source
+            .ys
+            .extend_from_slice(&transformed.ys);
+    }
+
+    /// Find correspondences between pre-transformed source and target using k-d tree.
     ///
     /// Populates the internal correspondence buffer with (source_idx, target_idx, squared_distance).
-    fn find_correspondences_into(
-        &mut self,
-        source: &PointCloud2D,
-        _target: &PointCloud2D,
-        target_tree: &KdTree<f32, 2>,
-        transform: &Pose2D,
-    ) {
+    /// Assumes transform_source() was called before this.
+    fn find_correspondences_into(&mut self, _target: &PointCloud2D, target_tree: &KdTree<f32, 2>) {
         let max_dist_sq = self.config.max_correspondence_distance.powi(2);
         self.correspondence_buffer.clear();
 
-        let (sin_t, cos_t) = transform.theta.sin_cos();
-
-        for (i, point) in source.points.iter().enumerate() {
-            // Transform source point
-            let tx = transform.x + point.x * cos_t - point.y * sin_t;
-            let ty = transform.y + point.x * sin_t + point.y * cos_t;
+        for i in 0..self.transformed_source.len() {
+            // Use pre-transformed point
+            let tx = self.transformed_source.xs[i];
+            let ty = self.transformed_source.ys[i];
 
             // Find nearest neighbor in target
             let nearest = target_tree.nearest_one::<SquaredEuclidean>(&[tx, ty]);
@@ -197,9 +210,9 @@ impl PointToPointIcp {
     /// Compute optimal rigid transform using SVD-based method.
     ///
     /// Uses the closed-form solution for point-to-point registration.
+    /// Assumes transform_source() was called before this with current_transform.
     fn compute_transform(
         &self,
-        source: &PointCloud2D,
         target: &PointCloud2D,
         correspondences: &[(usize, usize, f32)],
         current_transform: &Pose2D,
@@ -208,23 +221,17 @@ impl PointToPointIcp {
             return Pose2D::identity();
         }
 
-        let (sin_t, cos_t) = current_transform.theta.sin_cos();
-
-        // Compute centroids of corresponding points
+        // Compute centroids of corresponding points using pre-transformed source
         let n = correspondences.len() as f32;
         let mut source_centroid = Point2D::default();
         let mut target_centroid = Point2D::default();
 
         for &(si, ti, _) in correspondences {
-            let sp = &source.points[si];
-            // Transform source point
-            let tx = current_transform.x + sp.x * cos_t - sp.y * sin_t;
-            let ty = current_transform.y + sp.x * sin_t + sp.y * cos_t;
-
-            source_centroid.x += tx;
-            source_centroid.y += ty;
-            target_centroid.x += target.points[ti].x;
-            target_centroid.y += target.points[ti].y;
+            // Use pre-transformed source point
+            source_centroid.x += self.transformed_source.xs[si];
+            source_centroid.y += self.transformed_source.ys[si];
+            target_centroid.x += target.xs[ti];
+            target_centroid.y += target.ys[ti];
         }
 
         source_centroid.x /= n;
@@ -240,13 +247,12 @@ impl PointToPointIcp {
         let mut h11 = 0.0f32;
 
         for &(si, ti, _) in correspondences {
-            let sp = &source.points[si];
-            // Transform source point
-            let sx = current_transform.x + sp.x * cos_t - sp.y * sin_t - source_centroid.x;
-            let sy = current_transform.y + sp.x * sin_t + sp.y * cos_t - source_centroid.y;
+            // Use pre-transformed source point
+            let sx = self.transformed_source.xs[si] - source_centroid.x;
+            let sy = self.transformed_source.ys[si] - source_centroid.y;
 
-            let tx = target.points[ti].x - target_centroid.x;
-            let ty = target.points[ti].y - target_centroid.y;
+            let tx = target.xs[ti] - target_centroid.x;
+            let ty = target.ys[ti] - target_centroid.y;
 
             h00 += sx * tx;
             h01 += sx * ty;
@@ -268,7 +274,6 @@ impl PointToPointIcp {
         // new_transform = current ⊕ delta
         // So: delta = current⁻¹ ⊕ new
 
-        let _new_theta = current_transform.theta + dtheta;
         let new_x = dx;
         let new_y = dy;
 
@@ -283,28 +288,18 @@ impl PointToPointIcp {
     }
 
     /// Compute mean squared error of correspondences.
-    fn compute_mse(
-        &self,
-        source: &PointCloud2D,
-        target: &PointCloud2D,
-        correspondences: &[(usize, usize, f32)],
-        transform: &Pose2D,
-    ) -> f32 {
+    /// Assumes transform_source() was called before this with current transform.
+    fn compute_mse(&self, target: &PointCloud2D, correspondences: &[(usize, usize, f32)]) -> f32 {
         if correspondences.is_empty() {
             return f32::MAX;
         }
 
-        let (sin_t, cos_t) = transform.theta.sin_cos();
         let mut sum_sq = 0.0f32;
 
         for &(si, ti, _) in correspondences {
-            let sp = &source.points[si];
-            let tx = transform.x + sp.x * cos_t - sp.y * sin_t;
-            let ty = transform.y + sp.x * sin_t + sp.y * cos_t;
-
-            let tp = &target.points[ti];
-            let dx = tx - tp.x;
-            let dy = ty - tp.y;
+            // Use pre-transformed source point
+            let dx = self.transformed_source.xs[si] - target.xs[ti];
+            let dy = self.transformed_source.ys[si] - target.ys[ti];
             sum_sq += dx * dx + dy * dy;
         }
 
@@ -341,32 +336,29 @@ impl ScanMatcher for PointToPointIcp {
         for iter in 0..self.config.max_iterations {
             iterations = iter + 1;
 
-            // Find correspondences (populates self.correspondence_buffer)
-            self.find_correspondences_into(source, target, &target_tree, &current_transform);
+            // Pre-transform source cloud using SIMD
+            self.transform_source(source, &current_transform);
+
+            // Find correspondences using pre-transformed cloud
+            self.find_correspondences_into(target, &target_tree);
 
             // Check minimum correspondences
             if self.correspondence_buffer.len() < self.config.min_correspondences {
                 return ScanMatchResult::failed();
             }
 
-            // Compute incremental transform
-            let delta = self.compute_transform(
-                source,
-                target,
-                &self.correspondence_buffer,
-                &current_transform,
-            );
+            // Compute incremental transform using pre-transformed cloud
+            let delta =
+                self.compute_transform(target, &self.correspondence_buffer, &current_transform);
 
             // Apply delta
             current_transform = current_transform.compose(&delta);
 
-            // Compute MSE
-            let mse = self.compute_mse(
-                source,
-                target,
-                &self.correspondence_buffer,
-                &current_transform,
-            );
+            // Re-transform for MSE computation (with updated transform)
+            self.transform_source(source, &current_transform);
+
+            // Compute MSE using pre-transformed cloud
+            let mse = self.compute_mse(target, &self.correspondence_buffer);
 
             // Check convergence
             let translation_change = (delta.x * delta.x + delta.y * delta.y).sqrt();
@@ -390,13 +382,9 @@ impl ScanMatcher for PointToPointIcp {
         }
 
         // Max iterations reached - compute final MSE
-        self.find_correspondences_into(source, target, &target_tree, &current_transform);
-        let final_mse = self.compute_mse(
-            source,
-            target,
-            &self.correspondence_buffer,
-            &current_transform,
-        );
+        self.transform_source(source, &current_transform);
+        self.find_correspondences_into(target, &target_tree);
+        let final_mse = self.compute_mse(target, &self.correspondence_buffer);
         let score = self.mse_to_score(final_mse);
 
         // Consider it converged if MSE is reasonable

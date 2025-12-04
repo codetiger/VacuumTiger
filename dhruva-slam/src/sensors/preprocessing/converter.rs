@@ -197,20 +197,20 @@ mod tests {
         assert_eq!(cloud.len(), 4);
 
         // First point: angle=0, range=1 → (1, 0)
-        assert_relative_eq!(cloud.points[0].x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(cloud.points[0].y, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.xs[0], 1.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.ys[0], 0.0, epsilon = 1e-6);
 
         // Second point: angle=π/2, range=1 → (0, 1)
-        assert_relative_eq!(cloud.points[1].x, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(cloud.points[1].y, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.xs[1], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.ys[1], 1.0, epsilon = 1e-6);
 
         // Third point: angle=π, range=1 → (-1, 0)
-        assert_relative_eq!(cloud.points[2].x, -1.0, epsilon = 1e-6);
-        assert_relative_eq!(cloud.points[2].y, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.xs[2], -1.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.ys[2], 0.0, epsilon = 1e-6);
 
         // Fourth point: angle=3π/2, range=1 → (0, -1)
-        assert_relative_eq!(cloud.points[3].x, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(cloud.points[3].y, -1.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.xs[3], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.ys[3], -1.0, epsilon = 1e-6);
     }
 
     #[test]
@@ -235,8 +235,8 @@ mod tests {
         assert_eq!(cloud.len(), 3);
 
         // Second point should be at origin
-        assert_eq!(cloud.points[1].x, 0.0);
-        assert_eq!(cloud.points[1].y, 0.0);
+        assert_eq!(cloud.xs[1], 0.0);
+        assert_eq!(cloud.ys[1], 0.0);
     }
 
     #[test]
@@ -330,8 +330,8 @@ mod tests {
         let cloud = ScanConverter::to_point_cloud(&scan);
 
         assert_eq!(cloud.len(), 1);
-        assert_relative_eq!(cloud.points[0].x, 5.0, epsilon = 1e-6);
-        assert_relative_eq!(cloud.points[0].y, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.xs[0], 5.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.ys[0], 0.0, epsilon = 1e-6);
     }
 
     #[test]

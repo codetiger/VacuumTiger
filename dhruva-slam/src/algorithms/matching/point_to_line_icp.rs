@@ -196,15 +196,36 @@ pub struct PointToLineIcp {
     config: PointToLineIcpConfig,
     /// Preallocated buffer for correspondences (reused across iterations).
     correspondence_buffer: Vec<Correspondence>,
+    /// Preallocated buffer for transformed source cloud (reused across iterations).
+    transformed_source: PointCloud2D,
 }
 
 impl PointToLineIcp {
+    /// Typical scan size for pre-allocation.
+    const TYPICAL_SCAN_POINTS: usize = 360;
+
     /// Create a new Point-to-Line ICP matcher.
     pub fn new(config: PointToLineIcpConfig) -> Self {
         Self {
             config,
             correspondence_buffer: Vec::with_capacity(512), // Typical scan size
+            transformed_source: PointCloud2D::with_capacity(Self::TYPICAL_SCAN_POINTS),
         }
+    }
+
+    /// Transform source cloud and store in preallocated buffer.
+    ///
+    /// Uses SIMD-accelerated transform from PointCloud2D.
+    fn transform_source(&mut self, source: &PointCloud2D, transform: &Pose2D) {
+        let transformed = source.transform(transform);
+        self.transformed_source.xs.clear();
+        self.transformed_source.ys.clear();
+        self.transformed_source
+            .xs
+            .extend_from_slice(&transformed.xs);
+        self.transformed_source
+            .ys
+            .extend_from_slice(&transformed.ys);
     }
 
     /// Get the current configuration.
@@ -215,30 +236,27 @@ impl PointToLineIcp {
     /// Build a k-d tree from a point cloud.
     fn build_kdtree(cloud: &PointCloud2D) -> KdTree<f32, 2> {
         let mut tree: KdTree<f32, 2> = KdTree::new();
-        for (i, point) in cloud.points.iter().enumerate() {
-            tree.add(&[point.x, point.y], i as u64);
+        for i in 0..cloud.len() {
+            tree.add(&[cloud.xs[i], cloud.ys[i]], i as u64);
         }
         tree
     }
 
     /// Find correspondences with line fitting into preallocated buffer.
+    /// Assumes transform_source() was called before this.
     fn find_correspondences_into(
         &self,
-        source: &PointCloud2D,
         target: &PointCloud2D,
         target_tree: &KdTree<f32, 2>,
-        transform: &Pose2D,
         output: &mut Vec<Correspondence>,
     ) {
         output.clear();
         let max_dist_sq = self.config.max_correspondence_distance.powi(2);
 
-        let (sin_t, cos_t) = transform.theta.sin_cos();
-
-        for (i, point) in source.points.iter().enumerate() {
-            // Transform source point
-            let tx = transform.x + point.x * cos_t - point.y * sin_t;
-            let ty = transform.y + point.x * sin_t + point.y * cos_t;
+        for i in 0..self.transformed_source.len() {
+            // Use pre-transformed source point
+            let tx = self.transformed_source.xs[i];
+            let ty = self.transformed_source.ys[i];
             let transformed = Point2D::new(tx, ty);
 
             // Find k nearest neighbors in target
@@ -263,7 +281,7 @@ impl PointToLineIcp {
 
             for n in neighbors.iter() {
                 if n.distance <= max_dist_sq * 4.0 && neighbor_count < MAX_LINE_NEIGHBORS {
-                    neighbor_points[neighbor_count] = target.points[n.item as usize];
+                    neighbor_points[neighbor_count] = target.point_at(n.item as usize);
                     neighbor_count += 1;
                 }
             }
@@ -302,6 +320,8 @@ impl PointToLineIcp {
     /// Compute optimal transform using point-to-line minimization.
     ///
     /// Minimizes sum of squared point-to-line distances.
+    /// Assumes transform_source() was called before this with current_transform.
+    /// Still needs original source for Jacobian computation.
     fn compute_transform(
         &self,
         source: &PointCloud2D,
@@ -336,13 +356,15 @@ impl PointToLineIcp {
         let mut g = [0.0f32; 3]; // Gradient
 
         for corr in correspondences {
-            let p = &source.points[corr.source_idx];
+            // Original source coordinates needed for Jacobian
+            let px_orig = source.xs[corr.source_idx];
+            let py_orig = source.ys[corr.source_idx];
             let n_x = corr.target_line.a;
             let n_y = corr.target_line.b;
 
-            // Transform source point
-            let px = current_transform.x + p.x * cos_t - p.y * sin_t;
-            let py = current_transform.y + p.x * sin_t + p.y * cos_t;
+            // Use pre-transformed source point for residual
+            let px = self.transformed_source.xs[corr.source_idx];
+            let py = self.transformed_source.ys[corr.source_idx];
 
             // Residual
             let r = n_x * px + n_y * py + corr.target_line.c;
@@ -350,7 +372,8 @@ impl PointToLineIcp {
             // Jacobian row
             let j0 = n_x;
             let j1 = n_y;
-            let j2 = n_x * (-sin_t * p.x - cos_t * p.y) + n_y * (cos_t * p.x - sin_t * p.y);
+            let j2 = n_x * (-sin_t * px_orig - cos_t * py_orig)
+                + n_y * (cos_t * px_orig - sin_t * py_orig);
 
             // Accumulate H = J^T * J
             h[0][0] += j0 * j0;
@@ -470,14 +493,11 @@ impl PointToLineIcp {
         for iter in 0..self.config.max_iterations {
             iterations = iter + 1;
 
-            // Find correspondences with line fitting (reuses preallocated buffer)
-            self.find_correspondences_into(
-                source,
-                target,
-                target_tree,
-                &current_transform,
-                &mut corr_buffer,
-            );
+            // Pre-transform source cloud using SIMD
+            self.transform_source(source, &current_transform);
+
+            // Find correspondences with line fitting using pre-transformed cloud
+            self.find_correspondences_into(target, target_tree, &mut corr_buffer);
 
             if corr_buffer.len() < self.config.min_correspondences {
                 // Return buffer before early exit
@@ -485,13 +505,13 @@ impl PointToLineIcp {
                 return ScanMatchResult::failed();
             }
 
-            // Compute incremental transform
+            // Compute incremental transform (needs original source for Jacobian)
             let delta = self.compute_transform(source, &corr_buffer, &current_transform);
 
             // Apply delta
             current_transform = current_transform.compose(&delta);
 
-            // Compute MSE
+            // Compute MSE (uses correspondence distances which are already computed)
             let mse = self.compute_mse(&corr_buffer);
 
             // Check convergence
@@ -515,13 +535,8 @@ impl PointToLineIcp {
         }
 
         // Max iterations reached
-        self.find_correspondences_into(
-            source,
-            target,
-            target_tree,
-            &current_transform,
-            &mut corr_buffer,
-        );
+        self.transform_source(source, &current_transform);
+        self.find_correspondences_into(target, target_tree, &mut corr_buffer);
         let final_mse = self.compute_mse(&corr_buffer);
         let score = self.mse_to_score(final_mse);
 

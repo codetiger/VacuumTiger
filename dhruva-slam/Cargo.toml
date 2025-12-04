@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 base64 = "0.22"
+wide = "1.0.2"  # SIMD types for vectorized operations
 ctrlc = "3.4"
 env_logger = "0.11"
 kiddo = "4.2"  # K-d tree for nearest neighbor queries
@@ -39,5 +40,5 @@ name = "bag-info"
 path = "src/bin/bag_info.rs"
 
 [[bench]]
-name = "milestone1"
+name = "slam_benchmarks"
 harness = false

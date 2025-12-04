@@ -329,12 +329,10 @@ impl OdometryPublisher {
         let sin_theta = pose.theta.sin();
 
         // Transform points to global frame
-        let points: Vec<proto::dhruva::Point2D> = scan
-            .points
-            .iter()
-            .map(|p| {
-                let global_x = pose.x + p.x * cos_theta - p.y * sin_theta;
-                let global_y = pose.y + p.x * sin_theta + p.y * cos_theta;
+        let points: Vec<proto::dhruva::Point2D> = (0..scan.len())
+            .map(|i| {
+                let global_x = pose.x + scan.xs[i] * cos_theta - scan.ys[i] * sin_theta;
+                let global_y = pose.y + scan.xs[i] * sin_theta + scan.ys[i] * cos_theta;
                 proto::dhruva::Point2D {
                     x: global_x,
                     y: global_y,

@@ -157,25 +157,25 @@ fn test_wheel_odometry_hardware() {
     for _ in 0..500 {
         match client.recv() {
             Ok(msg) => {
-                if let Some((left, right)) = msg.encoder_ticks() {
-                    if let Some(delta) = odom.update(left, right) {
-                        let dist = (delta.x * delta.x + delta.y * delta.y).sqrt();
-                        total_distance += dist;
-                        total_rotation += delta.theta.abs();
-                        message_count += 1;
+                if let Some((left, right)) = msg.encoder_ticks()
+                    && let Some(delta) = odom.update(left, right)
+                {
+                    let dist = (delta.x * delta.x + delta.y * delta.y).sqrt();
+                    total_distance += dist;
+                    total_rotation += delta.theta.abs();
+                    message_count += 1;
 
-                        // Print occasional updates
-                        if message_count % 100 == 0 {
-                            println!(
-                                "  Sample {}: encoders=({}, {}), delta=({:.4}, {:.4}, {:.4}°)",
-                                message_count,
-                                left,
-                                right,
-                                delta.x,
-                                delta.y,
-                                delta.theta.to_degrees()
-                            );
-                        }
+                    // Print occasional updates
+                    if message_count % 100 == 0 {
+                        println!(
+                            "  Sample {}: encoders=({}, {}), delta=({:.4}, {:.4}, {:.4}°)",
+                            message_count,
+                            left,
+                            right,
+                            delta.x,
+                            delta.y,
+                            delta.theta.to_degrees()
+                        );
                     }
                 }
             }

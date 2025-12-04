@@ -444,7 +444,7 @@ mod tests {
 
         for _ in 0..1000 {
             let v = rng.gen_f32();
-            assert!(v >= 0.0 && v < 1.0, "Value out of range: {}", v);
+            assert!((0.0..1.0).contains(&v), "Value out of range: {}", v);
         }
     }
 

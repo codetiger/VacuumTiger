@@ -140,7 +140,8 @@ impl Submap {
                 .cached_pointcloud
                 .take()
                 .unwrap_or_else(|| PointCloud2D::with_capacity(estimated_occupied));
-            cloud.points.clear();
+            cloud.xs.clear();
+            cloud.ys.clear();
 
             let mut idx = 0u32;
             for cy in 0..height {

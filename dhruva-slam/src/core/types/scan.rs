@@ -2,6 +2,7 @@
 
 use super::pose::{Point2D, Pose2D};
 use serde::{Deserialize, Serialize};
+use wide::f32x4;
 
 /// Raw LiDAR scan in polar coordinates.
 ///
@@ -163,14 +164,23 @@ impl Default for LaserScan {
     }
 }
 
-/// Collection of 2D points in Cartesian coordinates.
+/// SIMD-optimized collection of 2D points using Struct of Arrays (SoA) layout.
+///
+/// Instead of `Vec<Point2D>` (x,y,x,y,x,y...), stores:
+/// - `xs: Vec<f32>` (x,x,x,x...)
+/// - `ys: Vec<f32>` (y,y,y,y...)
+///
+/// This enables processing 4 points per SIMD instruction for significant
+/// performance gains in transform, centroid, and bounds operations.
 ///
 /// Used as the output of scan preprocessing and input to scan matching.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PointCloud2D {
-    /// Point positions in meters
-    pub points: Vec<Point2D>,
-    /// Optional intensity values (same length as points)
+    /// X coordinates in meters (SoA layout for SIMD)
+    pub xs: Vec<f32>,
+    /// Y coordinates in meters (SoA layout for SIMD)
+    pub ys: Vec<f32>,
+    /// Optional intensity values (same length as xs/ys)
     pub intensities: Option<Vec<u8>>,
 }
 
@@ -178,7 +188,8 @@ impl PointCloud2D {
     /// Create an empty point cloud.
     pub fn new() -> Self {
         Self {
-            points: Vec::new(),
+            xs: Vec::new(),
+            ys: Vec::new(),
             intensities: None,
         }
     }
@@ -186,15 +197,24 @@ impl PointCloud2D {
     /// Create a point cloud with pre-allocated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            points: Vec::with_capacity(capacity),
+            xs: Vec::with_capacity(capacity),
+            ys: Vec::with_capacity(capacity),
             intensities: None,
         }
     }
 
-    /// Create from a vector of points.
+    /// Create from a vector of points (converts AoS to SoA).
     pub fn from_points(points: Vec<Point2D>) -> Self {
+        let n = points.len();
+        let mut xs = Vec::with_capacity(n);
+        let mut ys = Vec::with_capacity(n);
+        for p in points {
+            xs.push(p.x);
+            ys.push(p.y);
+        }
         Self {
-            points,
+            xs,
+            ys,
             intensities: None,
         }
     }
@@ -202,7 +222,18 @@ impl PointCloud2D {
     /// Add a point without intensity.
     #[inline]
     pub fn push(&mut self, point: Point2D) {
-        self.points.push(point);
+        self.xs.push(point.x);
+        self.ys.push(point.y);
+        if let Some(ref mut intensities) = self.intensities {
+            intensities.push(0);
+        }
+    }
+
+    /// Add a point by x, y coordinates directly (faster than push).
+    #[inline]
+    pub fn push_xy(&mut self, x: f32, y: f32) {
+        self.xs.push(x);
+        self.ys.push(y);
         if let Some(ref mut intensities) = self.intensities {
             intensities.push(0);
         }
@@ -211,10 +242,11 @@ impl PointCloud2D {
     /// Add a point with intensity.
     #[inline]
     pub fn push_with_intensity(&mut self, point: Point2D, intensity: u8) {
-        self.points.push(point);
+        self.xs.push(point.x);
+        self.ys.push(point.y);
         if self.intensities.is_none() {
             // Initialize intensities vector if this is first intensity
-            self.intensities = Some(vec![0; self.points.len() - 1]);
+            self.intensities = Some(vec![0; self.xs.len() - 1]);
         }
         if let Some(ref mut intensities) = self.intensities {
             intensities.push(intensity);
@@ -224,127 +256,273 @@ impl PointCloud2D {
     /// Number of points.
     #[inline]
     pub fn len(&self) -> usize {
-        self.points.len()
+        self.xs.len()
     }
 
     /// Check if empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.points.is_empty()
+        self.xs.is_empty()
     }
 
     /// Clear all points.
     pub fn clear(&mut self) {
-        self.points.clear();
+        self.xs.clear();
+        self.ys.clear();
         if let Some(ref mut intensities) = self.intensities {
             intensities.clear();
         }
     }
 
-    /// Iterate over points.
-    pub fn iter(&self) -> impl Iterator<Item = &Point2D> {
-        self.points.iter()
+    /// Get point at index (compatibility layer for code expecting Point2D).
+    #[inline]
+    pub fn point_at(&self, i: usize) -> Point2D {
+        Point2D::new(self.xs[i], self.ys[i])
+    }
+
+    /// Iterate over points (creates Point2D on the fly for compatibility).
+    pub fn iter(&self) -> impl Iterator<Item = Point2D> + '_ {
+        self.xs
+            .iter()
+            .zip(self.ys.iter())
+            .map(|(&x, &y)| Point2D::new(x, y))
     }
 
     /// Iterate over points with intensities.
-    pub fn iter_with_intensity(&self) -> impl Iterator<Item = (&Point2D, u8)> + '_ {
+    pub fn iter_with_intensity(&self) -> impl Iterator<Item = (Point2D, u8)> + '_ {
         let intensities = &self.intensities;
-        self.points.iter().enumerate().map(move |(i, p)| {
-            let intensity = intensities
-                .as_ref()
-                .and_then(|v| v.get(i).copied())
-                .unwrap_or(0);
-            (p, intensity)
-        })
+        self.xs
+            .iter()
+            .zip(self.ys.iter())
+            .enumerate()
+            .map(move |(i, (&x, &y))| {
+                let intensity = intensities
+                    .as_ref()
+                    .and_then(|v| v.get(i).copied())
+                    .unwrap_or(0);
+                (Point2D::new(x, y), intensity)
+            })
     }
 
-    /// Compute bounding box (min_point, max_point).
+    /// SIMD-accelerated bounding box computation.
+    #[inline]
     pub fn bounds(&self) -> Option<(Point2D, Point2D)> {
-        if self.points.is_empty() {
+        if self.xs.is_empty() {
             return None;
         }
 
-        let mut min_x = f32::MAX;
-        let mut min_y = f32::MAX;
-        let mut max_x = f32::MIN;
-        let mut max_y = f32::MIN;
+        let n = self.len();
+        let chunks = n / 4;
 
-        for p in &self.points {
-            min_x = min_x.min(p.x);
-            min_y = min_y.min(p.y);
-            max_x = max_x.max(p.x);
-            max_y = max_y.max(p.y);
+        let mut min_x = f32x4::splat(f32::MAX);
+        let mut min_y = f32x4::splat(f32::MAX);
+        let mut max_x = f32x4::splat(f32::MIN);
+        let mut max_y = f32x4::splat(f32::MIN);
+
+        // Process 4 points at a time with SIMD
+        for i in 0..chunks {
+            let base = i * 4;
+            let xs = f32x4::new(self.xs[base..base + 4].try_into().unwrap());
+            let ys = f32x4::new(self.ys[base..base + 4].try_into().unwrap());
+            min_x = min_x.min(xs);
+            min_y = min_y.min(ys);
+            max_x = max_x.max(xs);
+            max_y = max_y.max(ys);
         }
 
-        Some((Point2D::new(min_x, min_y), Point2D::new(max_x, max_y)))
+        // Reduce SIMD vectors to scalar
+        let min_x_arr = min_x.to_array();
+        let min_y_arr = min_y.to_array();
+        let max_x_arr = max_x.to_array();
+        let max_y_arr = max_y.to_array();
+
+        let mut final_min_x = min_x_arr[0]
+            .min(min_x_arr[1])
+            .min(min_x_arr[2])
+            .min(min_x_arr[3]);
+        let mut final_min_y = min_y_arr[0]
+            .min(min_y_arr[1])
+            .min(min_y_arr[2])
+            .min(min_y_arr[3]);
+        let mut final_max_x = max_x_arr[0]
+            .max(max_x_arr[1])
+            .max(max_x_arr[2])
+            .max(max_x_arr[3]);
+        let mut final_max_y = max_y_arr[0]
+            .max(max_y_arr[1])
+            .max(max_y_arr[2])
+            .max(max_y_arr[3]);
+
+        // Handle remainder (0-3 points) with scalar
+        for i in (chunks * 4)..n {
+            final_min_x = final_min_x.min(self.xs[i]);
+            final_min_y = final_min_y.min(self.ys[i]);
+            final_max_x = final_max_x.max(self.xs[i]);
+            final_max_y = final_max_y.max(self.ys[i]);
+        }
+
+        Some((
+            Point2D::new(final_min_x, final_min_y),
+            Point2D::new(final_max_x, final_max_y),
+        ))
     }
 
-    /// Compute centroid (center of mass).
+    /// SIMD-accelerated centroid (center of mass) computation.
+    #[inline]
     pub fn centroid(&self) -> Option<Point2D> {
-        if self.points.is_empty() {
+        if self.xs.is_empty() {
             return None;
         }
 
-        let sum_x: f32 = self.points.iter().map(|p| p.x).sum();
-        let sum_y: f32 = self.points.iter().map(|p| p.y).sum();
-        let n = self.points.len() as f32;
+        let n = self.len();
+        let chunks = n / 4;
 
-        Some(Point2D::new(sum_x / n, sum_y / n))
+        let mut sum_x = f32x4::splat(0.0);
+        let mut sum_y = f32x4::splat(0.0);
+
+        // Process 4 points at a time with SIMD
+        for i in 0..chunks {
+            let base = i * 4;
+            let xs = f32x4::new(self.xs[base..base + 4].try_into().unwrap());
+            let ys = f32x4::new(self.ys[base..base + 4].try_into().unwrap());
+            sum_x += xs;
+            sum_y += ys;
+        }
+
+        // Reduce SIMD to scalar
+        let mut total_x = sum_x.reduce_add();
+        let mut total_y = sum_y.reduce_add();
+
+        // Handle remainder with scalar
+        for i in (chunks * 4)..n {
+            total_x += self.xs[i];
+            total_y += self.ys[i];
+        }
+
+        Some(Point2D::new(total_x / n as f32, total_y / n as f32))
     }
 
-    /// Transform all points by a pose.
+    /// SIMD-accelerated transform of all points by a pose.
     ///
     /// Applies rotation and translation: p' = R(theta) * p + t
+    #[inline]
     pub fn transform(&self, pose: &Pose2D) -> PointCloud2D {
+        let n = self.len();
+        let mut result = PointCloud2D::with_capacity(n);
+        result.xs.resize(n, 0.0);
+        result.ys.resize(n, 0.0);
+
         let (sin_t, cos_t) = pose.theta.sin_cos();
+        let sin_v = f32x4::splat(sin_t);
+        let cos_v = f32x4::splat(cos_t);
+        let tx_v = f32x4::splat(pose.x);
+        let ty_v = f32x4::splat(pose.y);
 
-        let transformed_points: Vec<Point2D> = self
-            .points
-            .iter()
-            .map(|p| {
-                Point2D::new(
-                    pose.x + p.x * cos_t - p.y * sin_t,
-                    pose.y + p.x * sin_t + p.y * cos_t,
-                )
-            })
-            .collect();
+        let chunks = n / 4;
 
-        PointCloud2D {
-            points: transformed_points,
-            intensities: self.intensities.clone(),
+        // Process 4 points at a time with SIMD
+        for i in 0..chunks {
+            let base = i * 4;
+            let xs = f32x4::new(self.xs[base..base + 4].try_into().unwrap());
+            let ys = f32x4::new(self.ys[base..base + 4].try_into().unwrap());
+
+            // x' = tx + x*cos - y*sin
+            // y' = ty + x*sin + y*cos
+            let new_xs = tx_v + xs * cos_v - ys * sin_v;
+            let new_ys = ty_v + xs * sin_v + ys * cos_v;
+
+            result.xs[base..base + 4].copy_from_slice(&new_xs.to_array());
+            result.ys[base..base + 4].copy_from_slice(&new_ys.to_array());
         }
+
+        // Handle remainder with scalar
+        for i in (chunks * 4)..n {
+            result.xs[i] = pose.x + self.xs[i] * cos_t - self.ys[i] * sin_t;
+            result.ys[i] = pose.y + self.xs[i] * sin_t + self.ys[i] * cos_t;
+        }
+
+        result.intensities = self.intensities.clone();
+        result
     }
 
-    /// Transform points in place.
+    /// SIMD-accelerated in-place transform.
+    #[inline]
     pub fn transform_mut(&mut self, pose: &Pose2D) {
+        let n = self.len();
         let (sin_t, cos_t) = pose.theta.sin_cos();
+        let sin_v = f32x4::splat(sin_t);
+        let cos_v = f32x4::splat(cos_t);
+        let tx_v = f32x4::splat(pose.x);
+        let ty_v = f32x4::splat(pose.y);
 
-        for p in &mut self.points {
-            let new_x = pose.x + p.x * cos_t - p.y * sin_t;
-            let new_y = pose.y + p.x * sin_t + p.y * cos_t;
-            p.x = new_x;
-            p.y = new_y;
+        let chunks = n / 4;
+
+        // Process 4 points at a time with SIMD
+        for i in 0..chunks {
+            let base = i * 4;
+            let xs = f32x4::new(self.xs[base..base + 4].try_into().unwrap());
+            let ys = f32x4::new(self.ys[base..base + 4].try_into().unwrap());
+
+            let new_xs = tx_v + xs * cos_v - ys * sin_v;
+            let new_ys = ty_v + xs * sin_v + ys * cos_v;
+
+            self.xs[base..base + 4].copy_from_slice(&new_xs.to_array());
+            self.ys[base..base + 4].copy_from_slice(&new_ys.to_array());
+        }
+
+        // Handle remainder with scalar
+        for i in (chunks * 4)..n {
+            let new_x = pose.x + self.xs[i] * cos_t - self.ys[i] * sin_t;
+            let new_y = pose.y + self.xs[i] * sin_t + self.ys[i] * cos_t;
+            self.xs[i] = new_x;
+            self.ys[i] = new_y;
         }
     }
 
-    /// Inverse transform (global to local frame).
+    /// SIMD-accelerated inverse transform (global to local frame).
+    #[inline]
     pub fn inverse_transform(&self, pose: &Pose2D) -> PointCloud2D {
+        let n = self.len();
+        let mut result = PointCloud2D::with_capacity(n);
+        result.xs.resize(n, 0.0);
+        result.ys.resize(n, 0.0);
+
         let (sin_t, cos_t) = pose.theta.sin_cos();
+        let sin_v = f32x4::splat(sin_t);
+        let cos_v = f32x4::splat(cos_t);
+        let px_v = f32x4::splat(pose.x);
+        let py_v = f32x4::splat(pose.y);
 
-        let transformed_points: Vec<Point2D> = self
-            .points
-            .iter()
-            .map(|p| {
-                let dx = p.x - pose.x;
-                let dy = p.y - pose.y;
-                Point2D::new(dx * cos_t + dy * sin_t, -dx * sin_t + dy * cos_t)
-            })
-            .collect();
+        let chunks = n / 4;
 
-        PointCloud2D {
-            points: transformed_points,
-            intensities: self.intensities.clone(),
+        // Process 4 points at a time with SIMD
+        for i in 0..chunks {
+            let base = i * 4;
+            let xs = f32x4::new(self.xs[base..base + 4].try_into().unwrap());
+            let ys = f32x4::new(self.ys[base..base + 4].try_into().unwrap());
+
+            let dx = xs - px_v;
+            let dy = ys - py_v;
+
+            // x' = dx*cos + dy*sin
+            // y' = -dx*sin + dy*cos
+            let new_xs = dx * cos_v + dy * sin_v;
+            let new_ys = dy * cos_v - dx * sin_v;
+
+            result.xs[base..base + 4].copy_from_slice(&new_xs.to_array());
+            result.ys[base..base + 4].copy_from_slice(&new_ys.to_array());
         }
+
+        // Handle remainder with scalar
+        for i in (chunks * 4)..n {
+            let dx = self.xs[i] - pose.x;
+            let dy = self.ys[i] - pose.y;
+            result.xs[i] = dx * cos_t + dy * sin_t;
+            result.ys[i] = -dx * sin_t + dy * cos_t;
+        }
+
+        result.intensities = self.intensities.clone();
+        result
     }
 }
 
@@ -444,8 +622,8 @@ mod tests {
         let pose = Pose2D::new(0.0, 0.0, FRAC_PI_2);
         let transformed = cloud.transform(&pose);
 
-        assert_relative_eq!(transformed.points[0].x, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(transformed.points[0].y, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(transformed.xs[0], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(transformed.ys[0], 1.0, epsilon = 1e-6);
     }
 
     #[test]
@@ -456,8 +634,8 @@ mod tests {
         let pose = Pose2D::new(2.0, 3.0, 0.0);
         let transformed = cloud.transform(&pose);
 
-        assert_relative_eq!(transformed.points[0].x, 3.0, epsilon = 1e-6);
-        assert_relative_eq!(transformed.points[0].y, 3.0, epsilon = 1e-6);
+        assert_relative_eq!(transformed.xs[0], 3.0, epsilon = 1e-6);
+        assert_relative_eq!(transformed.ys[0], 3.0, epsilon = 1e-6);
     }
 
     #[test]
@@ -468,8 +646,8 @@ mod tests {
         let pose = Pose2D::new(1.0, 0.0, FRAC_PI_2);
         let local = cloud.inverse_transform(&pose);
 
-        assert_relative_eq!(local.points[0].x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(local.points[0].y, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(local.xs[0], 1.0, epsilon = 1e-6);
+        assert_relative_eq!(local.ys[0], 0.0, epsilon = 1e-6);
     }
 
     #[test]
@@ -483,9 +661,9 @@ mod tests {
         let global = cloud.transform(&pose);
         let back = global.inverse_transform(&pose);
 
-        for (orig, recovered) in cloud.points.iter().zip(back.points.iter()) {
-            assert_relative_eq!(orig.x, recovered.x, epsilon = 1e-5);
-            assert_relative_eq!(orig.y, recovered.y, epsilon = 1e-5);
+        for i in 0..cloud.len() {
+            assert_relative_eq!(cloud.xs[i], back.xs[i], epsilon = 1e-5);
+            assert_relative_eq!(cloud.ys[i], back.ys[i], epsilon = 1e-5);
         }
     }
 
@@ -502,9 +680,9 @@ mod tests {
         let transformed = cloud1.transform(&pose);
         cloud2.transform_mut(&pose);
 
-        for (p1, p2) in transformed.points.iter().zip(cloud2.points.iter()) {
-            assert_relative_eq!(p1.x, p2.x, epsilon = 1e-6);
-            assert_relative_eq!(p1.y, p2.y, epsilon = 1e-6);
+        for i in 0..transformed.len() {
+            assert_relative_eq!(transformed.xs[i], cloud2.xs[i], epsilon = 1e-6);
+            assert_relative_eq!(transformed.ys[i], cloud2.ys[i], epsilon = 1e-6);
         }
     }
 

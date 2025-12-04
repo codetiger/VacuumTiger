@@ -566,13 +566,14 @@ impl SlamEngine for OnlineSlam {
         // Copy into the current buffer slot, then swap indices
         // Reserve capacity first to avoid reallocation during extend
         let buffer = &mut self.scan_buffers[self.current_scan_idx];
-        buffer.points.clear();
-        if buffer.points.capacity() < scan.points.len() {
-            buffer
-                .points
-                .reserve(scan.points.len() - buffer.points.capacity());
+        buffer.xs.clear();
+        buffer.ys.clear();
+        if buffer.xs.capacity() < scan.len() {
+            buffer.xs.reserve(scan.len() - buffer.xs.capacity());
+            buffer.ys.reserve(scan.len() - buffer.ys.capacity());
         }
-        buffer.points.extend_from_slice(&scan.points);
+        buffer.xs.extend_from_slice(&scan.xs);
+        buffer.ys.extend_from_slice(&scan.ys);
         buffer.intensities = scan.intensities.clone();
         self.current_scan_idx = 1 - self.current_scan_idx;
         self.has_previous_scan = true;
