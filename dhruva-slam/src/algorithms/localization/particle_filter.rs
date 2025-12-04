@@ -112,6 +112,12 @@ pub struct ParticleFilter {
     sensor_model: LikelihoodFieldModel,
     rng: SimpleRng,
     state: ParticleFilterState,
+    /// Preallocated buffer for resampling (swap buffer).
+    resample_buffer: Vec<Particle>,
+    /// Preallocated buffer for cumulative weights.
+    cumulative_buffer: Vec<f64>,
+    /// Preallocated buffer for log-likelihoods during update.
+    log_weights_buffer: Vec<f64>,
 }
 
 impl ParticleFilter {
@@ -140,6 +146,11 @@ impl ParticleFilter {
             &mut rng,
         );
 
+        // Preallocate resampling buffers
+        let resample_buffer = Vec::with_capacity(config.num_particles);
+        let cumulative_buffer = Vec::with_capacity(config.num_particles);
+        let log_weights_buffer = Vec::with_capacity(config.num_particles);
+
         Self {
             config,
             particles,
@@ -147,6 +158,9 @@ impl ParticleFilter {
             sensor_model,
             rng,
             state: ParticleFilterState::default(),
+            resample_buffer,
+            cumulative_buffer,
+            log_weights_buffer,
         }
     }
 
@@ -208,15 +222,16 @@ impl ParticleFilter {
         self.state.iterations += 1;
         self.state.resampled = false;
 
-        // Compute log-likelihoods for all particles
-        let log_weights: Vec<f64> = self
-            .particles
-            .iter()
-            .map(|p| self.sensor_model.log_likelihood(scan, &p.pose, map) as f64)
-            .collect();
+        // Compute log-likelihoods for all particles using preallocated buffer
+        self.log_weights_buffer.clear();
+        for p in &self.particles {
+            self.log_weights_buffer
+                .push(self.sensor_model.log_likelihood(scan, &p.pose, map) as f64);
+        }
 
         // Convert to normalized weights using log-sum-exp trick
-        let max_log_weight = log_weights
+        let max_log_weight = self
+            .log_weights_buffer
             .iter()
             .copied()
             .fold(f64::NEG_INFINITY, f64::max);
@@ -228,14 +243,15 @@ impl ParticleFilter {
         }
 
         // Subtract max for numerical stability and exponentiate
-        let sum_exp: f64 = log_weights
+        let sum_exp: f64 = self
+            .log_weights_buffer
             .iter()
             .map(|&lw| (lw - max_log_weight).exp())
             .sum();
 
         // Normalize weights
         for (i, particle) in self.particles.iter_mut().enumerate() {
-            let normalized = (log_weights[i] - max_log_weight).exp() / sum_exp;
+            let normalized = (self.log_weights_buffer[i] - max_log_weight).exp() / sum_exp;
             particle.weight = normalized;
         }
 
@@ -252,50 +268,51 @@ impl ParticleFilter {
         }
     }
 
-    /// Low-variance resampling.
+    /// Low-variance resampling using preallocated buffers.
     fn resample(&mut self) {
         let n = self.particles.len();
-        let mut new_particles = Vec::with_capacity(n);
 
-        // Compute cumulative weights
-        let mut cumulative: Vec<f64> = Vec::with_capacity(n);
+        // Compute cumulative weights using preallocated buffer
+        self.cumulative_buffer.clear();
         let mut sum = 0.0;
         for p in &self.particles {
             sum += p.weight;
-            cumulative.push(sum);
+            self.cumulative_buffer.push(sum);
         }
 
         // Normalize cumulative weights
         if sum > 1e-10 {
-            for c in &mut cumulative {
+            for c in &mut self.cumulative_buffer {
                 *c /= sum;
             }
         } else {
             // Uniform weights if sum is too small
-            for (i, c) in cumulative.iter_mut().enumerate() {
+            for (i, c) in self.cumulative_buffer.iter_mut().enumerate() {
                 *c = (i + 1) as f64 / n as f64;
             }
         }
 
-        // Low-variance resampling
+        // Low-variance resampling into preallocated buffer
+        self.resample_buffer.clear();
         let step = 1.0 / n as f64;
         let mut r = self.rng.gen_f32() as f64 * step;
         let mut idx = 0;
 
         for _ in 0..n {
-            while r > cumulative[idx] && idx < n - 1 {
+            while r > self.cumulative_buffer[idx] && idx < n - 1 {
                 idx += 1;
             }
 
             // Copy particle with unit weight
             let mut new_particle = self.particles[idx];
             new_particle.weight = 1.0 / n as f64;
-            new_particles.push(new_particle);
+            self.resample_buffer.push(new_particle);
 
             r += step;
         }
 
-        self.particles = new_particles;
+        // Swap buffers instead of allocating
+        std::mem::swap(&mut self.particles, &mut self.resample_buffer);
     }
 
     /// Get the estimated pose (weighted mean of particles).

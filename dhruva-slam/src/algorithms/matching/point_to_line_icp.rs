@@ -191,15 +191,20 @@ struct Correspondence {
 ///
 /// Uses line features from the target point cloud for better convergence
 /// in structured environments.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PointToLineIcp {
     config: PointToLineIcpConfig,
+    /// Preallocated buffer for correspondences (reused across iterations).
+    correspondence_buffer: Vec<Correspondence>,
 }
 
 impl PointToLineIcp {
     /// Create a new Point-to-Line ICP matcher.
     pub fn new(config: PointToLineIcpConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            correspondence_buffer: Vec::with_capacity(512), // Typical scan size
+        }
     }
 
     /// Get the current configuration.
@@ -216,16 +221,17 @@ impl PointToLineIcp {
         tree
     }
 
-    /// Find correspondences with line fitting.
-    fn find_correspondences(
+    /// Find correspondences with line fitting into preallocated buffer.
+    fn find_correspondences_into(
         &self,
         source: &PointCloud2D,
         target: &PointCloud2D,
         target_tree: &KdTree<f32, 2>,
         transform: &Pose2D,
-    ) -> Vec<Correspondence> {
+        output: &mut Vec<Correspondence>,
+    ) {
+        output.clear();
         let max_dist_sq = self.config.max_correspondence_distance.powi(2);
-        let mut correspondences = Vec::with_capacity(source.len());
 
         let (sin_t, cos_t) = transform.theta.sin_cos();
 
@@ -249,19 +255,25 @@ impl PointToLineIcp {
                 continue;
             }
 
-            // Gather neighbor points for line fitting
-            let neighbor_points: Vec<Point2D> = neighbors
-                .iter()
-                .filter(|n| n.distance <= max_dist_sq * 4.0) // Wider range for line fitting
-                .map(|n| target.points[n.item as usize])
-                .collect();
+            // Gather neighbor points for line fitting using stack array
+            const MAX_LINE_NEIGHBORS: usize = 16;
+            let mut neighbor_points: [Point2D; MAX_LINE_NEIGHBORS] =
+                [Point2D::default(); MAX_LINE_NEIGHBORS];
+            let mut neighbor_count = 0;
 
-            if neighbor_points.len() < 2 {
+            for n in neighbors.iter() {
+                if n.distance <= max_dist_sq * 4.0 && neighbor_count < MAX_LINE_NEIGHBORS {
+                    neighbor_points[neighbor_count] = target.points[n.item as usize];
+                    neighbor_count += 1;
+                }
+            }
+
+            if neighbor_count < 2 {
                 continue;
             }
 
             // Fit line through neighbors
-            if let Some(line) = Line2D::fit(&neighbor_points) {
+            if let Some(line) = Line2D::fit(&neighbor_points[..neighbor_count]) {
                 if line.quality < self.config.min_line_quality {
                     continue;
                 }
@@ -270,7 +282,7 @@ impl PointToLineIcp {
                 let dist_to_line = line.distance(&transformed);
                 let dist_sq = dist_to_line * dist_to_line;
 
-                correspondences.push(Correspondence {
+                output.push(Correspondence {
                     source_idx: i,
                     target_line: line,
                     distance_sq: dist_sq,
@@ -279,15 +291,12 @@ impl PointToLineIcp {
         }
 
         // Apply outlier rejection
-        if self.config.outlier_ratio > 0.0 && !correspondences.is_empty() {
-            correspondences.sort_by(|a, b| a.distance_sq.partial_cmp(&b.distance_sq).unwrap());
+        if self.config.outlier_ratio > 0.0 && !output.is_empty() {
+            output.sort_by(|a, b| a.distance_sq.partial_cmp(&b.distance_sq).unwrap());
 
-            let keep_count =
-                ((1.0 - self.config.outlier_ratio) * correspondences.len() as f32) as usize;
-            correspondences.truncate(keep_count.max(self.config.min_correspondences));
+            let keep_count = ((1.0 - self.config.outlier_ratio) * output.len() as f32) as usize;
+            output.truncate(keep_count.max(self.config.min_correspondences));
         }
-
-        correspondences
     }
 
     /// Compute optimal transform using point-to-line minimization.
@@ -412,20 +421,47 @@ impl PointToLineIcp {
     fn mse_to_score(&self, mse: f32) -> f32 {
         (-mse * 100.0).exp()
     }
-}
 
-impl ScanMatcher for PointToLineIcp {
-    fn match_scans(
-        &self,
+    /// Match source point cloud against a pre-built k-d tree.
+    ///
+    /// This is more efficient when matching multiple scans against the same target,
+    /// as the k-d tree can be built once and reused.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The source point cloud to be transformed
+    /// * `target` - The target point cloud (must match the tree)
+    /// * `target_tree` - Pre-built k-d tree from the target point cloud
+    /// * `initial_guess` - Initial transform estimate
+    pub fn match_scans_with_tree(
+        &mut self,
         source: &PointCloud2D,
         target: &PointCloud2D,
+        target_tree: &super::CachedKdTree,
         initial_guess: &Pose2D,
     ) -> ScanMatchResult {
-        if source.is_empty() || target.len() < self.config.line_neighbors {
+        if source.is_empty() || target_tree.len() < self.config.line_neighbors {
             return ScanMatchResult::failed();
         }
 
-        let target_tree = Self::build_kdtree(target);
+        self.match_scans_internal(source, target, target_tree.tree(), initial_guess)
+    }
+
+    /// Internal matching implementation that works with a k-d tree reference.
+    fn match_scans_internal(
+        &mut self,
+        source: &PointCloud2D,
+        target: &PointCloud2D,
+        target_tree: &KdTree<f32, 2>,
+        initial_guess: &Pose2D,
+    ) -> ScanMatchResult {
+        // Take ownership of buffer to avoid borrow checker issues
+        let mut corr_buffer = std::mem::take(&mut self.correspondence_buffer);
+
+        // Ensure buffer has enough capacity
+        if corr_buffer.capacity() < source.len() {
+            corr_buffer.reserve(source.len() - corr_buffer.capacity());
+        }
 
         let mut current_transform = *initial_guess;
         let mut iterations = 0u32;
@@ -434,22 +470,29 @@ impl ScanMatcher for PointToLineIcp {
         for iter in 0..self.config.max_iterations {
             iterations = iter + 1;
 
-            // Find correspondences with line fitting
-            let correspondences =
-                self.find_correspondences(source, target, &target_tree, &current_transform);
+            // Find correspondences with line fitting (reuses preallocated buffer)
+            self.find_correspondences_into(
+                source,
+                target,
+                target_tree,
+                &current_transform,
+                &mut corr_buffer,
+            );
 
-            if correspondences.len() < self.config.min_correspondences {
+            if corr_buffer.len() < self.config.min_correspondences {
+                // Return buffer before early exit
+                self.correspondence_buffer = corr_buffer;
                 return ScanMatchResult::failed();
             }
 
             // Compute incremental transform
-            let delta = self.compute_transform(source, &correspondences, &current_transform);
+            let delta = self.compute_transform(source, &corr_buffer, &current_transform);
 
             // Apply delta
             current_transform = current_transform.compose(&delta);
 
             // Compute MSE
-            let mse = self.compute_mse(&correspondences);
+            let mse = self.compute_mse(&corr_buffer);
 
             // Check convergence
             let translation_change = (delta.x * delta.x + delta.y * delta.y).sqrt();
@@ -459,6 +502,8 @@ impl ScanMatcher for PointToLineIcp {
                 && rotation_change < self.config.rotation_epsilon
             {
                 let score = self.mse_to_score(mse);
+                // Return buffer before early exit
+                self.correspondence_buffer = corr_buffer;
                 return ScanMatchResult::success(current_transform, score, iterations, mse);
             }
 
@@ -470,10 +515,18 @@ impl ScanMatcher for PointToLineIcp {
         }
 
         // Max iterations reached
-        let correspondences =
-            self.find_correspondences(source, target, &target_tree, &current_transform);
-        let final_mse = self.compute_mse(&correspondences);
+        self.find_correspondences_into(
+            source,
+            target,
+            target_tree,
+            &current_transform,
+            &mut corr_buffer,
+        );
+        let final_mse = self.compute_mse(&corr_buffer);
         let score = self.mse_to_score(final_mse);
+
+        // Return buffer for reuse
+        self.correspondence_buffer = corr_buffer;
 
         if final_mse < 0.01 {
             ScanMatchResult::success(current_transform, score, iterations, final_mse)
@@ -487,6 +540,23 @@ impl ScanMatcher for PointToLineIcp {
                 mse: final_mse,
             }
         }
+    }
+}
+
+impl ScanMatcher for PointToLineIcp {
+    fn match_scans(
+        &mut self,
+        source: &PointCloud2D,
+        target: &PointCloud2D,
+        initial_guess: &Pose2D,
+    ) -> ScanMatchResult {
+        if source.is_empty() || target.len() < self.config.line_neighbors {
+            return ScanMatchResult::failed();
+        }
+
+        let target_tree = Self::build_kdtree(target);
+
+        self.match_scans_internal(source, target, &target_tree, initial_guess)
     }
 }
 
@@ -630,7 +700,7 @@ mod tests {
     #[test]
     fn test_identity_transform() {
         let cloud = create_l_shape(50, 2.0);
-        let icp = PointToLineIcp::new(PointToLineIcpConfig::default());
+        let mut icp = PointToLineIcp::new(PointToLineIcpConfig::default());
 
         let result = icp.match_scans(&cloud, &cloud, &Pose2D::identity());
 
@@ -646,7 +716,7 @@ mod tests {
         let transform = Pose2D::new(0.1, 0.05, 0.0);
         let target = source.transform(&transform);
 
-        let icp = PointToLineIcp::new(PointToLineIcpConfig::default());
+        let mut icp = PointToLineIcp::new(PointToLineIcpConfig::default());
         let result = icp.match_scans(&source, &target, &Pose2D::identity());
 
         assert!(result.converged, "Should converge for small translation");
@@ -660,7 +730,7 @@ mod tests {
         let transform = Pose2D::new(0.0, 0.0, 0.1);
         let target = source.transform(&transform);
 
-        let icp = PointToLineIcp::new(PointToLineIcpConfig::default());
+        let mut icp = PointToLineIcp::new(PointToLineIcpConfig::default());
         let result = icp.match_scans(&source, &target, &Pose2D::identity());
 
         assert!(result.converged, "Should converge for small rotation");
@@ -673,7 +743,7 @@ mod tests {
         let transform = Pose2D::new(0.1, -0.08, 0.08);
         let target = source.transform(&transform);
 
-        let icp = PointToLineIcp::new(PointToLineIcpConfig::default());
+        let mut icp = PointToLineIcp::new(PointToLineIcpConfig::default());
         let result = icp.match_scans(&source, &target, &Pose2D::identity());
 
         assert!(result.converged, "Should converge for combined transform");
@@ -688,7 +758,7 @@ mod tests {
         let transform = Pose2D::new(0.15, 0.1, 0.05);
         let target = source.transform(&transform);
 
-        let icp = PointToLineIcp::new(PointToLineIcpConfig::default());
+        let mut icp = PointToLineIcp::new(PointToLineIcpConfig::default());
         let result = icp.match_scans(&source, &target, &Pose2D::identity());
 
         assert!(result.converged, "Should converge for room shape");
@@ -703,7 +773,7 @@ mod tests {
         let target = source.transform(&transform);
 
         let initial_guess = Pose2D::new(0.25, 0.15, 0.1);
-        let icp = PointToLineIcp::new(PointToLineIcpConfig::default());
+        let mut icp = PointToLineIcp::new(PointToLineIcpConfig::default());
         let result = icp.match_scans(&source, &target, &initial_guess);
 
         assert!(result.converged, "Should converge with good initial guess");
@@ -716,7 +786,7 @@ mod tests {
     fn test_empty_clouds() {
         let empty = PointCloud2D::new();
         let cloud = create_l_shape(50, 2.0);
-        let icp = PointToLineIcp::new(PointToLineIcpConfig::default());
+        let mut icp = PointToLineIcp::new(PointToLineIcpConfig::default());
 
         let result1 = icp.match_scans(&empty, &cloud, &Pose2D::identity());
         assert!(!result1.converged);
@@ -748,7 +818,7 @@ mod tests {
         let transform = Pose2D::new(0.2, 0.0, 0.0);
         let target = source.transform(&transform);
 
-        let icp = PointToLineIcp::new(PointToLineIcpConfig::default());
+        let mut icp = PointToLineIcp::new(PointToLineIcpConfig::default());
         let result = icp.match_scans(&source, &target, &Pose2D::identity());
 
         // Should correctly identify the x translation

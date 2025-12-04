@@ -34,7 +34,7 @@ mod multi_resolution;
 mod point_to_line_icp;
 
 pub use correlative::{CorrelativeConfig, CorrelativeMatcher};
-pub use icp::{IcpConfig, PointToPointIcp};
+pub use icp::{CachedKdTree, IcpConfig, PointToPointIcp};
 pub use multi_resolution::{MultiResolutionConfig, MultiResolutionMatcher};
 pub use point_to_line_icp::{PointToLineIcp, PointToLineIcpConfig};
 // HybridP2LMatcher is defined in this module and exported directly
@@ -115,8 +115,12 @@ pub trait ScanMatcher {
     /// # Returns
     ///
     /// A `ScanMatchResult` containing the estimated transform and quality metrics.
+    ///
+    /// # Note
+    ///
+    /// Takes `&mut self` to allow matchers to reuse internal buffers for performance.
     fn match_scans(
-        &self,
+        &mut self,
         source: &PointCloud2D,
         target: &PointCloud2D,
         initial_guess: &Pose2D,
@@ -158,7 +162,7 @@ impl HybridMatcher {
 
 impl ScanMatcher for HybridMatcher {
     fn match_scans(
-        &self,
+        &mut self,
         source: &PointCloud2D,
         target: &PointCloud2D,
         initial_guess: &Pose2D,
@@ -248,7 +252,7 @@ impl HybridP2LMatcher {
 
 impl ScanMatcher for HybridP2LMatcher {
     fn match_scans(
-        &self,
+        &mut self,
         source: &PointCloud2D,
         target: &PointCloud2D,
         initial_guess: &Pose2D,
@@ -348,7 +352,7 @@ mod tests {
         let transform = Pose2D::new(0.0, 0.0, 0.44); // ~25 degrees
         let target = source.transform(&transform);
 
-        let matcher = HybridP2LMatcher::new(HybridP2LMatcherConfig::default());
+        let mut matcher = HybridP2LMatcher::new(HybridP2LMatcherConfig::default());
         let result = matcher.match_scans(&source, &target, &Pose2D::identity());
 
         assert!(result.converged, "Should converge for large rotation");
@@ -364,7 +368,7 @@ mod tests {
         let transform = Pose2D::new(0.2, 0.15, 0.35); // ~20 degrees + translation
         let target = source.transform(&transform);
 
-        let matcher = HybridP2LMatcher::new(HybridP2LMatcherConfig::default());
+        let mut matcher = HybridP2LMatcher::new(HybridP2LMatcherConfig::default());
         let result = matcher.match_scans(&source, &target, &Pose2D::identity());
 
         assert!(

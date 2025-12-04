@@ -59,6 +59,10 @@ pub struct Submap {
 
     /// Map integrator for adding scans.
     integrator: MapIntegrator,
+
+    /// Cached point cloud representation of occupied cells.
+    /// Invalidated when grid changes, rebuilt on demand.
+    cached_pointcloud: Option<PointCloud2D>,
 }
 
 impl Submap {
@@ -80,6 +84,7 @@ impl Submap {
             start_time_us: timestamp_us,
             end_time_us: timestamp_us,
             integrator: MapIntegrator::new(integrator_config),
+            cached_pointcloud: None,
         }
     }
 
@@ -91,10 +96,42 @@ impl Submap {
     /// Get mutable grid (only valid while active).
     pub fn grid_mut(&mut self) -> Option<&mut OccupancyGrid> {
         if self.state == SubmapState::Active {
+            self.cached_pointcloud = None; // Invalidate cache
             Some(&mut self.grid)
         } else {
             None
         }
+    }
+
+    /// Get the cached point cloud representation of occupied cells.
+    ///
+    /// This is lazily built from the occupancy grid and cached for reuse.
+    /// The cache is invalidated when the grid is modified.
+    pub fn as_pointcloud(&mut self) -> &PointCloud2D {
+        use crate::algorithms::mapping::CellState;
+        use crate::core::types::Point2D;
+
+        if self.cached_pointcloud.is_none() {
+            let mut cloud = PointCloud2D::new();
+            let (width, height) = self.grid.dimensions();
+
+            let mut idx = 0u32;
+            for cy in 0..height {
+                for cx in 0..width {
+                    if self.grid.get_state(cx, cy) == CellState::Occupied {
+                        let (x, y) = self.grid.cell_to_world(cx, cy);
+                        // Add tiny noise to avoid k-d tree bucket issues with perfectly
+                        // aligned grid points
+                        let noise = (idx as f32) * 1e-7;
+                        cloud.push(Point2D::new(x + noise, y + noise));
+                        idx += 1;
+                    }
+                }
+            }
+            self.cached_pointcloud = Some(cloud);
+        }
+
+        self.cached_pointcloud.as_ref().unwrap()
     }
 
     /// Get the current state.
@@ -132,6 +169,9 @@ impl Submap {
         if self.state != SubmapState::Active {
             return false;
         }
+
+        // Invalidate cached pointcloud since grid is being modified
+        self.cached_pointcloud = None;
 
         // Convert global pose to submap-local pose
         let local_pose = self.global_to_local(global_pose);
@@ -628,22 +668,25 @@ mod tests {
 
         let scan = create_test_scan();
 
-        // Add scans: 3 to fill first submap, then it goes to overlap
-        for i in 0..5 {
+        // Add first 3 scans to fill first submap
+        // Scan 0,1,2: scans_in_current goes 1,2,3
+        // At scan 2: transition to new submap, old goes to overlap with 2 remaining
+        for i in 0..3 {
             let pose = Pose2D::new(i as f32 * 0.1, 0.0, 0.0);
             manager.process_scan(&scan, &pose, i * 1000);
         }
 
-        // First submap should still be finishing (2 overlap scans remaining)
+        // First submap started finishing, 2 overlap scans remaining
+        // We now have 2 submaps (old in overlap, new active)
+        assert_eq!(manager.len(), 2);
         assert_eq!(manager.finished_submaps().count(), 0);
 
-        // Two more scans to finish overlap
-        for i in 5..7 {
-            let pose = Pose2D::new(i as f32 * 0.1, 0.0, 0.0);
-            manager.process_scan(&scan, &pose, i * 1000);
-        }
+        // Scan 3: overlap decrements to 1
+        manager.process_scan(&scan, &Pose2D::new(0.3, 0.0, 0.0), 3000);
+        assert_eq!(manager.finished_submaps().count(), 0);
 
-        // Now first submap should be finished
+        // Scan 4: overlap decrements to 0 → first submap finishes
+        manager.process_scan(&scan, &Pose2D::new(0.4, 0.0, 0.0), 4000);
         assert_eq!(manager.finished_submaps().count(), 1);
     }
 }

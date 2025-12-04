@@ -181,8 +181,16 @@ pub struct OnlineSlam {
     /// Global map (built on demand).
     global_map: Option<OccupancyGrid>,
 
-    /// Previous scan for scan-to-scan matching.
-    previous_scan: Option<PointCloud2D>,
+    /// Double-buffer for previous scan to avoid cloning.
+    /// scan_buffers[current_scan_idx] is the current scan,
+    /// scan_buffers[1 - current_scan_idx] is the previous scan.
+    scan_buffers: [PointCloud2D; 2],
+
+    /// Index of the current scan buffer (0 or 1).
+    current_scan_idx: usize,
+
+    /// Whether we have a valid previous scan.
+    has_previous_scan: bool,
 
     /// Operating mode.
     mode: SlamMode,
@@ -231,7 +239,9 @@ impl OnlineSlam {
             matcher,
             submap_matcher,
             global_map: None,
-            previous_scan: None,
+            scan_buffers: [PointCloud2D::new(), PointCloud2D::new()],
+            current_scan_idx: 0,
+            has_previous_scan: false,
             current_pose: Pose2D::identity(),
             covariance: Covariance2D::diagonal(0.01, 0.01, 0.01),
             mode: SlamMode::Mapping,
@@ -293,27 +303,30 @@ impl OnlineSlam {
 
     /// Match scan to current submap.
     fn match_to_submap(
-        &self,
+        &mut self,
         scan: &PointCloud2D,
         initial_pose: &Pose2D,
     ) -> Option<ScanMatchResult> {
+        // Get submap origin first (immutable borrow)
         let submap = self.submaps.active_submap()?;
+        let origin = submap.origin;
 
         // Convert scan to submap frame
-        let local_pose = submap.global_to_local(initial_pose);
+        let local_pose = origin.inverse().compose(initial_pose);
 
-        // Create target from submap grid
-        // For efficiency, we could cache this
-        let target = self.submap_to_pointcloud(submap.grid());
+        // Get cached pointcloud from submap (mutable borrow)
+        let submap_mut = self.submaps.active_submap_mut()?;
+        let target = submap_mut.as_pointcloud();
+
         if target.len() < self.config.min_scan_points {
             return None;
         }
 
-        let result = self.submap_matcher.match_scans(scan, &target, &local_pose);
+        let result = self.submap_matcher.match_scans(scan, target, &local_pose);
 
         if result.converged {
             // Convert result back to global frame
-            let global_pose = submap.local_to_global(&result.transform);
+            let global_pose = origin.compose(&result.transform);
             Some(ScanMatchResult {
                 transform: global_pose,
                 ..result
@@ -323,38 +336,18 @@ impl OnlineSlam {
         }
     }
 
-    /// Convert occupancy grid to point cloud (occupied cells only).
-    fn submap_to_pointcloud(&self, grid: &OccupancyGrid) -> PointCloud2D {
-        use crate::algorithms::mapping::CellState;
-        use crate::core::types::Point2D;
-
-        let mut cloud = PointCloud2D::new();
-        let (width, height) = grid.dimensions();
-
-        let mut idx = 0u32;
-        for cy in 0..height {
-            for cx in 0..width {
-                if grid.get_state(cx, cy) == CellState::Occupied {
-                    let (x, y) = grid.cell_to_world(cx, cy);
-                    // Add tiny noise to avoid k-d tree bucket issues with perfectly
-                    // aligned grid points
-                    let noise = (idx as f32) * 1e-7;
-                    cloud.push(Point2D::new(x + noise, y + noise));
-                    idx += 1;
-                }
-            }
-        }
-
-        cloud
-    }
-
     /// Match scan to previous scan (scan-to-scan matching).
     fn match_to_previous_scan(
-        &self,
+        &mut self,
         scan: &PointCloud2D,
         odom_delta: &Pose2D,
     ) -> Option<ScanMatchResult> {
-        let prev = self.previous_scan.as_ref()?;
+        if !self.has_previous_scan {
+            return None;
+        }
+
+        let prev_idx = 1 - self.current_scan_idx;
+        let prev = &self.scan_buffers[prev_idx];
 
         if prev.len() < self.config.min_scan_points {
             return None;
@@ -557,8 +550,15 @@ impl SlamEngine for OnlineSlam {
         }
         timing.map_update_us = map_start.elapsed().as_micros() as u64;
 
-        // Store scan for next iteration
-        self.previous_scan = Some(scan.clone());
+        // Store scan for next iteration using double-buffer swap
+        // Copy into the current buffer slot, then swap indices
+        self.scan_buffers[self.current_scan_idx].points.clear();
+        self.scan_buffers[self.current_scan_idx]
+            .points
+            .extend_from_slice(&scan.points);
+        self.scan_buffers[self.current_scan_idx].intensities = scan.intensities.clone();
+        self.current_scan_idx = 1 - self.current_scan_idx;
+        self.has_previous_scan = true;
 
         // =========== Finalize Timing ===========
         timing.total_us = cycle_start.elapsed().as_micros() as u64;
@@ -611,7 +611,10 @@ impl SlamEngine for OnlineSlam {
         self.keyframes.clear();
         self.submaps.clear();
         self.global_map = None;
-        self.previous_scan = None;
+        self.scan_buffers[0].clear();
+        self.scan_buffers[1].clear();
+        self.current_scan_idx = 0;
+        self.has_previous_scan = false;
         self.num_scans = 0;
         self.is_lost = false;
         self.last_match_score = 1.0;

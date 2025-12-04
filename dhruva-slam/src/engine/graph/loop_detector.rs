@@ -148,7 +148,7 @@ impl LoopDetector {
     ///
     /// Vector of verified loop closure candidates.
     pub fn detect(
-        &self,
+        &mut self,
         query_id: u64,
         query_scan: &PointCloud2D,
         query_pose: &Pose2D,
@@ -227,7 +227,7 @@ impl LoopDetector {
 
     /// Verify a loop closure candidate using scan matching.
     fn verify_candidate(
-        &self,
+        &mut self,
         query_id: u64,
         query_scan: &PointCloud2D,
         query_pose: &Pose2D,
@@ -278,7 +278,7 @@ impl LoopDetector {
 pub trait LoopDetection {
     /// Detect loop closures for a new keyframe.
     fn detect_loops(
-        &self,
+        &mut self,
         query_id: u64,
         query_scan: &PointCloud2D,
         query_pose: &Pose2D,
@@ -291,7 +291,7 @@ pub trait LoopDetection {
 
 impl LoopDetection for LoopDetector {
     fn detect_loops(
-        &self,
+        &mut self,
         query_id: u64,
         query_scan: &PointCloud2D,
         query_pose: &Pose2D,

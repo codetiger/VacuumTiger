@@ -68,29 +68,33 @@ impl OutlierFilter {
             return true; // Invalid range is always an outlier
         }
 
-        // Collect valid neighbor ranges
-        let mut neighbors = Vec::with_capacity(2 * self.config.neighbor_count);
+        // Collect valid neighbor ranges using stack array (no heap allocation)
+        const MAX_NEIGHBORS: usize = 32;
+        let mut neighbors: [f32; MAX_NEIGHBORS] = [0.0; MAX_NEIGHBORS];
+        let mut neighbor_count = 0;
 
         // Look at neighbors on both sides
         let start = index.saturating_sub(self.config.neighbor_count);
         let end = (index + self.config.neighbor_count + 1).min(n);
 
-        for (i, &range) in ranges.iter().enumerate().take(end).skip(start) {
-            if i != index && range.is_finite() {
-                neighbors.push(range);
+        for (i, &r) in ranges.iter().enumerate().take(end).skip(start) {
+            if i != index && r.is_finite() && neighbor_count < MAX_NEIGHBORS {
+                neighbors[neighbor_count] = r;
+                neighbor_count += 1;
             }
         }
 
-        if neighbors.is_empty() {
+        if neighbor_count == 0 {
             return false; // No valid neighbors to compare
         }
 
-        // Calculate median of neighbors
-        neighbors.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median = if neighbors.len() % 2 == 0 {
-            (neighbors[neighbors.len() / 2 - 1] + neighbors[neighbors.len() / 2]) / 2.0
+        // Calculate median of neighbors (sort in-place on stack array slice)
+        let neighbor_slice = &mut neighbors[..neighbor_count];
+        neighbor_slice.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = if neighbor_count % 2 == 0 {
+            (neighbor_slice[neighbor_count / 2 - 1] + neighbor_slice[neighbor_count / 2]) / 2.0
         } else {
-            neighbors[neighbors.len() / 2]
+            neighbor_slice[neighbor_count / 2]
         };
 
         // Check if point deviates too much from median
