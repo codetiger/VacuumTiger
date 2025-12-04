@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
         self.linear_step = 0.5  # m/s
         self.angular_step = 0.5  # rad/s
         self.motor_enabled = False
+        self.pressed_keys = set()  # Track currently pressed arrow keys for combinations
 
         # Initialize UI
         self.setWindowTitle(f"Drishti - CRL-200S Monitor ({robot_ip})")
@@ -480,38 +481,28 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage("Drive ENABLED", 2000)
                 logger.info("Drive enabled")
             else:
+                self.pressed_keys.clear()
+                self.linear_velocity = 0.0
+                self.angular_velocity = 0.0
                 self._send_command({
                     "type": "ComponentControl",
                     "id": "drive",
                     "action": {"type": "Disable"}
                 })
+                self.control_panel.set_velocity(0.0, 0.0)
                 self.status_bar.showMessage("Drive DISABLED", 2000)
                 logger.info("Drive disabled")
         elif event.key() == Qt.Key_Escape:
             self.close()
         # Arrow keys for drive control (only when motor is enabled)
-        elif event.key() == Qt.Key_Up:
+        # Supports key combinations: Up+Left, Up+Right, Down+Left, Down+Right
+        elif event.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
             if not event.isAutoRepeat() and self.motor_enabled:
-                self.linear_velocity = self.linear_step
-                self.angular_velocity = 0.0
-                self._send_velocity()
-        elif event.key() == Qt.Key_Down:
-            if not event.isAutoRepeat() and self.motor_enabled:
-                self.linear_velocity = -self.linear_step
-                self.angular_velocity = 0.0
-                self._send_velocity()
-        elif event.key() == Qt.Key_Left:
-            if not event.isAutoRepeat() and self.motor_enabled:
-                self.linear_velocity = 0.0
-                self.angular_velocity = self.angular_step
-                self._send_velocity()
-        elif event.key() == Qt.Key_Right:
-            if not event.isAutoRepeat() and self.motor_enabled:
-                self.linear_velocity = 0.0
-                self.angular_velocity = -self.angular_step
-                self._send_velocity()
+                self.pressed_keys.add(event.key())
+                self._update_velocity_from_keys()
         elif event.key() == Qt.Key_Space:
             # Emergency stop - send Reset command to immediately halt
+            self.pressed_keys.clear()
             self.linear_velocity = 0.0
             self.angular_velocity = 0.0
             self._send_command({
@@ -529,11 +520,36 @@ class MainWindow(QMainWindow):
         """Handle key release events for drive control."""
         if event.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
             if not event.isAutoRepeat():
-                self.linear_velocity = 0.0
-                self.angular_velocity = 0.0
-                self._send_velocity()
+                self.pressed_keys.discard(event.key())
+                self._update_velocity_from_keys()
         else:
             super().keyReleaseEvent(event)
+
+    def _update_velocity_from_keys(self):
+        """Update velocity based on currently pressed arrow keys.
+
+        Supports key combinations for diagonal movement:
+        - Up/Down controls linear velocity (forward/backward)
+        - Left/Right controls angular velocity (turn left/right)
+        - Combinations like Up+Left move forward while turning left
+        """
+        # Calculate linear velocity from Up/Down keys
+        linear = 0.0
+        if Qt.Key_Up in self.pressed_keys:
+            linear += self.linear_step
+        if Qt.Key_Down in self.pressed_keys:
+            linear -= self.linear_step
+
+        # Calculate angular velocity from Left/Right keys
+        angular = 0.0
+        if Qt.Key_Left in self.pressed_keys:
+            angular += self.angular_step
+        if Qt.Key_Right in self.pressed_keys:
+            angular -= self.angular_step
+
+        self.linear_velocity = linear
+        self.angular_velocity = angular
+        self._send_velocity()
 
     def _send_velocity(self):
         """Send current velocity to robot using ComponentControl protocol."""
