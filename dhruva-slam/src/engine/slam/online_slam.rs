@@ -225,6 +225,9 @@ pub struct OnlineSlam {
 }
 
 impl OnlineSlam {
+    /// Typical scan size for pre-allocation (360° lidar at 1° resolution).
+    const TYPICAL_SCAN_POINTS: usize = 360;
+
     /// Create a new online SLAM instance.
     pub fn new(config: OnlineSlamConfig) -> Self {
         let matcher = HybridMatcher::new(config.matcher.clone());
@@ -233,13 +236,17 @@ impl OnlineSlam {
         // - Point-to-Line ICP provides sub-cm accuracy for structured environments
         let submap_matcher = HybridP2LMatcher::new(HybridP2LMatcherConfig::default());
 
+        // Pre-allocate scan buffers to avoid reallocation during hot path
         Self {
             keyframes: KeyframeManager::new(config.keyframe.clone()),
             submaps: SubmapManager::new(config.submap.clone()),
             matcher,
             submap_matcher,
             global_map: None,
-            scan_buffers: [PointCloud2D::new(), PointCloud2D::new()],
+            scan_buffers: [
+                PointCloud2D::with_capacity(Self::TYPICAL_SCAN_POINTS),
+                PointCloud2D::with_capacity(Self::TYPICAL_SCAN_POINTS),
+            ],
             current_scan_idx: 0,
             has_previous_scan: false,
             current_pose: Pose2D::identity(),
@@ -473,14 +480,19 @@ impl SlamEngine for OnlineSlam {
         timing.scan_matching_us = match_start.elapsed().as_micros() as u64;
 
         // Update scan match stats for diagnostics
+        // Use static strings to avoid allocation in hot path
+        const METHOD_SUBMAP_ICP: &str = "submap_icp";
+        const METHOD_HYBRID: &str = "hybrid";
+        const METHOD_NONE: &str = "none";
+
         if let Some(ref mr) = match_result {
             self.last_scan_match_stats = ScanMatchStats {
                 method: if self.config.use_submap_matching {
-                    "submap_icp"
+                    METHOD_SUBMAP_ICP
                 } else {
-                    "hybrid"
+                    METHOD_HYBRID
                 }
-                .to_string(),
+                .into(),
                 iterations: mr.iterations,
                 score: mr.score,
                 mse: mr.mse,
@@ -490,7 +502,7 @@ impl SlamEngine for OnlineSlam {
             };
         } else {
             self.last_scan_match_stats = ScanMatchStats {
-                method: "none".to_string(),
+                method: METHOD_NONE.into(),
                 ..Default::default()
             };
         }
@@ -552,11 +564,16 @@ impl SlamEngine for OnlineSlam {
 
         // Store scan for next iteration using double-buffer swap
         // Copy into the current buffer slot, then swap indices
-        self.scan_buffers[self.current_scan_idx].points.clear();
-        self.scan_buffers[self.current_scan_idx]
-            .points
-            .extend_from_slice(&scan.points);
-        self.scan_buffers[self.current_scan_idx].intensities = scan.intensities.clone();
+        // Reserve capacity first to avoid reallocation during extend
+        let buffer = &mut self.scan_buffers[self.current_scan_idx];
+        buffer.points.clear();
+        if buffer.points.capacity() < scan.points.len() {
+            buffer
+                .points
+                .reserve(scan.points.len() - buffer.points.capacity());
+        }
+        buffer.points.extend_from_slice(&scan.points);
+        buffer.intensities = scan.intensities.clone();
         self.current_scan_idx = 1 - self.current_scan_idx;
         self.has_previous_scan = true;
 

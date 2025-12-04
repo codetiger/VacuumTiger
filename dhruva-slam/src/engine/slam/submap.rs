@@ -63,6 +63,14 @@ pub struct Submap {
     /// Cached point cloud representation of occupied cells.
     /// Invalidated when grid changes, rebuilt on demand.
     cached_pointcloud: Option<PointCloud2D>,
+
+    /// Last known grid dimensions when cache was built.
+    /// Used to detect when full rebuild is needed vs incremental update.
+    cached_grid_dimensions: (usize, usize),
+
+    /// Scan count when cache was last built.
+    /// Used to detect if cache is stale.
+    cached_at_scan_count: u32,
 }
 
 impl Submap {
@@ -85,6 +93,8 @@ impl Submap {
             end_time_us: timestamp_us,
             integrator: MapIntegrator::new(integrator_config),
             cached_pointcloud: None,
+            cached_grid_dimensions: (0, 0),
+            cached_at_scan_count: 0,
         }
     }
 
@@ -94,9 +104,11 @@ impl Submap {
     }
 
     /// Get mutable grid (only valid while active).
+    ///
+    /// Note: The cached pointcloud is automatically invalidated on the next
+    /// `as_pointcloud()` call by checking the scan count.
     pub fn grid_mut(&mut self) -> Option<&mut OccupancyGrid> {
         if self.state == SubmapState::Active {
-            self.cached_pointcloud = None; // Invalidate cache
             Some(&mut self.grid)
         } else {
             None
@@ -106,14 +118,29 @@ impl Submap {
     /// Get the cached point cloud representation of occupied cells.
     ///
     /// This is lazily built from the occupancy grid and cached for reuse.
-    /// The cache is invalidated when the grid is modified.
+    /// The cache is rebuilt when the grid changes (detected via scan count).
+    /// For finished submaps, the cache is never rebuilt after initial creation.
     pub fn as_pointcloud(&mut self) -> &PointCloud2D {
         use crate::algorithms::mapping::CellState;
         use crate::core::types::Point2D;
 
-        if self.cached_pointcloud.is_none() {
-            let mut cloud = PointCloud2D::new();
-            let (width, height) = self.grid.dimensions();
+        let current_dims = self.grid.dimensions();
+        let needs_rebuild = self.cached_pointcloud.is_none()
+            || (self.state == SubmapState::Active
+                && (self.cached_at_scan_count != self.num_scans
+                    || self.cached_grid_dimensions != current_dims));
+
+        if needs_rebuild {
+            // Estimate capacity based on typical occupancy (~10% of cells are occupied)
+            let (width, height) = current_dims;
+            let estimated_occupied = (width * height) / 10;
+
+            // Reuse existing buffer if available, otherwise create new one
+            let mut cloud = self
+                .cached_pointcloud
+                .take()
+                .unwrap_or_else(|| PointCloud2D::with_capacity(estimated_occupied));
+            cloud.points.clear();
 
             let mut idx = 0u32;
             for cy in 0..height {
@@ -128,7 +155,10 @@ impl Submap {
                     }
                 }
             }
+
             self.cached_pointcloud = Some(cloud);
+            self.cached_grid_dimensions = current_dims;
+            self.cached_at_scan_count = self.num_scans;
         }
 
         self.cached_pointcloud.as_ref().unwrap()
@@ -371,24 +401,29 @@ impl SubmapManager {
         }
         self.scans_in_current += 1;
 
-        // Integrate into overlap submaps
-        let mut finished_overlaps = Vec::new();
+        // Integrate into overlap submaps and track which ones are finished
+        // Use stack array to avoid heap allocation (max_active_submaps is typically 2)
+        const MAX_FINISHED: usize = 4;
+        let mut finished_overlaps: [u64; MAX_FINISHED] = [0; MAX_FINISHED];
+        let mut finished_count = 0;
+
         for (overlap_id, remaining) in &mut self.overlap_submaps {
             if let Some(submap) = self.submaps.iter_mut().find(|s| s.id == *overlap_id) {
                 submap.integrate_scan(scan, global_pose, timestamp_us);
             }
             *remaining -= 1;
-            if *remaining == 0 {
-                finished_overlaps.push(*overlap_id);
+            if *remaining == 0 && finished_count < MAX_FINISHED {
+                finished_overlaps[finished_count] = *overlap_id;
+                finished_count += 1;
             }
         }
 
         // Finish overlapping submaps
-        for id in finished_overlaps {
-            if let Some(submap) = self.submaps.iter_mut().find(|s| s.id == id) {
+        for id in &finished_overlaps[..finished_count] {
+            if let Some(submap) = self.submaps.iter_mut().find(|s| s.id == *id) {
                 submap.finish();
             }
-            self.overlap_submaps.retain(|(i, _)| *i != id);
+            self.overlap_submaps.retain(|(i, _)| *i != *id);
         }
 
         // Check if we need to create a new submap

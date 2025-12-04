@@ -117,15 +117,23 @@ impl Default for IcpConfig {
 ///
 /// Uses a k-d tree for efficient nearest neighbor queries.
 /// Suitable for small to medium initial pose errors (<20cm, <10°).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PointToPointIcp {
     config: IcpConfig,
+    /// Preallocated buffer for correspondences (reused across iterations).
+    correspondence_buffer: Vec<(usize, usize, f32)>,
 }
 
 impl PointToPointIcp {
+    /// Typical scan size for pre-allocation.
+    const TYPICAL_SCAN_POINTS: usize = 360;
+
     /// Create a new ICP matcher with the given configuration.
     pub fn new(config: IcpConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            correspondence_buffer: Vec::with_capacity(Self::TYPICAL_SCAN_POINTS),
+        }
     }
 
     /// Get the current configuration.
@@ -144,16 +152,16 @@ impl PointToPointIcp {
 
     /// Find correspondences between source and target using k-d tree.
     ///
-    /// Returns vector of (source_idx, target_idx, squared_distance).
-    fn find_correspondences(
-        &self,
+    /// Populates the internal correspondence buffer with (source_idx, target_idx, squared_distance).
+    fn find_correspondences_into(
+        &mut self,
         source: &PointCloud2D,
         _target: &PointCloud2D,
         target_tree: &KdTree<f32, 2>,
         transform: &Pose2D,
-    ) -> Vec<(usize, usize, f32)> {
+    ) {
         let max_dist_sq = self.config.max_correspondence_distance.powi(2);
-        let mut correspondences = Vec::with_capacity(source.len());
+        self.correspondence_buffer.clear();
 
         let (sin_t, cos_t) = transform.theta.sin_cos();
 
@@ -167,22 +175,23 @@ impl PointToPointIcp {
             let dist_sq = nearest.distance;
 
             if dist_sq <= max_dist_sq {
-                correspondences.push((i, nearest.item as usize, dist_sq));
+                self.correspondence_buffer
+                    .push((i, nearest.item as usize, dist_sq));
             }
         }
 
         // Apply outlier rejection
-        if self.config.outlier_ratio > 0.0 && !correspondences.is_empty() {
+        if self.config.outlier_ratio > 0.0 && !self.correspondence_buffer.is_empty() {
             // Sort by distance
-            correspondences.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+            self.correspondence_buffer
+                .sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
 
             // Keep only the best correspondences
-            let keep_count =
-                ((1.0 - self.config.outlier_ratio) * correspondences.len() as f32) as usize;
-            correspondences.truncate(keep_count.max(self.config.min_correspondences));
+            let keep_count = ((1.0 - self.config.outlier_ratio)
+                * self.correspondence_buffer.len() as f32) as usize;
+            self.correspondence_buffer
+                .truncate(keep_count.max(self.config.min_correspondences));
         }
-
-        correspondences
     }
 
     /// Compute optimal rigid transform using SVD-based method.
@@ -332,24 +341,32 @@ impl ScanMatcher for PointToPointIcp {
         for iter in 0..self.config.max_iterations {
             iterations = iter + 1;
 
-            // Find correspondences
-            let correspondences =
-                self.find_correspondences(source, target, &target_tree, &current_transform);
+            // Find correspondences (populates self.correspondence_buffer)
+            self.find_correspondences_into(source, target, &target_tree, &current_transform);
 
             // Check minimum correspondences
-            if correspondences.len() < self.config.min_correspondences {
+            if self.correspondence_buffer.len() < self.config.min_correspondences {
                 return ScanMatchResult::failed();
             }
 
             // Compute incremental transform
-            let delta =
-                self.compute_transform(source, target, &correspondences, &current_transform);
+            let delta = self.compute_transform(
+                source,
+                target,
+                &self.correspondence_buffer,
+                &current_transform,
+            );
 
             // Apply delta
             current_transform = current_transform.compose(&delta);
 
             // Compute MSE
-            let mse = self.compute_mse(source, target, &correspondences, &current_transform);
+            let mse = self.compute_mse(
+                source,
+                target,
+                &self.correspondence_buffer,
+                &current_transform,
+            );
 
             // Check convergence
             let translation_change = (delta.x * delta.x + delta.y * delta.y).sqrt();
@@ -372,10 +389,14 @@ impl ScanMatcher for PointToPointIcp {
             last_mse = mse;
         }
 
-        // Max iterations reached
-        let correspondences =
-            self.find_correspondences(source, target, &target_tree, &current_transform);
-        let final_mse = self.compute_mse(source, target, &correspondences, &current_transform);
+        // Max iterations reached - compute final MSE
+        self.find_correspondences_into(source, target, &target_tree, &current_transform);
+        let final_mse = self.compute_mse(
+            source,
+            target,
+            &self.correspondence_buffer,
+            &current_transform,
+        );
         let score = self.mse_to_score(final_mse);
 
         // Consider it converged if MSE is reasonable
