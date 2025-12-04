@@ -1,8 +1,8 @@
 //! LiDAR scan and point cloud types.
 
 use super::pose::{Point2D, Pose2D};
+use crate::core::simd::Float4;
 use serde::{Deserialize, Serialize};
-use wide::f32x4;
 
 /// Raw LiDAR scan in polar coordinates.
 ///
@@ -314,16 +314,16 @@ impl PointCloud2D {
         let n = self.len();
         let chunks = n / 4;
 
-        let mut min_x = f32x4::splat(f32::MAX);
-        let mut min_y = f32x4::splat(f32::MAX);
-        let mut max_x = f32x4::splat(f32::MIN);
-        let mut max_y = f32x4::splat(f32::MIN);
+        let mut min_x = Float4::splat(f32::MAX);
+        let mut min_y = Float4::splat(f32::MAX);
+        let mut max_x = Float4::splat(f32::MIN);
+        let mut max_y = Float4::splat(f32::MIN);
 
         // Process 4 points at a time with SIMD
         for i in 0..chunks {
             let base = i * 4;
-            let xs = f32x4::new(self.xs[base..base + 4].try_into().unwrap());
-            let ys = f32x4::new(self.ys[base..base + 4].try_into().unwrap());
+            let xs = Float4::new(self.xs[base..base + 4].try_into().unwrap());
+            let ys = Float4::new(self.ys[base..base + 4].try_into().unwrap());
             min_x = min_x.min(xs);
             min_y = min_y.min(ys);
             max_x = max_x.max(xs);
@@ -377,14 +377,14 @@ impl PointCloud2D {
         let n = self.len();
         let chunks = n / 4;
 
-        let mut sum_x = f32x4::splat(0.0);
-        let mut sum_y = f32x4::splat(0.0);
+        let mut sum_x = Float4::splat(0.0);
+        let mut sum_y = Float4::splat(0.0);
 
         // Process 4 points at a time with SIMD
         for i in 0..chunks {
             let base = i * 4;
-            let xs = f32x4::new(self.xs[base..base + 4].try_into().unwrap());
-            let ys = f32x4::new(self.ys[base..base + 4].try_into().unwrap());
+            let xs = Float4::new(self.xs[base..base + 4].try_into().unwrap());
+            let ys = Float4::new(self.ys[base..base + 4].try_into().unwrap());
             sum_x += xs;
             sum_y += ys;
         }
@@ -413,18 +413,18 @@ impl PointCloud2D {
         result.ys.resize(n, 0.0);
 
         let (sin_t, cos_t) = pose.theta.sin_cos();
-        let sin_v = f32x4::splat(sin_t);
-        let cos_v = f32x4::splat(cos_t);
-        let tx_v = f32x4::splat(pose.x);
-        let ty_v = f32x4::splat(pose.y);
+        let sin_v = Float4::splat(sin_t);
+        let cos_v = Float4::splat(cos_t);
+        let tx_v = Float4::splat(pose.x);
+        let ty_v = Float4::splat(pose.y);
 
         let chunks = n / 4;
 
         // Process 4 points at a time with SIMD
         for i in 0..chunks {
             let base = i * 4;
-            let xs = f32x4::new(self.xs[base..base + 4].try_into().unwrap());
-            let ys = f32x4::new(self.ys[base..base + 4].try_into().unwrap());
+            let xs = Float4::new(self.xs[base..base + 4].try_into().unwrap());
+            let ys = Float4::new(self.ys[base..base + 4].try_into().unwrap());
 
             // x' = tx + x*cos - y*sin
             // y' = ty + x*sin + y*cos
@@ -450,18 +450,18 @@ impl PointCloud2D {
     pub fn transform_mut(&mut self, pose: &Pose2D) {
         let n = self.len();
         let (sin_t, cos_t) = pose.theta.sin_cos();
-        let sin_v = f32x4::splat(sin_t);
-        let cos_v = f32x4::splat(cos_t);
-        let tx_v = f32x4::splat(pose.x);
-        let ty_v = f32x4::splat(pose.y);
+        let sin_v = Float4::splat(sin_t);
+        let cos_v = Float4::splat(cos_t);
+        let tx_v = Float4::splat(pose.x);
+        let ty_v = Float4::splat(pose.y);
 
         let chunks = n / 4;
 
         // Process 4 points at a time with SIMD
         for i in 0..chunks {
             let base = i * 4;
-            let xs = f32x4::new(self.xs[base..base + 4].try_into().unwrap());
-            let ys = f32x4::new(self.ys[base..base + 4].try_into().unwrap());
+            let xs = Float4::new(self.xs[base..base + 4].try_into().unwrap());
+            let ys = Float4::new(self.ys[base..base + 4].try_into().unwrap());
 
             let new_xs = tx_v + xs * cos_v - ys * sin_v;
             let new_ys = ty_v + xs * sin_v + ys * cos_v;
@@ -488,18 +488,18 @@ impl PointCloud2D {
         result.ys.resize(n, 0.0);
 
         let (sin_t, cos_t) = pose.theta.sin_cos();
-        let sin_v = f32x4::splat(sin_t);
-        let cos_v = f32x4::splat(cos_t);
-        let px_v = f32x4::splat(pose.x);
-        let py_v = f32x4::splat(pose.y);
+        let sin_v = Float4::splat(sin_t);
+        let cos_v = Float4::splat(cos_t);
+        let px_v = Float4::splat(pose.x);
+        let py_v = Float4::splat(pose.y);
 
         let chunks = n / 4;
 
         // Process 4 points at a time with SIMD
         for i in 0..chunks {
             let base = i * 4;
-            let xs = f32x4::new(self.xs[base..base + 4].try_into().unwrap());
-            let ys = f32x4::new(self.ys[base..base + 4].try_into().unwrap());
+            let xs = Float4::new(self.xs[base..base + 4].try_into().unwrap());
+            let ys = Float4::new(self.ys[base..base + 4].try_into().unwrap());
 
             let dx = xs - px_v;
             let dy = ys - py_v;

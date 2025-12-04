@@ -12,7 +12,7 @@ toml = "0.8"
 prost = "0.13"
 
 # Serial port
-serialport = "4.2"
+serialport = "4.8"
 
 # Logging
 log = "0.4"
@@ -25,7 +25,7 @@ crossbeam-queue = "0.3"
 thiserror = "1.0"
 
 # Signal handling
-ctrlc = "3.4"
+ctrlc = "3.5"
 
 [build-dependencies]
 prost-build = "0.13"

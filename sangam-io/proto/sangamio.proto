@@ -102,7 +102,7 @@ message ComponentAction {
   // - vacuum/brush: "speed" (U8 0-100%)
   // - led: "state" (U8 0-18)
   // - lidar: "pwm" (U8 0-100%)
-  // Note: Protobuf encodes U8 values as U32 - daemon handles both types.
+  //  Note: Protobuf encodes U8 values as U32 - daemon handles both types.
   map<string, SensorValue> config = 2;
 
   enum ActionType {

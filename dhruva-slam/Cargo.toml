@@ -7,12 +7,11 @@ license = "MIT"
 
 [dependencies]
 base64 = "0.22"
-wide = "1.0.2"  # SIMD types for vectorized operations
-ctrlc = "3.4"
+ctrlc = "3.5"
 env_logger = "0.11"
 kiddo = "4.2"  # K-d tree for nearest neighbor queries
 log = "0.4"
-postcard = { version = "1.0", features = ["alloc"] }  # For bag file format (internal)
+postcard = { version = "1.1", features = ["alloc"] }  # For bag file format (internal)
 prost = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
@@ -25,7 +24,7 @@ prost-build = "0.13"
 approx = "0.5"
 criterion = { version = "0.5", features = ["html_reports"] }
 serde_json = "1.0"  # For tests only
-tempfile = "3.14"
+tempfile = "3.23"
 
 [[bin]]
 name = "dhruva-slam-node"

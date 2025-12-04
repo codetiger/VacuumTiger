@@ -7,6 +7,8 @@
 //!
 //! - [`types`]: Core data types (poses, scans, odometry)
 //! - [`math`]: Mathematical primitives (angle normalization, interpolation)
+//! - [`simd`]: SIMD vector types for optimized numerical computations
 
 pub mod math;
+pub mod simd;
 pub mod types;

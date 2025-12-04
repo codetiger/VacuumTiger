@@ -17,9 +17,8 @@
 //! - Recovery from tracking loss
 //! - Global localization in known map
 
-use wide::f32x4;
-
 use super::{ScanMatchResult, ScanMatcher};
+use crate::core::simd::Float4;
 use crate::core::types::{PointCloud2D, Pose2D};
 
 /// Configuration for correlative scan matcher.
@@ -279,8 +278,8 @@ impl CorrelativeMatcher {
         self.transformed_ys.resize(n, 0.0);
 
         let (sin_t, cos_t) = theta.sin_cos();
-        let sin_v = f32x4::splat(sin_t);
-        let cos_v = f32x4::splat(cos_t);
+        let sin_v = Float4::splat(sin_t);
+        let cos_v = Float4::splat(cos_t);
 
         let chunks = n / 4;
 
@@ -289,8 +288,8 @@ impl CorrelativeMatcher {
             let base = i * 4;
 
             // Load 4 x and y coordinates
-            let xs = f32x4::new(source.xs[base..base + 4].try_into().unwrap());
-            let ys = f32x4::new(source.ys[base..base + 4].try_into().unwrap());
+            let xs = Float4::new(source.xs[base..base + 4].try_into().unwrap());
+            let ys = Float4::new(source.ys[base..base + 4].try_into().unwrap());
 
             // Rotate: x' = x*cos - y*sin, y' = x*sin + y*cos
             let new_xs = xs * cos_v - ys * sin_v;
@@ -332,11 +331,11 @@ impl CorrelativeMatcher {
         let inv_res = 1.0 / params.resolution;
 
         // SIMD setup for index calculation
-        let tx_v = f32x4::splat(tx);
-        let ty_v = f32x4::splat(ty);
-        let ox_v = f32x4::splat(params.origin_x);
-        let oy_v = f32x4::splat(params.origin_y);
-        let inv_res_v = f32x4::splat(inv_res);
+        let tx_v = Float4::splat(tx);
+        let ty_v = Float4::splat(ty);
+        let ox_v = Float4::splat(params.origin_x);
+        let oy_v = Float4::splat(params.origin_y);
+        let inv_res_v = Float4::splat(inv_res);
 
         let chunks = n / 4;
 
@@ -345,8 +344,8 @@ impl CorrelativeMatcher {
             let base = i * 4;
 
             // Load pre-rotated coordinates
-            let rxs = f32x4::new(self.transformed_xs[base..base + 4].try_into().unwrap());
-            let rys = f32x4::new(self.transformed_ys[base..base + 4].try_into().unwrap());
+            let rxs = Float4::new(self.transformed_xs[base..base + 4].try_into().unwrap());
+            let rys = Float4::new(self.transformed_ys[base..base + 4].try_into().unwrap());
 
             // Apply translation and compute grid indices
             let world_xs = rxs + tx_v;
