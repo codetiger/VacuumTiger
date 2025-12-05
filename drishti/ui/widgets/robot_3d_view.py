@@ -11,6 +11,7 @@ from PyQt5.QtGui import QPainter, QColor, QLinearGradient
 
 import pyqtgraph.opengl as gl
 
+from .lidar_scan_overlay import LidarScanOverlay
 from .robot_3d_geometry import (
     create_cylinder_wireframe,
     create_arc_wireframe,
@@ -288,6 +289,9 @@ class Robot3DView(QWidget):
         # Button counter overlay (top-right, hidden by default)
         self._create_button_overlay()
 
+        # Lidar scan overlay (top-right, below button overlay)
+        self._create_lidar_overlay()
+
     def _create_view_overlay(self):
         """Create floating view control buttons."""
         self.view_overlay = QWidget(self.gl_widget)
@@ -464,6 +468,12 @@ class Robot3DView(QWidget):
         home_layout.addWidget(self.home_counter_label)
         layout.addLayout(home_layout)
 
+    def _create_lidar_overlay(self):
+        """Create lidar scan visualization overlay."""
+        self.lidar_overlay = LidarScanOverlay(self.gl_widget)
+        self.lidar_overlay.hide()  # Hidden until lidar is enabled
+        # Position will be set in resizeEvent
+
     def resizeEvent(self, event):
         """Handle resize to position overlays."""
         super().resizeEvent(event)
@@ -480,6 +490,12 @@ class Robot3DView(QWidget):
         if hasattr(self, 'button_overlay'):
             self.button_overlay.move(
                 self.width() - self.button_overlay.width() - 10,
+                10
+            )
+        # Position lidar overlay at top-right
+        if hasattr(self, 'lidar_overlay'):
+            self.lidar_overlay.move(
+                self.width() - self.lidar_overlay.width() - 10,
                 10
             )
 
@@ -1006,7 +1022,7 @@ class Robot3DView(QWidget):
             self.gl_items['fan'].setData(color=color)
 
     def set_lidar_enabled(self, enabled: bool):
-        """Set lidar enabled state for spinner animation.
+        """Set lidar enabled state for spinner animation and overlay visibility.
 
         Args:
             enabled: True to spin the lidar, False to stop
@@ -1015,6 +1031,21 @@ class Robot3DView(QWidget):
         if 'lidar_spinner' in self.gl_items:
             color = COLORS['lidar_spinner_active'] if enabled else COLORS['lidar_spinner']
             self.gl_items['lidar_spinner'].setData(color=color)
+        # Show/hide lidar scan overlay based on enabled state
+        if hasattr(self, 'lidar_overlay'):
+            if enabled:
+                self.lidar_overlay.show()
+            else:
+                self.lidar_overlay.hide()
+
+    def update_lidar_scan(self, points: list):
+        """Update lidar scan overlay with new point data.
+
+        Args:
+            points: List of (angle_rad, distance_m, quality) tuples
+        """
+        if hasattr(self, 'lidar_overlay'):
+            self.lidar_overlay.update_scan(points)
 
     def update_orientation(self, gyro_x: int, gyro_y: int, gyro_z: int,
                            tilt_x: int, tilt_y: int, tilt_z: int):

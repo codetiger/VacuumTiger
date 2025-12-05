@@ -280,6 +280,11 @@ class MainWindow(QMainWindow):
         # Update control panel with sensor data
         self.control_panel.update_sensors(data)
 
+        # Forward lidar scan data to 3D view overlay
+        scan_data = data.get('scan')
+        if scan_data:
+            self.robot_3d_view.update_lidar_scan(scan_data)
+
         # Forward IMU data to 3D view for orientation
         imu_keys = ['gyro_x', 'gyro_y', 'gyro_z', 'tilt_x', 'tilt_y', 'tilt_z']
         if all(k in data for k in imu_keys):
