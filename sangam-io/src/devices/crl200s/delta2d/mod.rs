@@ -41,6 +41,14 @@
 //! - Prevents false scan boundaries from angle jitter or bad readings
 //! - At 5Hz scan rate with ~360 points/scan, valid scans have >300 points
 //! - 50-point threshold allows partial scans during startup
+//!
+//! # Robustness Features
+//!
+//! This driver includes several robustness improvements:
+//!
+//! 1. **Serial buffer flush on startup**: Clears stale data from previous sessions
+//! 2. **Scan accumulation timeout**: Publishes partial scans if no angle wrap for 2 seconds
+//! 3. **Diagnostic logging**: Tracks bytes discarded and CRC failures for debugging
 
 pub mod protocol;
 
@@ -51,7 +59,7 @@ use serialport::SerialPort;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const LIDAR_BAUD_RATE: u32 = 115200;
 const LIDAR_READ_TIMEOUT_MS: u64 = 100;
@@ -59,6 +67,10 @@ const LIDAR_READ_TIMEOUT_MS: u64 = 100;
 /// Minimum points required before accepting a scan as complete
 /// This prevents false scan boundaries from angle noise or single bad readings
 const MIN_SCAN_POINTS: usize = 50;
+
+/// Maximum time to wait for a complete scan before publishing partial results
+/// If no angle wrap occurs within this time, publish whatever we have
+const SCAN_TIMEOUT_SECS: f32 = 2.0;
 
 /// Delta-2D lidar driver
 pub struct Delta2DDriver {
@@ -89,6 +101,14 @@ impl Delta2DDriver {
             .open()
             .map_err(Error::Serial)?;
 
+        // Flush serial buffer to clear stale data from previous sessions
+        // This prevents processing old packets that may have accumulated
+        if let Err(e) = port.clear(serialport::ClearBuffer::Input) {
+            log::warn!("Failed to clear lidar serial input buffer: {}", e);
+        } else {
+            log::debug!("Cleared lidar serial input buffer");
+        }
+
         let shutdown = Arc::clone(&self.shutdown);
         let scan_count = Arc::clone(&self.scan_count);
         let error_count = Arc::clone(&self.error_count);
@@ -115,50 +135,124 @@ impl Delta2DDriver {
         error_count: Arc<AtomicU64>,
     ) {
         let mut reader = Delta2DPacketReader::new();
-        let mut accumulated_points: Vec<(f32, f32, u8)> = Vec::with_capacity(360);
+        let mut accumulated_points: Vec<(f32, f32, u8)> = Vec::with_capacity(400);
         let mut last_angle: f32 = 0.0;
+        let mut last_scan_time = Instant::now();
+        let mut last_diagnostic_time = Instant::now();
+
+        // Clear reader buffer on startup
+        reader.clear();
 
         while !shutdown.load(Ordering::Relaxed) {
-            match reader.read_scan(&mut port) {
-                Ok(Some(scan)) => {
-                    let count = scan_count.fetch_add(1, Ordering::Relaxed) + 1;
+            // Step 1: Read bytes from serial port into buffer
+            match reader.read_bytes(&mut port) {
+                Ok(_bytes_read) => {
+                    // Step 2: Drain ALL complete packets from buffer
+                    loop {
+                        match reader.parse_next() {
+                            Ok(Some(scan)) => {
+                                let count = scan_count.fetch_add(1, Ordering::Relaxed) + 1;
 
-                    // Accumulate points for a complete 360° scan
-                    // Detect scan completion when angle wraps around (359° → 1°)
-                    for point in &scan.points {
-                        if point.angle < last_angle && accumulated_points.len() > MIN_SCAN_POINTS {
-                            // Angle wrapped around 360° - publish complete scan
-                            Self::publish_scan(&sensor_data, &accumulated_points);
-                            accumulated_points.clear();
+                                // Accumulate points for a complete 360° scan
+                                // Detect scan completion when angle wraps around (e.g., 350° → 10°)
+                                // Only check the FIRST point of each packet against last_angle
+                                // to avoid false triggers from angle ordering within a packet
+                                if let Some(first_point) = scan.points.first() {
+                                    // Detect wrap: current angle is much smaller than last angle
+                                    // Use 90° (π/2 rad) threshold to catch wraps while avoiding noise
+                                    let wrap_threshold = std::f32::consts::FRAC_PI_2; // 90 degrees
+                                    if last_angle > wrap_threshold * 3.0  // last was > 270°
+                                        && first_point.angle < wrap_threshold  // current < 90°
+                                        && accumulated_points.len() > MIN_SCAN_POINTS
+                                    {
+                                        // Angle wrapped around 360° - publish complete scan
+                                        log::debug!(
+                                            "Scan complete: {} points, wrap {:.1}° → {:.1}°",
+                                            accumulated_points.len(),
+                                            last_angle.to_degrees(),
+                                            first_point.angle.to_degrees()
+                                        );
+                                        Self::publish_scan(&sensor_data, &accumulated_points);
+                                        accumulated_points.clear();
+                                        last_scan_time = Instant::now();
+                                    }
+                                }
+
+                                // Add all points from this packet
+                                for point in &scan.points {
+                                    accumulated_points.push((
+                                        point.angle,
+                                        point.distance,
+                                        point.quality,
+                                    ));
+                                    last_angle = point.angle;
+                                }
+
+                                // Check for scan timeout - if no angle wrap for too long,
+                                // publish partial scan to avoid infinite accumulation
+                                let elapsed = last_scan_time.elapsed().as_secs_f32();
+                                if elapsed > SCAN_TIMEOUT_SECS
+                                    && accumulated_points.len() > MIN_SCAN_POINTS
+                                {
+                                    log::warn!(
+                                        "Lidar scan timeout ({:.1}s), publishing partial scan with {} points",
+                                        elapsed,
+                                        accumulated_points.len()
+                                    );
+                                    Self::publish_scan(&sensor_data, &accumulated_points);
+                                    accumulated_points.clear();
+                                    last_scan_time = Instant::now();
+                                }
+
+                                // Log statistics periodically
+                                if count % 100 == 0 {
+                                    log::debug!(
+                                        "Lidar: {} packets, {} points accumulated",
+                                        count,
+                                        accumulated_points.len()
+                                    );
+                                }
+
+                                // Log diagnostics every 10 seconds
+                                if last_diagnostic_time.elapsed().as_secs() >= 10 {
+                                    let errors = error_count.load(Ordering::Relaxed);
+                                    let (bytes_discarded, crc_failures) = reader.diagnostics();
+                                    log::info!(
+                                        "Lidar stats: {} packets, {} errors, {} bytes discarded, {} CRC failures",
+                                        count,
+                                        errors,
+                                        bytes_discarded,
+                                        crc_failures
+                                    );
+                                    last_diagnostic_time = Instant::now();
+                                }
+                            }
+                            Ok(None) => {
+                                // No more complete packets in buffer - break inner loop
+                                break;
+                            }
+                            Err(e) => {
+                                error_count.fetch_add(1, Ordering::Relaxed);
+                                log::error!("Lidar parse error: {}", e);
+                                break;
+                            }
                         }
-                        accumulated_points.push((point.angle, point.distance, point.quality));
-                        last_angle = point.angle;
                     }
 
-                    // Log statistics
-                    if count % 100 == 0 {
-                        log::debug!(
-                            "Lidar: {} scans, {} points accumulated",
-                            count,
+                    // Check for timeout on accumulated points (after draining all packets)
+                    let elapsed = last_scan_time.elapsed().as_secs_f32();
+                    if elapsed > SCAN_TIMEOUT_SECS && accumulated_points.len() > MIN_SCAN_POINTS {
+                        log::warn!(
+                            "Lidar scan timeout during idle ({:.1}s), publishing {} points",
+                            elapsed,
                             accumulated_points.len()
                         );
+                        Self::publish_scan(&sensor_data, &accumulated_points);
+                        accumulated_points.clear();
+                        last_scan_time = Instant::now();
                     }
-                    if count % 1000 == 0 {
-                        let errors = error_count.load(Ordering::Relaxed);
-                        let error_rate = if count > 0 {
-                            (errors as f64 / count as f64) * 100.0
-                        } else {
-                            0.0
-                        };
-                        log::info!(
-                            "Lidar stats: {} scans, {:.2}% error rate",
-                            count,
-                            error_rate
-                        );
-                    }
-                }
-                Ok(None) => {
-                    // No scan yet
+
+                    // Small sleep to avoid busy-waiting when no data available
                     thread::sleep(Duration::from_millis(1));
                 }
                 Err(e) => {
