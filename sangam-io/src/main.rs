@@ -25,10 +25,10 @@ fn main() -> Result<()> {
     // Get config path from args or default
     let config_path = env::args()
         .nth(1)
-        .unwrap_or_else(|| "hardware.json".to_string());
+        .unwrap_or_else(|| "/etc/sangamio.toml".to_string());
 
     // Load configuration
-    log::info!("Loading config from: {}", config_path);
+    log::info!("Using config: {}", config_path);
     let config = Config::load(&config_path)?;
 
     log::info!(
