@@ -40,9 +40,15 @@ fn main() -> Result<()> {
     // Create device driver
     let mut driver = create_device(&config)?;
 
-    // Initialize driver and get sensor data groups
-    let sensor_data = driver.initialize()?;
-    log::info!("Initialized {} sensor groups", sensor_data.len());
+    // Initialize driver and get sensor data + streaming channels
+    let init_result = driver.initialize()?;
+    let sensor_data = init_result.sensor_data;
+    let stream_receivers = init_result.stream_receivers;
+    log::info!(
+        "Initialized {} sensor groups ({} with streaming channels)",
+        sensor_data.len(),
+        stream_receivers.len()
+    );
 
     let driver = Arc::new(Mutex::new(driver));
 
@@ -77,6 +83,7 @@ fn main() -> Result<()> {
 
                 // Clone resources for threads
                 let sensor_data_clone = sensor_data.clone();
+                let stream_receivers_clone = stream_receivers.clone();
                 let driver_clone = Arc::clone(&driver);
 
                 // Create serializers for each thread
@@ -95,8 +102,12 @@ fn main() -> Result<()> {
                 let _pub_handle = thread::Builder::new()
                     .name("tcp-publisher".to_string())
                     .spawn(move || {
-                        let publisher =
-                            TcpPublisher::new(pub_serializer, sensor_data_clone, pub_running);
+                        let publisher = TcpPublisher::new(
+                            pub_serializer,
+                            sensor_data_clone,
+                            stream_receivers_clone,
+                            pub_running,
+                        );
                         if let Err(e) = publisher.run(pub_stream) {
                             log::error!("Publisher error: {}", e);
                         }

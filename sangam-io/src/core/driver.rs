@@ -3,10 +3,19 @@
 //! To add a new device, implement this trait and register it in [`crate::devices::create_device`].
 //! See [`crate::devices::crl200s::CRL200SDriver`] for a complete implementation example.
 
-use crate::core::types::{Command, SensorGroupData};
+use crate::core::types::{Command, SensorGroupData, StreamReceiver};
 use crate::error::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+/// Result of driver initialization containing sensor data and optional streaming channels.
+pub struct DriverInitResult {
+    /// Shared sensor data for polling-based access (for low-rate sensors like lidar)
+    pub sensor_data: HashMap<String, Arc<Mutex<SensorGroupData>>>,
+    /// Optional streaming channels for high-rate sensors (e.g., 500Hz GD32 status)
+    /// Key is group_id (e.g., "sensor_status")
+    pub stream_receivers: HashMap<String, StreamReceiver>,
+}
 
 /// Hardware abstraction trait for robot devices.
 ///
@@ -52,9 +61,13 @@ use std::sync::{Arc, Mutex};
 pub trait DeviceDriver: Send {
     /// Initialize hardware and start background threads.
     ///
-    /// Returns sensor groups keyed by group ID (e.g., "sensor_status", "lidar").
-    /// The TCP publisher uses these to stream sensor data to clients.
-    fn initialize(&mut self) -> Result<HashMap<String, Arc<Mutex<SensorGroupData>>>>;
+    /// Returns [`DriverInitResult`] containing:
+    /// - `sensor_data`: Sensor groups keyed by group ID (e.g., "sensor_status", "lidar")
+    /// - `stream_receivers`: Optional streaming channels for high-rate sensors (e.g., 500Hz)
+    ///
+    /// The TCP publisher uses sensor_data for low-rate polling and stream_receivers
+    /// for high-rate streaming without data loss.
+    fn initialize(&mut self) -> Result<DriverInitResult>;
 
     /// Process a command from TCP clients.
     ///

@@ -67,7 +67,7 @@ mod state;
 pub use state::ComponentState;
 
 // Internal imports
-use crate::core::types::{Command, SensorGroupData};
+use crate::core::types::{Command, SensorGroupData, StreamSender};
 use crate::devices::crl200s::constants::{INIT_RETRY_DELAY_MS, SERIAL_READ_TIMEOUT_MS};
 use crate::error::{Error, Result};
 use packet::{initialize_packet, TxPacket};
@@ -141,10 +141,16 @@ impl GD32Driver {
     }
 
     /// Start heartbeat and reader threads
+    ///
+    /// # Arguments
+    /// - `sensor_data`: Shared mutex for latest sensor values (for polling-based access)
+    /// - `version_data`: Shared mutex for version info (one-time update)
+    /// - `stream_tx`: Optional channel sender for streaming sensor data at full 500Hz rate
     pub fn start(
         &mut self,
         sensor_data: Arc<Mutex<SensorGroupData>>,
         version_data: Option<Arc<Mutex<SensorGroupData>>>,
+        stream_tx: Option<StreamSender>,
     ) -> Result<()> {
         let shutdown = Arc::clone(&self.shutdown);
         let port = Arc::clone(&self.port);
@@ -176,7 +182,13 @@ impl GD32Driver {
             thread::Builder::new()
                 .name("gd32-reader".to_string())
                 .spawn(move || {
-                    reader::reader_loop(reader_port, reader_shutdown, sensor_data, version_data);
+                    reader::reader_loop(
+                        reader_port,
+                        reader_shutdown,
+                        sensor_data,
+                        version_data,
+                        stream_tx,
+                    );
                 })
                 .map_err(|e| Error::Other(format!("Failed to spawn reader thread: {}", e)))?,
         );

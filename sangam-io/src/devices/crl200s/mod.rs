@@ -6,7 +6,7 @@
 //!
 //! # Sensor Groups Published
 //!
-//! ## `sensor_status` (500Hz from GD32)
+//! ## `sensor_status` (~110Hz from GD32)
 //! Published on topic `sensors/sensor_status`. Contains all real-time sensor data:
 //! - **Bumpers**: `bumper_left`, `bumper_right` (Bool)
 //! - **Cliffs**: `cliff_left_side`, `cliff_left_front`, `cliff_right_front`, `cliff_right_side` (Bool)
@@ -30,8 +30,8 @@ pub mod delta2d;
 pub mod gd32;
 
 use crate::config::DeviceConfig;
-use crate::core::driver::DeviceDriver;
-use crate::core::types::{Command, SensorGroupData};
+use crate::core::driver::{DeviceDriver, DriverInitResult};
+use crate::core::types::{create_stream_channel, Command, SensorGroupData};
 use crate::error::Result;
 use delta2d::Delta2DDriver;
 use gd32::GD32Driver;
@@ -71,18 +71,23 @@ impl CRL200SDriver {
 }
 
 impl DeviceDriver for CRL200SDriver {
-    fn initialize(&mut self) -> Result<HashMap<String, Arc<Mutex<SensorGroupData>>>> {
+    fn initialize(&mut self) -> Result<DriverInitResult> {
         log::info!("Initializing CRL-200S device: {}", self.config.name);
 
         let mut sensor_data = HashMap::new();
+        let mut stream_receivers = HashMap::new();
 
-        // Create GD32 status sensor group (500Hz telemetry)
+        // Create GD32 status sensor group (~110Hz telemetry, limited by 115200 baud)
         // Contains: bumpers, cliffs, battery, encoders, IMU, buttons
         // See module docs for complete field list
         let sensor_status = SensorGroupData::new("sensor_status");
         let gd32_data = Arc::new(Mutex::new(sensor_status));
         sensor_data.insert("sensor_status".to_string(), gd32_data.clone());
-        log::info!("Created sensor group 'sensor_status' (bumpers, cliffs, IMU @ 500Hz)");
+
+        // Create streaming channel for high-rate sensor data (~110Hz)
+        let (stream_tx, stream_rx) = create_stream_channel();
+        stream_receivers.insert("sensor_status".to_string(), stream_rx);
+        log::info!("Created sensor group 'sensor_status' with streaming channel (~110Hz)");
 
         // Create GD32 version sensor group (one-time after boot)
         // Contains: version_string, version_code
@@ -107,8 +112,8 @@ impl DeviceDriver for CRL200SDriver {
         // Send initialization sequence
         gd32.initialize()?;
 
-        // Start reader and heartbeat threads
-        gd32.start(gd32_data, Some(version_data))?;
+        // Start reader and heartbeat threads with streaming channel
+        gd32.start(gd32_data, Some(version_data), Some(stream_tx))?;
 
         self.gd32 = Some(gd32);
 
@@ -120,7 +125,10 @@ impl DeviceDriver for CRL200SDriver {
         log::info!("Lidar driver started (motor OFF - use ComponentControl to enable)");
 
         log::info!("CRL-200S device initialized");
-        Ok(sensor_data)
+        Ok(DriverInitResult {
+            sensor_data,
+            stream_receivers,
+        })
     }
 
     fn send_command(&mut self, cmd: Command) -> Result<()> {

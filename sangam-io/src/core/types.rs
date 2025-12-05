@@ -5,6 +5,7 @@
 //! - [`Command`]: Inbound commands from TCP clients (mainly [`Command::ComponentControl`])
 //! - [`SensorValue`]: Typed sensor values for the `values` HashMap
 
+use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -68,6 +69,10 @@ pub struct SensorGroupSpec {
 pub struct SensorGroupData {
     pub group_id: String,
     pub timestamp_us: u64,
+    /// Monotonically increasing sequence number for each update.
+    /// Used by TCP publisher to detect new data even when timestamps
+    /// appear equal (avoids message coalescing at high rates).
+    pub sequence_number: u64,
     pub values: HashMap<String, SensorValue>,
 }
 
@@ -77,6 +82,7 @@ impl SensorGroupData {
         Self {
             group_id: group_id.to_string(),
             timestamp_us: 0,
+            sequence_number: 0,
             values: HashMap::new(),
         }
     }
@@ -91,13 +97,17 @@ impl SensorGroupData {
         }
     }
 
-    /// Update timestamp to current time
+    /// Update timestamp to current time and increment sequence number.
+    ///
+    /// The sequence number ensures each update is detected by the TCP publisher
+    /// even when timestamps appear equal (e.g., at high update rates like 500Hz).
     #[inline]
     pub fn touch(&mut self) {
         self.timestamp_us = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
             .unwrap_or(0);
+        self.sequence_number = self.sequence_number.wrapping_add(1);
     }
 }
 
@@ -176,4 +186,28 @@ pub enum Command {
     // System Lifecycle
     /// Graceful daemon shutdown
     Shutdown,
+}
+
+/// Bounded channel capacity for streaming sensor data.
+/// At 500Hz with ~150 bytes per message, 1000 messages ≈ 150KB buffer.
+/// This allows ~2 seconds of buffering before dropping messages.
+pub const STREAM_CHANNEL_CAPACITY: usize = 1000;
+
+/// Streaming channel for sensor data.
+///
+/// Used to stream sensor updates from driver threads to TCP publisher
+/// without data loss (unlike shared mutex which can lose intermediate updates).
+pub type StreamSender = Sender<SensorGroupData>;
+pub type StreamReceiver = Receiver<SensorGroupData>;
+
+/// Create a new bounded streaming channel pair.
+///
+/// Returns (sender, receiver) where:
+/// - Sender is given to the driver thread to push updates
+/// - Receiver is given to the TCP publisher to consume updates
+///
+/// The channel is bounded to prevent unbounded memory growth.
+/// If the publisher falls behind, oldest messages are dropped.
+pub fn create_stream_channel() -> (StreamSender, StreamReceiver) {
+    crossbeam_channel::bounded(STREAM_CHANNEL_CAPACITY)
 }

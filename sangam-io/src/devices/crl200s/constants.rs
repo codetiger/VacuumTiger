@@ -51,7 +51,8 @@ pub const CMD_MAIN_BOARD_RESTART: u8 = 0x9A; // Restart main board (A33 Linux sy
 pub const CMD_CHARGER_POWER: u8 = 0x9B; // Charger power control
 
 // Timing constants
-pub const SERIAL_READ_TIMEOUT_MS: u64 = 50;
+// 5ms timeout optimized for ~110Hz packet rate (limited by 115200 baud with ~100 byte packets)
+pub const SERIAL_READ_TIMEOUT_MS: u64 = 5;
 pub const INIT_RETRY_DELAY_MS: u64 = 100;
 
 // Packet sizes

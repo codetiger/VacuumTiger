@@ -11,7 +11,7 @@
 
 use super::packet::version_request_packet;
 use super::protocol::{PacketReader, RxPacket};
-use crate::core::types::{SensorGroupData, SensorValue};
+use crate::core::types::{SensorGroupData, SensorValue, StreamSender};
 use crate::devices::crl200s::constants::{
     BATTERY_VOLTAGE_MAX, BATTERY_VOLTAGE_MIN, CMD_PROTOCOL_SYNC, CMD_STATUS, CMD_VERSION,
     FLAG_BUMPER_LEFT, FLAG_BUMPER_RIGHT, FLAG_CHARGING, FLAG_CLIFF_LEFT_FRONT,
@@ -62,6 +62,7 @@ pub(super) fn reader_loop(
     shutdown: Arc<AtomicBool>,
     sensor_data: Arc<Mutex<SensorGroupData>>,
     version_data: Option<Arc<Mutex<SensorGroupData>>>,
+    stream_tx: Option<StreamSender>,
 ) {
     let mut reader = PacketReader::new();
     let mut version_requested = false;
@@ -119,20 +120,29 @@ pub(super) fn reader_loop(
 
                 // Handle sensor status data
                 if packet.cmd == CMD_STATUS && packet.payload_len() >= STATUS_PAYLOAD_MIN_SIZE {
-                    handle_status_packet(packet, &sensor_data);
+                    if let Some(cloned) = handle_status_packet(packet, &sensor_data) {
+                        // Push to streaming channel if available (for 500Hz TCP streaming)
+                        if let Some(ref tx) = stream_tx {
+                            // Use try_send to avoid blocking - drop message if channel full
+                            if tx.try_send(cloned).is_err() {
+                                log::trace!("Stream channel full, dropping message");
+                            }
+                        }
+                    }
                 }
+                // Packet received - immediately try to read next one (no sleep)
             }
             Ok(None) => {
-                // No packet yet, continue
+                // No packet available - serial port read already blocked for timeout
+                // No additional sleep needed
             }
             Err(e) => {
                 log::error!("Packet read error: {}", e);
                 thread::sleep(Duration::from_millis(10));
             }
         }
-
-        // Small sleep to prevent busy loop
-        thread::sleep(Duration::from_millis(2));
+        // Note: No sleep here! The serial port read is blocking with timeout.
+        // At 500Hz, we need to process every packet immediately.
     }
 
     log::info!("Reader thread exiting");
@@ -188,12 +198,16 @@ fn handle_version_packet(
     }
 }
 
-/// Handle status packet and update sensor data
-fn handle_status_packet(packet: &RxPacket, sensor_data: &Arc<Mutex<SensorGroupData>>) {
+/// Handle status packet and update sensor data.
+/// Returns a clone of the updated data for streaming (if lock succeeds).
+fn handle_status_packet(
+    packet: &RxPacket,
+    sensor_data: &Arc<Mutex<SensorGroupData>>,
+) -> Option<SensorGroupData> {
     // Update shared data directly (no allocations)
     let Ok(mut data) = sensor_data.lock() else {
         log::error!("Failed to lock sensor data");
-        return;
+        return None;
     };
     let payload = packet.payload();
 
@@ -357,4 +371,7 @@ fn handle_status_packet(packet: &RxPacket, sensor_data: &Arc<Mutex<SensorGroupDa
             payload[OFFSET_TILT_Z + 1],
         ])),
     );
+
+    // Clone data for streaming before releasing lock
+    Some(data.clone())
 }
