@@ -934,8 +934,12 @@ struct WheelOdometryWrapper {
 
 impl WheelOdometryWrapper {
     fn new() -> Self {
+        let config = WheelOdometryConfig {
+            ticks_per_meter: WHEEL_TICKS_PER_METER,
+            wheel_base: WHEEL_BASE,
+        };
         Self {
-            wheel: WheelOdometry::new(WheelOdometryConfig::default()),
+            wheel: WheelOdometry::new(config),
             pose: Pose2D::identity(),
         }
     }
@@ -957,9 +961,18 @@ struct ComplementaryOdometry {
 
 impl ComplementaryOdometry {
     fn new() -> Self {
+        let wheel_config = WheelOdometryConfig {
+            ticks_per_meter: WHEEL_TICKS_PER_METER,
+            wheel_base: WHEEL_BASE,
+        };
+        let comp_config = ComplementaryConfig {
+            alpha: 0.8,
+            gyro_scale: GYRO_SCALE,
+            gyro_bias_z: 0.0, // Will be estimated from data
+        };
         Self {
-            wheel: WheelOdometry::new(WheelOdometryConfig::default()),
-            filter: ComplementaryFilter::new(ComplementaryConfig::default()),
+            wheel: WheelOdometry::new(wheel_config),
+            filter: ComplementaryFilter::new(comp_config),
         }
     }
 
@@ -986,9 +999,18 @@ struct EskfOdometry {
 
 impl EskfOdometry {
     fn new() -> Self {
+        let wheel_config = WheelOdometryConfig {
+            ticks_per_meter: WHEEL_TICKS_PER_METER,
+            wheel_base: WHEEL_BASE,
+        };
+        let eskf_config = EskfConfig {
+            gyro_scale: GYRO_SCALE,
+            gyro_bias_z: 0.0, // Will be estimated from data
+            ..EskfConfig::default()
+        };
         Self {
-            wheel: WheelOdometry::new(WheelOdometryConfig::default()),
-            eskf: Eskf::new(EskfConfig::default()),
+            wheel: WheelOdometry::new(wheel_config),
+            eskf: Eskf::new(eskf_config),
         }
     }
 

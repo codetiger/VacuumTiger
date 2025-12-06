@@ -396,8 +396,30 @@ impl ScanMatcher for CorrelativeMatcher {
         // A score of 1.0 means perfect alignment (MSE ~ 0), lower scores mean worse alignment.
         // Use linear_resolution (search step size) for MSE estimate, not grid_resolution.
         if best_score >= min_score {
+            // Identity snapping: If we have a very high score and the transform is very close
+            // to the initial guess, snap to the initial guess to avoid quantization drift.
+            // This is critical for static/slow-motion scenarios where grid discretization
+            // causes small errors that accumulate over many scans.
+            let final_transform = if best_score > 0.95 {
+                let delta_x = (best_pose.x - initial_guess.x).abs();
+                let delta_y = (best_pose.y - initial_guess.y).abs();
+                let delta_theta = (best_pose.theta - initial_guess.theta).abs();
+
+                // If within 1.5x the search resolution of initial guess, snap to it
+                if delta_x < linear_resolution * 1.5
+                    && delta_y < linear_resolution * 1.5
+                    && delta_theta < angular_resolution * 1.5
+                {
+                    *initial_guess
+                } else {
+                    best_pose
+                }
+            } else {
+                best_pose
+            };
+
             ScanMatchResult {
-                transform: best_pose,
+                transform: final_transform,
                 covariance: crate::core::types::Covariance2D::diagonal(
                     linear_resolution.powi(2),
                     linear_resolution.powi(2),

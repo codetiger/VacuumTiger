@@ -536,7 +536,28 @@ impl ScanMatcher for PointToPointIcp {
             {
                 // Converged by small delta
                 let score = self.mse_to_score(mse);
-                return ScanMatchResult::success(current_transform, score, iterations, mse);
+
+                // Identity snapping: If we have a high-quality match and both the initial guess
+                // and final transform are very close to identity, snap to the initial guess.
+                // This prevents quantization drift in static/slow-motion scenarios.
+                let final_transform = if score > 0.95 {
+                    let init_mag = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt()
+                        + initial_guess.theta.abs();
+                    let curr_mag = (current_transform.x.powi(2) + current_transform.y.powi(2))
+                        .sqrt()
+                        + current_transform.theta.abs();
+
+                    // If both initial guess and result are near-identity (<1cm, <1°), snap to initial
+                    if init_mag < 0.02 && curr_mag < 0.02 {
+                        *initial_guess
+                    } else {
+                        current_transform
+                    }
+                } else {
+                    current_transform
+                };
+
+                return ScanMatchResult::success(final_transform, score, iterations, mse);
             }
 
             // Check if MSE is diverging (consecutive check)

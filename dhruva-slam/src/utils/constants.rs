@@ -12,9 +12,9 @@ pub const WHEEL_TICKS_PER_METER: f32 = 4464.0;
 /// Used for differential drive kinematics.
 pub const WHEEL_BASE: f32 = 0.233;
 
-/// Gyroscope scale factor: raw units are 0.01 deg/s.
-/// Convert to rad/s: 0.01 * (PI / 180) = 0.0001745329
-pub const GYRO_SCALE: f32 = 0.01 * (PI / 180.0);
+/// Gyroscope scale factor for CRL-200S: raw units are 0.1 deg/s.
+/// Convert to rad/s: 0.1 * (PI / 180) = 0.001745329
+pub const GYRO_SCALE: f32 = 0.1 * (PI / 180.0);
 
 /// Default lidar PWM duty cycle (60%).
 pub const DEFAULT_LIDAR_PWM: u32 = 60;

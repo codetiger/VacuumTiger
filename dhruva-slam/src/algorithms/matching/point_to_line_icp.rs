@@ -578,9 +578,30 @@ impl PointToLineIcp {
                 // Compute point-to-point MSE for fair comparison
                 let p2p_mse = self.compute_p2p_mse(target, target_tree);
                 let score = self.mse_to_score(p2p_mse);
+
+                // Identity snapping: If we have a high-quality match and both the initial guess
+                // and final transform are very close to identity, snap to the initial guess.
+                // This prevents quantization drift in static/slow-motion scenarios.
+                let final_transform = if score > 0.95 {
+                    let init_mag = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt()
+                        + initial_guess.theta.abs();
+                    let curr_mag = (current_transform.x.powi(2) + current_transform.y.powi(2))
+                        .sqrt()
+                        + current_transform.theta.abs();
+
+                    // If both initial guess and result are near-identity (<1cm, <1°), snap to initial
+                    if init_mag < 0.02 && curr_mag < 0.02 {
+                        *initial_guess
+                    } else {
+                        current_transform
+                    }
+                } else {
+                    current_transform
+                };
+
                 // Return buffer before early exit
                 self.correspondence_buffer = corr_buffer;
-                return ScanMatchResult::success(current_transform, score, iterations, p2p_mse);
+                return ScanMatchResult::success(final_transform, score, iterations, p2p_mse);
             }
 
             // FIX #4: Transform-based convergence - if delta is tiny, accept
@@ -588,8 +609,25 @@ impl PointToLineIcp {
                 // Compute point-to-point MSE for fair comparison
                 let p2p_mse = self.compute_p2p_mse(target, target_tree);
                 let score = self.mse_to_score(p2p_mse);
+
+                // Identity snapping (same as above)
+                let final_transform = if score > 0.95 {
+                    let init_mag = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt()
+                        + initial_guess.theta.abs();
+                    let curr_mag = (current_transform.x.powi(2) + current_transform.y.powi(2))
+                        .sqrt()
+                        + current_transform.theta.abs();
+                    if init_mag < 0.02 && curr_mag < 0.02 {
+                        *initial_guess
+                    } else {
+                        current_transform
+                    }
+                } else {
+                    current_transform
+                };
+
                 self.correspondence_buffer = corr_buffer;
-                return ScanMatchResult::success(current_transform, score, iterations, p2p_mse);
+                return ScanMatchResult::success(final_transform, score, iterations, p2p_mse);
             }
 
             // FIX #1: Check if MSE is diverging (consecutive check)
@@ -614,16 +652,31 @@ impl PointToLineIcp {
         let p2p_mse = self.compute_p2p_mse(target, target_tree);
         let score = self.mse_to_score(p2p_mse);
 
+        // Identity snapping for max-iteration case
+        let final_transform = if score > 0.95 {
+            let init_mag =
+                (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt() + initial_guess.theta.abs();
+            let curr_mag = (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt()
+                + current_transform.theta.abs();
+            if init_mag < 0.02 && curr_mag < 0.02 {
+                *initial_guess
+            } else {
+                current_transform
+            }
+        } else {
+            current_transform
+        };
+
         // Return buffer for reuse
         self.correspondence_buffer = corr_buffer;
 
         // Consider it converged if point-to-point MSE is reasonable
         // 0.01 = 1cm² = 1cm RMSE
         if p2p_mse < 0.01 {
-            ScanMatchResult::success(current_transform, score, iterations, p2p_mse)
+            ScanMatchResult::success(final_transform, score, iterations, p2p_mse)
         } else {
             ScanMatchResult {
-                transform: current_transform,
+                transform: final_transform,
                 covariance: Covariance2D::diagonal(0.1, 0.1, 0.05),
                 score,
                 converged: false,
