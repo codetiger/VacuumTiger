@@ -12,9 +12,19 @@
 //!
 //! # Algorithm
 //!
-//! 1. **Prediction**: Propagate nominal state with IMU/encoder, propagate error covariance
-//! 2. **Update**: When measurement arrives, compute Kalman gain and correct error state
+//! 1. **Prediction**: Propagate nominal state with encoder odometry, propagate error covariance
+//! 2. **Update**: Fuse gyro measurement by computing innovation (gyro_dtheta - encoder_dtheta)
 //! 3. **Reset**: Inject error into nominal state, reset error to zero
+//!
+//! # Sensor Fusion Strategy
+//!
+//! The gyro update compares the heading change measured by the gyroscope against
+//! the heading change from encoders. The innovation (difference) is used to correct
+//! the estimate, weighted by the Kalman gain based on relative uncertainties.
+//!
+//! This approach fuses the two sensors properly:
+//! - When gyro and encoder agree: small correction, trust both
+//! - When they disagree: correction weighted by noise parameters
 //!
 //! # References
 //!
@@ -126,6 +136,9 @@ pub struct Eskf {
     covariance: Covariance2D,
     /// Last timestamp for dt computation
     last_timestamp_us: Option<u64>,
+    /// Accumulated encoder heading change since last gyro update.
+    /// Used to compute innovation: gyro_dtheta - encoder_dtheta
+    pending_encoder_dtheta: f32,
 }
 
 impl Eskf {
@@ -142,6 +155,7 @@ impl Eskf {
             nominal: Pose2D::identity(),
             covariance,
             last_timestamp_us: None,
+            pending_encoder_dtheta: 0.0,
         }
     }
 
@@ -158,6 +172,7 @@ impl Eskf {
             nominal: initial_pose,
             covariance,
             last_timestamp_us: None,
+            pending_encoder_dtheta: 0.0,
         }
     }
 
@@ -185,6 +200,7 @@ impl Eskf {
             self.config.initial_heading_variance,
         );
         self.last_timestamp_us = None;
+        self.pending_encoder_dtheta = 0.0;
     }
 
     /// Reset to a specific pose with initial covariance.
@@ -196,11 +212,13 @@ impl Eskf {
             self.config.initial_heading_variance,
         );
         self.last_timestamp_us = None;
+        self.pending_encoder_dtheta = 0.0;
     }
 
     /// Prediction step: propagate state with encoder odometry.
     ///
     /// Updates the nominal state and propagates error covariance.
+    /// Also accumulates the encoder heading change for later gyro fusion.
     ///
     /// # Arguments
     ///
@@ -208,6 +226,9 @@ impl Eskf {
     pub fn predict(&mut self, encoder_delta: Pose2D) {
         // Update nominal state
         self.nominal = self.nominal.compose(&encoder_delta);
+
+        // Accumulate encoder heading change for gyro fusion
+        self.pending_encoder_dtheta += encoder_delta.theta;
 
         // Compute motion magnitude for process noise scaling
         let distance =
@@ -270,7 +291,9 @@ impl Eskf {
 
     /// Update step with gyroscope measurement.
     ///
-    /// Fuses gyroscope angular velocity measurement to correct heading estimate.
+    /// Fuses gyroscope angular velocity measurement with encoder heading.
+    /// The innovation is computed as the difference between gyro-measured
+    /// heading change and encoder-measured heading change since the last update.
     ///
     /// # Arguments
     ///
@@ -284,20 +307,29 @@ impl Eskf {
         // Convert raw gyro to rad/s
         let gyro_z_rad_s = (gyro_z_raw as f32 - self.config.gyro_bias_z) * self.config.gyro_scale;
 
-        // Expected heading change from gyro
+        // Heading change from gyro over this time interval
         let dtheta_gyro = gyro_z_rad_s * dt;
 
-        // Innovation: difference between gyro-predicted heading change and nominal
-        // This is a pseudo-update: we don't have an absolute measurement,
-        // but we can use the gyro to correct drift in heading
-        //
-        // For a proper ESKF, we'd have absolute measurements. Here we use
-        // the gyro as a complementary source for heading.
+        // Innovation: difference between gyro and encoder heading change
+        // This is the KEY fix: we compare the two sensors, not add gyro on top
+        // - Positive innovation: gyro says we rotated more than encoder
+        // - Negative innovation: gyro says we rotated less than encoder
+        // The Kalman gain weights how much we trust each sensor
+        let innovation = dtheta_gyro - self.pending_encoder_dtheta;
+
+        // Reset pending encoder heading for next update cycle
+        self.pending_encoder_dtheta = 0.0;
+
+        // Skip update if innovation is negligible (sensors agree)
+        if innovation.abs() < 1e-6 {
+            return;
+        }
 
         // Measurement matrix H: measures only heading error
         // H = [0, 0, 1]
 
         // Innovation covariance: S = H * P * H^T + R
+        // R is measurement noise (gyro variance scaled by dt²)
         let p_theta = self.covariance.var_theta();
         let r = self.config.measurement_noise.gyro_variance * dt * dt;
         let s = p_theta + r;
@@ -313,14 +345,10 @@ impl Eskf {
         let k1 = p[5] / s; // K[1]
         let k2 = p[8] / s; // K[2]
 
-        // Innovation (measurement residual)
-        // Compare encoder-derived heading change with gyro-derived
-        // For continuous fusion, we accumulate the gyro contribution
-        // Here we use a simplified approach: nudge toward gyro
-        let predicted_dtheta = 0.0; // Error state starts at zero
-        let innovation = dtheta_gyro - predicted_dtheta;
-
         // Update error state (then inject into nominal)
+        // The correction is weighted by Kalman gain:
+        // - High gain (large P, small R): trust gyro more
+        // - Low gain (small P, large R): trust encoder more
         let delta_x = k0 * innovation;
         let delta_y = k1 * innovation;
         let delta_theta = k2 * innovation;
@@ -395,12 +423,21 @@ impl Eskf {
         };
         self.last_timestamp_us = Some(timestamp_us);
 
-        // Prediction step
+        // Prediction step (also accumulates encoder dtheta)
         self.predict(encoder_delta);
 
         // Update step with calibrated gyro
         if dt > 0.0 {
             let dtheta_gyro = gyro_z_rad_s * dt;
+
+            // Innovation: difference between gyro and encoder heading change
+            let innovation = dtheta_gyro - self.pending_encoder_dtheta;
+            self.pending_encoder_dtheta = 0.0;
+
+            // Skip update if innovation is negligible
+            if innovation.abs() < 1e-6 {
+                return self.nominal;
+            }
 
             let p_theta = self.covariance.var_theta();
             let r = self.config.measurement_noise.gyro_variance * dt * dt;
@@ -411,8 +448,6 @@ impl Eskf {
                 let k0 = p[2] / s;
                 let k1 = p[5] / s;
                 let k2 = p[8] / s;
-
-                let innovation = dtheta_gyro;
 
                 self.nominal = Pose2D::new(
                     self.nominal.x + k0 * innovation,

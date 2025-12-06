@@ -382,6 +382,8 @@ impl PointToPointIcp {
         let dy = target_centroid.y - (source_centroid.x * sin_dt + source_centroid.y * cos_dt);
 
         // Compute delta transform with damping to prevent oscillation
+        // dtheta is already incremental (rotation from current to optimal)
+        // dx, dy are absolute (translation from origin), need to subtract current
         let damping = self.config.damping_factor;
 
         let delta_x = (dx - current_transform.x) * damping;

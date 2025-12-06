@@ -53,7 +53,7 @@ impl Default for CorrelativeConfig {
         Self {
             search_window_x: 0.3,     // ±30cm
             search_window_y: 0.3,     // ±30cm
-            search_window_theta: 0.3, // ±17°
+            search_window_theta: 0.5, // ±28° (increased from ±17° to handle noisy odometry)
             linear_resolution: 0.02,  // 2cm steps
             angular_resolution: 0.02, // ~1.1° steps
             grid_resolution: 0.05,    // 5cm grid cells
@@ -126,20 +126,16 @@ impl ScoreGrid {
             *cell = false;
         }
 
-        // Mark cells near target points
+        // Mark cells containing target points
+        // Note: Only mark the exact cell, not neighbors. The grid resolution already
+        // provides tolerance for matching. Marking neighbors creates false positives
+        // that reduce discrimination between correct and incorrect poses.
         for i in 0..cloud.len() {
             let cx = ((cloud.xs[i] - origin_x) / resolution) as isize;
             let cy = ((cloud.ys[i] - origin_y) / resolution) as isize;
 
-            // Mark this cell and neighbors for better hit detection
-            for dx in -1..=1 {
-                for dy in -1..=1 {
-                    let nx = cx + dx;
-                    let ny = cy + dy;
-                    if nx >= 0 && ny >= 0 && (nx as usize) < width && (ny as usize) < height {
-                        buffer[ny as usize * width + nx as usize] = true;
-                    }
-                }
+            if cx >= 0 && cy >= 0 && (cx as usize) < width && (cy as usize) < height {
+                buffer[cy as usize * width + cx as usize] = true;
             }
         }
 
@@ -396,6 +392,9 @@ impl ScanMatcher for CorrelativeMatcher {
         self.grid_buffer = grid_buffer;
 
         // Check if score meets threshold
+        // MSE estimate: The search resolution determines the maximum possible alignment error.
+        // A score of 1.0 means perfect alignment (MSE ~ 0), lower scores mean worse alignment.
+        // Use linear_resolution (search step size) for MSE estimate, not grid_resolution.
         if best_score >= min_score {
             ScanMatchResult {
                 transform: best_pose,
@@ -407,7 +406,7 @@ impl ScanMatcher for CorrelativeMatcher {
                 score: best_score,
                 converged: true,
                 iterations: num_candidates,
-                mse: (1.0 - best_score) * grid_resolution.powi(2),
+                mse: (1.0 - best_score) * linear_resolution.powi(2),
             }
         } else {
             ScanMatchResult {
@@ -416,7 +415,7 @@ impl ScanMatcher for CorrelativeMatcher {
                 score: best_score,
                 converged: false,
                 iterations: num_candidates,
-                mse: (1.0 - best_score),
+                mse: (1.0 - best_score) * linear_resolution.powi(2),
             }
         }
     }

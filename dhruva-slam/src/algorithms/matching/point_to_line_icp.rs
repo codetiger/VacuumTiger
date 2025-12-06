@@ -319,7 +319,7 @@ impl PointToLineIcp {
     ///
     /// Minimizes sum of squared point-to-line distances.
     /// Assumes transform_source() was called before this with current_transform.
-    /// Still needs original source for Jacobian computation.
+    /// Uses original source coordinates for Jacobian (derivative of rotation).
     fn compute_transform(
         &self,
         source: &PointCloud2D,
@@ -354,7 +354,7 @@ impl PointToLineIcp {
         let mut g = [0.0f32; 3]; // Gradient
 
         for corr in correspondences {
-            // Original source coordinates needed for Jacobian
+            // Original source coordinates for Jacobian (derivative is w.r.t. original point)
             let px_orig = source.xs[corr.source_idx];
             let py_orig = source.ys[corr.source_idx];
             let n_x = corr.target_line.a;
@@ -364,10 +364,13 @@ impl PointToLineIcp {
             let px = self.transformed_source.xs[corr.source_idx];
             let py = self.transformed_source.ys[corr.source_idx];
 
-            // Residual
+            // Residual: r = n · p_transformed + c
             let r = n_x * px + n_y * py + corr.target_line.c;
 
             // Jacobian row
+            // The derivative ∂r/∂θ uses the original point because:
+            // p_transformed = R(θ) * p_original + t
+            // So ∂p_transformed/∂θ = ∂R/∂θ * p_original
             let j0 = n_x;
             let j1 = n_y;
             let j2 = n_x * (-sin_t * px_orig - cos_t * py_orig)

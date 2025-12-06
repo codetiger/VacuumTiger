@@ -152,13 +152,15 @@ impl ScanMatcher for MultiResolutionMatcher {
             let result = self.level_matchers[level].match_scans(source, target, &current_guess);
             total_iterations += result.iterations;
 
-            if result.converged || result.score > 0.3 {
+            if result.converged || result.score > self.config.min_score * 0.5 {
                 current_guess = result.transform;
             }
             // If this level failed, keep previous guess and try finer level
         }
 
-        // Final evaluation at finest level (level 0)
+        // Return result from finest level (level 0) which was the last iteration
+        // Note: We already processed level 0 in the loop, so just do a final evaluation
+        // with the accumulated guess to get the correct iteration count
         let mut final_result = self.level_matchers[0].match_scans(source, target, &current_guess);
         final_result.iterations += total_iterations;
 

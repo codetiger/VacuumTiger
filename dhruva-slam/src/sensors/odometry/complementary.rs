@@ -54,7 +54,11 @@ pub struct ComplementaryConfig {
 impl Default for ComplementaryConfig {
     fn default() -> Self {
         Self {
-            alpha: 0.98,
+            // Reduced from 0.98 to 0.90 to trust encoders more.
+            // With alpha=0.98, even small gyro bias causes significant drift.
+            // With alpha=0.90, the filter is more balanced and robust to
+            // uncalibrated gyro bias while still benefiting from gyro smoothness.
+            alpha: 0.90,
             gyro_scale: CRL200S_GYRO_SCALE, // CRL-200S: raw units are 0.1 deg/s
             gyro_bias_z: 0.0,
         }

@@ -43,10 +43,6 @@ name = "slam_benchmark"
 path = "examples/slam_benchmark.rs"
 
 [[example]]
-name = "scan_match_benchmark"
-path = "examples/scan_match_benchmark.rs"
-
-[[example]]
 name = "bag_inspect"
 path = "examples/bag_inspect.rs"
 
