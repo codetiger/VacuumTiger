@@ -63,6 +63,7 @@ impl RangeFilter {
     /// Returns a new scan with only valid points.
     pub fn apply(&self, scan: &LaserScan) -> LaserScan {
         let mut new_ranges = Vec::with_capacity(scan.ranges.len());
+        let mut new_angles = Vec::with_capacity(scan.ranges.len());
         let mut new_intensities = scan
             .intensities
             .as_ref()
@@ -72,7 +73,7 @@ impl RangeFilter {
 
         for (i, &range) in scan.ranges.iter().enumerate() {
             if self.is_valid(range) {
-                let angle = scan.angle_at(i);
+                let angle = scan.get_angle(i);
 
                 if new_angle_min.is_none() {
                     new_angle_min = Some(angle);
@@ -80,6 +81,7 @@ impl RangeFilter {
                 new_angle_max = angle;
 
                 new_ranges.push(range);
+                new_angles.push(angle);
 
                 if let (Some(new_int), Some(old_int)) = (&mut new_intensities, &scan.intensities)
                     && let Some(&intensity) = old_int.get(i)
@@ -104,6 +106,12 @@ impl RangeFilter {
             range_max: self.config.max_range,
             ranges: new_ranges,
             intensities: new_intensities,
+            // Preserve actual angles from the filtered points
+            angles: if scan.angles.is_some() {
+                Some(new_angles)
+            } else {
+                None
+            },
         }
     }
 

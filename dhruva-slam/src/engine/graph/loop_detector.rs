@@ -273,38 +273,6 @@ impl LoopDetector {
     }
 }
 
-/// Trait for loop detection strategies.
-#[allow(dead_code)]
-pub trait LoopDetection {
-    /// Detect loop closures for a new keyframe.
-    fn detect_loops(
-        &mut self,
-        query_id: u64,
-        query_scan: &PointCloud2D,
-        query_pose: &Pose2D,
-        keyframes: &[Keyframe],
-    ) -> Vec<LoopClosureCandidate>;
-
-    /// Add a keyframe to the detection database.
-    fn add_to_database(&mut self, keyframe_id: u64, scan: &PointCloud2D);
-}
-
-impl LoopDetection for LoopDetector {
-    fn detect_loops(
-        &mut self,
-        query_id: u64,
-        query_scan: &PointCloud2D,
-        query_pose: &Pose2D,
-        keyframes: &[Keyframe],
-    ) -> Vec<LoopClosureCandidate> {
-        self.detect(query_id, query_scan, query_pose, keyframes)
-    }
-
-    fn add_to_database(&mut self, keyframe_id: u64, scan: &PointCloud2D) {
-        self.add_keyframe(keyframe_id, scan);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

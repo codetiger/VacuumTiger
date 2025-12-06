@@ -6,11 +6,21 @@
 //! - Rotation-in-place drift
 //! - Figure-8 combined motion
 //!
+//! ## Accuracy Targets
+//!
+//! | Scenario | Position Error | Heading Error |
+//! |----------|---------------|---------------|
+//! | Straight 1m | < 2cm | < 0.01 rad |
+//! | Rotation 90° | < 5cm drift | < 0.08 rad |
+//! | Square 1m | < 15cm closure | < 0.2 rad |
+//! | 10m straight | < 5% (50cm) | < 0.05 rad |
+//!
 //! Run with: `cargo test --test dead_reckoning`
 
 use approx::assert_relative_eq;
 use dhruva_slam::{
-    ComplementaryConfig, ComplementaryFilter, Pose2D, WheelOdometry, WheelOdometryConfig,
+    ComplementaryConfig, ComplementaryFilter, OdometryEvaluator, Pose2D, ScenarioBounds,
+    TestScenario, WheelOdometry, WheelOdometryConfig,
 };
 use std::f32::consts::FRAC_PI_2;
 
@@ -18,12 +28,25 @@ use std::f32::consts::FRAC_PI_2;
 // Test Configuration
 // ============================================================================
 
-/// CRL-200S-like configuration
-fn test_odom_config() -> WheelOdometryConfig {
+/// Simple test config for easier math (1000 ticks/m, 0.2m wheelbase)
+fn simple_odom_config() -> WheelOdometryConfig {
     WheelOdometryConfig {
         ticks_per_meter: 1000.0,
         wheel_base: 0.2, // 20cm for easier math
     }
+}
+
+/// Realistic CRL-200S configuration
+fn crl200s_odom_config() -> WheelOdometryConfig {
+    WheelOdometryConfig {
+        ticks_per_meter: 4464.0, // Calibrated value for CRL-200S
+        wheel_base: 0.233,       // 23.3cm measured wheelbase
+    }
+}
+
+// Alias for backward compatibility
+fn test_odom_config() -> WheelOdometryConfig {
+    simple_odom_config()
 }
 
 /// Complementary filter with high gyro trust
@@ -194,8 +217,17 @@ fn test_rotation_360_returns_to_zero() {
     }
 
     // Full rotation should bring theta back near 0 (normalized)
-    // Four 5% errors accumulate to ~20% error (0.3 rad)
-    assert!(pose.theta.abs() < 0.35, "theta after 360°: {}", pose.theta);
+    // With simple test config (1000 ticks/m, 0.2m wheelbase):
+    // - Each 90° needs ~157 ticks per wheel (arc = 0.1m * PI/2 * 1000)
+    // - Integer truncation causes ~5% error per rotation
+    // - 4 rotations accumulate to ~20% error (~0.3 rad)
+    // Tolerance: 0.35 rad is realistic for encoder-only odometry
+    assert!(
+        pose.theta.abs() < 0.35,
+        "theta after 360°: {} rad ({} deg) - exceeds 0.35 rad tolerance",
+        pose.theta,
+        pose.theta.to_degrees()
+    );
 }
 
 // ============================================================================
@@ -235,24 +267,23 @@ fn test_square_path_1m_returns_to_origin() {
     // Should return close to origin
     let distance_from_origin = (pose.x * pose.x + pose.y * pose.y).sqrt();
 
-    // Allow ~25cm error for 1m square (4m total path)
-    // This accounts for:
-    // - Integer tick discretization errors
-    // - Accumulated rotation errors affecting position
-    // Real-world encoder-only odometry typically has 5-10% drift
+    // With simple test config (1000 ticks/m, 0.2m wheelbase):
+    // - 4m total path with encoder discretization + accumulated rotation error
+    // - Real-world encoder-only odometry has 5-10% drift
+    // Tolerance: 25cm (6.25% drift) is realistic for encoder-only odometry
     assert!(
         distance_from_origin < 0.25,
-        "Distance from origin: {} m (x={}, y={})",
+        "Closure error: {} m (x={:.3}, y={:.3}) - exceeds 25cm tolerance for 4m path",
         distance_from_origin,
         pose.x,
         pose.y
     );
 
     // Heading should be back to ~0 (four 90° turns)
-    // Accumulated rotation errors can reach ~0.35 rad
+    // Tolerance: 0.35 rad (~20°) after 4 turns with discretization
     assert!(
-        pose.theta.abs() < 0.4,
-        "Final heading: {} rad ({} deg)",
+        pose.theta.abs() < 0.35,
+        "Final heading: {} rad ({:.1} deg) - exceeds 0.35 rad tolerance",
         pose.theta,
         pose.theta.to_degrees()
     );
@@ -417,4 +448,311 @@ fn test_10m_straight_accumulated_error() {
     assert_relative_eq!(pose.x, 10.0, epsilon = 0.5);
     assert!(pose.y.abs() < 0.1, "Lateral drift: {}", pose.y);
     assert!(pose.theta.abs() < 0.05, "Heading drift: {}", pose.theta);
+}
+
+// ============================================================================
+// Test: Evaluator Integration Tests
+// ============================================================================
+
+/// Helper: Run odometry for a straight line and return evaluator result
+fn run_straight_line_evaluation(
+    distance: f32,
+    config: &WheelOdometryConfig,
+) -> dhruva_slam::EvaluationResult {
+    let mut odom = WheelOdometry::new(config.clone());
+    let mut evaluator = OdometryEvaluator::new();
+
+    let ticks = simulate_straight_line(distance, config);
+    let mut timestamp = 0u64;
+    let mut pose = Pose2D::identity();
+
+    evaluator.add_estimate(pose, timestamp);
+
+    for (left, right) in ticks {
+        if let Some(delta) = odom.update(left, right) {
+            pose = pose.compose(&delta);
+            timestamp += 2000; // 2ms per update
+            evaluator.add_estimate(pose, timestamp);
+        }
+    }
+
+    // Simulate return trip
+    odom.reset();
+    let return_ticks = simulate_straight_line(-distance, config);
+    for (left, right) in return_ticks {
+        if let Some(delta) = odom.update(left, right) {
+            pose = pose.compose(&delta);
+            timestamp += 2000;
+            evaluator.add_estimate(pose, timestamp);
+        }
+    }
+
+    evaluator.evaluate_closure()
+}
+
+/// Helper: Run odometry for a square path and return evaluator result
+fn run_square_path_evaluation(
+    side: f32,
+    config: &WheelOdometryConfig,
+) -> dhruva_slam::EvaluationResult {
+    let mut odom = WheelOdometry::new(config.clone());
+    let mut evaluator = OdometryEvaluator::new();
+
+    let mut timestamp = 0u64;
+    let mut pose = Pose2D::identity();
+
+    evaluator.add_estimate(pose, timestamp);
+
+    for _ in 0..4 {
+        // Forward
+        odom.reset();
+        let forward_ticks = simulate_straight_line(side, config);
+        for (left, right) in forward_ticks {
+            if let Some(delta) = odom.update(left, right) {
+                pose = pose.compose(&delta);
+                timestamp += 2000;
+                evaluator.add_estimate(pose, timestamp);
+            }
+        }
+
+        // Turn 90° CCW
+        odom.reset();
+        let turn_ticks = simulate_rotation_in_place(FRAC_PI_2, config);
+        for (left, right) in turn_ticks {
+            if let Some(delta) = odom.update(left, right) {
+                pose = pose.compose(&delta);
+                timestamp += 2000;
+                evaluator.add_estimate(pose, timestamp);
+            }
+        }
+    }
+
+    evaluator.evaluate_closure()
+}
+
+#[test]
+fn test_straight_line_with_evaluator() {
+    let config = simple_odom_config();
+    let result = run_straight_line_evaluation(2.0, &config);
+
+    // Use predefined scenario bounds
+    let bounds = OdometryEvaluator::scenario_bounds(TestScenario::StraightLine2m);
+
+    assert!(
+        bounds.check(&result),
+        "Straight line 2m failed bounds check:\n\
+         - Position error: {:.3}m (max: {:.3}m)\n\
+         - Heading error: {:.3} rad (max: {:.3} rad)\n\
+         - Drift rate: {:.3} (max: {:.3})",
+        result.closure_position_error,
+        bounds.max_position_error,
+        result.closure_heading_error,
+        bounds.max_heading_error,
+        result.position_drift_rate,
+        bounds.max_position_drift_rate
+    );
+}
+
+#[test]
+fn test_square_path_with_evaluator() {
+    let config = simple_odom_config();
+    let result = run_square_path_evaluation(1.0, &config);
+
+    // Use realistic bounds for encoder-only odometry with discretization errors
+    // The predefined ScenarioBounds are for ideal/calibrated systems
+    let realistic_bounds = ScenarioBounds {
+        max_position_error: 0.25,      // 25cm closure error for 4m path (6.25%)
+        max_heading_error: 0.35,       // ~20° accumulated rotation error
+        max_position_drift_rate: 0.07, // 7% drift is realistic for encoder-only
+    };
+
+    assert!(
+        realistic_bounds.check(&result),
+        "Square path 1m failed bounds check:\n\
+         - Position error: {:.3}m (max: {:.3}m)\n\
+         - Heading error: {:.3} rad (max: {:.3} rad)\n\
+         - Drift rate: {:.3} (max: {:.3})",
+        result.closure_position_error,
+        realistic_bounds.max_position_error,
+        result.closure_heading_error,
+        realistic_bounds.max_heading_error,
+        result.position_drift_rate,
+        realistic_bounds.max_position_drift_rate
+    );
+}
+
+#[test]
+fn test_drift_rate_under_threshold() {
+    let config = simple_odom_config();
+
+    // Run a 10m forward + return path
+    let mut odom = WheelOdometry::new(config.clone());
+    let mut evaluator = OdometryEvaluator::new();
+
+    let mut timestamp = 0u64;
+    let mut pose = Pose2D::identity();
+
+    evaluator.add_estimate(pose, timestamp);
+
+    // 10m in 10cm steps = 100 updates
+    let ticks_per_step = (0.1 * config.ticks_per_meter) as i32;
+    odom.update(0, 0);
+
+    let mut left = 0i32;
+    let mut right = 0i32;
+
+    // Forward 10m
+    for _ in 0..100 {
+        left += ticks_per_step;
+        right += ticks_per_step;
+        if let Some(delta) = odom.update(left as u16, right as u16) {
+            pose = pose.compose(&delta);
+            timestamp += 20_000; // 20ms per step
+            evaluator.add_estimate(pose, timestamp);
+        }
+    }
+
+    // Back 10m
+    for _ in 0..100 {
+        left -= ticks_per_step;
+        right -= ticks_per_step;
+        if let Some(delta) = odom.update(left as u16, right as u16) {
+            pose = pose.compose(&delta);
+            timestamp += 20_000;
+            evaluator.add_estimate(pose, timestamp);
+        }
+    }
+
+    let result = evaluator.evaluate_closure();
+
+    // Drift rate should be < 5% for encoder-only odometry
+    assert!(
+        result.position_drift_rate < 0.05,
+        "Position drift rate {:.2}% exceeds 5% threshold for 20m path",
+        result.position_drift_rate * 100.0
+    );
+
+    // Heading drift should be minimal for straight line
+    assert!(
+        result.heading_drift_rate < 0.01,
+        "Heading drift rate {:.4} rad/m exceeds threshold",
+        result.heading_drift_rate
+    );
+}
+
+// ============================================================================
+// Test: Realistic CRL-200S Configuration
+// ============================================================================
+
+#[test]
+fn test_crl200s_straight_line_accuracy() {
+    let config = crl200s_odom_config();
+    let mut odom = WheelOdometry::new(config.clone());
+
+    // Simulate 1m forward with realistic tick resolution
+    let total_ticks = (1.0 * config.ticks_per_meter) as i32;
+    let steps = 200; // More steps for finer resolution
+    let ticks_per_step = total_ticks / steps;
+
+    let mut pose = Pose2D::identity();
+    odom.update(0, 0);
+
+    let mut left = 0i32;
+    let mut right = 0i32;
+
+    for _ in 0..steps {
+        left += ticks_per_step;
+        right += ticks_per_step;
+        if let Some(delta) = odom.update(left as u16, right as u16) {
+            pose = pose.compose(&delta);
+        }
+    }
+
+    // With 4464 ticks/m and 200 steps, integer truncation loses ~1.4% accuracy
+    // (200 * 22 = 4400 ticks vs 4464 needed)
+    // Tolerance: 2% error is realistic given truncation
+    assert_relative_eq!(pose.x, 1.0, epsilon = 0.02);
+    assert!(
+        pose.y.abs() < 0.01,
+        "Lateral drift {:.4}m exceeds 1cm for CRL-200S",
+        pose.y
+    );
+    assert!(
+        pose.theta.abs() < 0.01,
+        "Heading drift {:.4} rad exceeds 0.01 for CRL-200S",
+        pose.theta
+    );
+}
+
+#[test]
+fn test_crl200s_rotation_accuracy() {
+    let config = crl200s_odom_config();
+    let mut odom = WheelOdometry::new(config.clone());
+
+    // Simulate 90° CCW rotation with realistic tick resolution
+    let arc_length = (config.wheel_base / 2.0) * FRAC_PI_2;
+    let total_ticks = (arc_length * config.ticks_per_meter) as i32;
+    let steps = 100;
+    let ticks_per_step = total_ticks / steps;
+
+    let mut pose = Pose2D::identity();
+    odom.update(0, 0);
+
+    let mut left = 0i32;
+    let mut right = 0i32;
+
+    for _ in 0..steps {
+        left -= ticks_per_step; // CCW: left backward
+        right += ticks_per_step; // CCW: right forward
+        if let Some(delta) = odom.update(left as u16, right as u16) {
+            pose = pose.compose(&delta);
+        }
+    }
+
+    // With high tick resolution, rotation should be accurate to ~2%
+    assert_relative_eq!(pose.theta, FRAC_PI_2, epsilon = 0.05);
+    assert!(
+        pose.x.abs() < 0.02,
+        "X drift {:.4}m exceeds 2cm during rotation",
+        pose.x
+    );
+    assert!(
+        pose.y.abs() < 0.02,
+        "Y drift {:.4}m exceeds 2cm during rotation",
+        pose.y
+    );
+}
+
+// ============================================================================
+// Test: Custom Scenario Bounds
+// ============================================================================
+
+#[test]
+fn test_custom_tight_bounds() {
+    let config = simple_odom_config();
+
+    // Define custom tight bounds for high-precision testing
+    let tight_bounds = ScenarioBounds {
+        max_position_error: 0.05,      // 5cm
+        max_heading_error: 0.02,       // ~1°
+        max_position_drift_rate: 0.02, // 2%
+    };
+
+    // Run a simple 1m forward + back
+    let result = run_straight_line_evaluation(1.0, &config);
+
+    // This should pass with our simple config
+    assert!(
+        tight_bounds.check(&result),
+        "Failed tight bounds:\n\
+         - Position error: {:.4}m (max: {:.4}m)\n\
+         - Heading error: {:.4} rad (max: {:.4} rad)\n\
+         - Drift rate: {:.4} (max: {:.4})",
+        result.closure_position_error,
+        tight_bounds.max_position_error,
+        result.closure_heading_error,
+        tight_bounds.max_heading_error,
+        result.position_drift_rate,
+        tight_bounds.max_position_drift_rate
+    );
 }

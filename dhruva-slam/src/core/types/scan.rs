@@ -15,6 +15,8 @@ pub struct LaserScan {
     /// End angle in radians
     pub angle_max: f32,
     /// Angular resolution (radians between consecutive readings)
+    /// Note: This is only used for scans with uniform spacing.
+    /// For non-uniform scans (from raw lidar data), use the `angles` field.
     pub angle_increment: f32,
     /// Minimum valid range in meters
     pub range_min: f32,
@@ -24,6 +26,10 @@ pub struct LaserScan {
     pub ranges: Vec<f32>,
     /// Optional intensity values (0-255)
     pub intensities: Option<Vec<u8>>,
+    /// Optional per-point angles (for non-uniform spacing).
+    /// When present, these exact angles are used instead of computing from angle_increment.
+    /// This preserves the original lidar measurement geometry for better matching accuracy.
+    pub angles: Option<Vec<f32>>,
 }
 
 impl LaserScan {
@@ -44,6 +50,7 @@ impl LaserScan {
             range_max,
             ranges,
             intensities: None,
+            angles: None,
         }
     }
 
@@ -56,7 +63,8 @@ impl LaserScan {
     /// Convert from SangamIO LidarScan format.
     ///
     /// SangamIO provides Vec<(angle_rad, distance_m, quality)>.
-    /// This converts to our LaserScan format.
+    /// This converts to our LaserScan format, preserving the original
+    /// per-point angles for accurate scan matching.
     pub fn from_lidar_scan(scan: &crate::io::LidarScan) -> Self {
         if scan.is_empty() {
             return Self {
@@ -67,6 +75,7 @@ impl LaserScan {
                 range_max: 0.0,
                 ranges: Vec::new(),
                 intensities: None,
+                angles: None,
             };
         }
 
@@ -77,13 +86,15 @@ impl LaserScan {
         let angle_min = sorted.first().map(|p| p.0).unwrap_or(0.0);
         let angle_max = sorted.last().map(|p| p.0).unwrap_or(0.0);
 
-        // Estimate angle increment from data
+        // Estimate angle increment for legacy compatibility, but we'll use actual angles
         let angle_increment = if sorted.len() > 1 {
             (angle_max - angle_min) / (sorted.len() - 1) as f32
         } else {
             0.0
         };
 
+        // Preserve the ACTUAL angles from the lidar - this is critical for accuracy!
+        let angles: Vec<f32> = sorted.iter().map(|p| p.0).collect();
         let ranges: Vec<f32> = sorted.iter().map(|p| p.1).collect();
         let intensities: Vec<u8> = sorted.iter().map(|p| p.2).collect();
 
@@ -95,6 +106,7 @@ impl LaserScan {
             range_max: 12.0, // Delta-2D typical maximum
             ranges,
             intensities: Some(intensities),
+            angles: Some(angles), // Use original angles for better accuracy
         }
     }
 
@@ -110,10 +122,27 @@ impl LaserScan {
         self.ranges.is_empty()
     }
 
-    /// Get the angle for a given index.
+    /// Get the angle for a given index (computes from angle_increment).
+    ///
+    /// For scans with non-uniform spacing, prefer `get_angle()` which
+    /// uses actual per-point angles when available.
     #[inline]
     pub fn angle_at(&self, index: usize) -> f32 {
         self.angle_min + index as f32 * self.angle_increment
+    }
+
+    /// Get the actual angle for a given index.
+    ///
+    /// Uses the per-point angles if available (from `angles` field),
+    /// otherwise falls back to computing from `angle_increment`.
+    /// This is the preferred method for accessing angles as it preserves
+    /// the original lidar measurement geometry.
+    #[inline]
+    pub fn get_angle(&self, index: usize) -> f32 {
+        self.angles
+            .as_ref()
+            .and_then(|a| a.get(index).copied())
+            .unwrap_or_else(|| self.angle_at(index))
     }
 
     /// Check if a range value is valid.
@@ -123,10 +152,13 @@ impl LaserScan {
     }
 
     /// Iterate over (angle, range, intensity) tuples.
+    ///
+    /// When `angles` is present, uses the actual per-point angles.
+    /// Otherwise, computes angles from `angle_min` and `angle_increment`.
     pub fn iter(&self) -> impl Iterator<Item = (f32, f32, u8)> + '_ {
         let intensities = &self.intensities;
         self.ranges.iter().enumerate().map(move |(i, &range)| {
-            let angle = self.angle_min + i as f32 * self.angle_increment;
+            let angle = self.get_angle(i);
             let intensity = intensities
                 .as_ref()
                 .and_then(|v| v.get(i).copied())
@@ -160,6 +192,7 @@ impl Default for LaserScan {
             range_max: 12.0,
             ranges: Vec::new(),
             intensities: None,
+            angles: None,
         }
     }
 }

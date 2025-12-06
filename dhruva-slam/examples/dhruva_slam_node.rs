@@ -16,9 +16,10 @@
 //! ```
 
 use dhruva_slam::{
-    ComplementaryConfig, OdometryPipeline, OdometryPipelineConfig, OdometryPublisher, OnlineSlam,
-    OnlineSlamConfig, Point2D, PointCloud2D, Pose2D, SangamClient, SlamEngine, SlamMode,
-    WheelOdometryConfig,
+    AngularDownsamplerConfig, ComplementaryConfig, LaserScan, OdometryPipeline,
+    OdometryPipelineConfig, OdometryPublisher, OnlineSlam, OnlineSlamConfig, OutlierFilterConfig,
+    Pose2D, PreprocessorConfig, RangeFilterConfig, SangamClient, ScanPreprocessor, SlamEngine,
+    SlamMode, WheelOdometryConfig,
 };
 use serde::Deserialize;
 use std::fs;
@@ -77,6 +78,8 @@ impl Default for OutputConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 struct OdometryConfig {
+    /// Odometry fusion mode: "wheel" for wheel-only, "complementary" for gyro fusion
+    mode: String,
     ticks_per_meter: f32,
     wheel_base: f32,
     alpha: f32,
@@ -87,6 +90,7 @@ struct OdometryConfig {
 impl Default for OdometryConfig {
     fn default() -> Self {
         Self {
+            mode: "wheel".to_string(), // Default to wheel-only for best accuracy
             ticks_per_meter: 1000.0,
             wheel_base: 0.17,
             alpha: 0.98,
@@ -104,6 +108,11 @@ struct SlamConfig {
     initial_mode: String,
     min_range: f32,
     max_range: f32,
+    /// Encoder weight for scan matching initial guess (0.0 = identity, 1.0 = full odometry).
+    /// Based on slam_benchmark: 1.0 gives best results with HybridP2L matcher.
+    encoder_weight: f32,
+    /// Whether to use scan-to-submap matching (vs scan-to-scan).
+    use_submap_matching: bool,
 }
 
 impl Default for SlamConfig {
@@ -113,6 +122,10 @@ impl Default for SlamConfig {
             initial_mode: "Mapping".to_string(),
             min_range: 0.15, // 15cm minimum range (filter close returns)
             max_range: 8.0,  // 8m maximum range
+            // Based on slam_benchmark results: full trust in encoder for best accuracy
+            encoder_weight: 1.0,
+            // Use scan-to-scan matching (like slam_benchmark) - proven 94.5% wall coherence
+            use_submap_matching: false,
         }
     }
 }
@@ -122,6 +135,7 @@ struct Args {
     config_path: Option<String>,
     sangam_address: Option<String>,
     bind_port: Option<u16>,
+    odometry_mode: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -130,6 +144,7 @@ fn parse_args() -> Args {
         config_path: None,
         sangam_address: None,
         bind_port: None,
+        odometry_mode: None,
     };
 
     let mut i = 1;
@@ -150,6 +165,12 @@ fn parse_args() -> Args {
             "--port" | "-p" => {
                 if i + 1 < args.len() {
                     result.bind_port = args[i + 1].parse().ok();
+                    i += 1;
+                }
+            }
+            "--odometry" | "-o" => {
+                if i + 1 < args.len() {
+                    result.odometry_mode = Some(args[i + 1].clone());
                     i += 1;
                 }
             }
@@ -179,6 +200,7 @@ fn print_help() {
     println!("    -c, --config <FILE>     Configuration file (dhruva-slam.toml)");
     println!("    -s, --sangam <ADDR>     SangamIO address (192.168.68.101:5555)");
     println!("    -p, --port <PORT>       TCP publish port (5557)");
+    println!("    -o, --odometry <MODE>   Odometry mode: wheel or complementary (default: wheel)");
     println!("    -h, --help              Print help information");
 }
 
@@ -224,26 +246,10 @@ fn apply_overrides(mut config: Config, args: &Args) -> Config {
     if let Some(port) = args.bind_port {
         config.output.bind_port = port;
     }
-    config
-}
-
-/// Convert lidar scan to PointCloud2D
-fn lidar_to_pointcloud(scan: &[(f32, f32, u8)], min_range: f32, max_range: f32) -> PointCloud2D {
-    let mut cloud = PointCloud2D::with_capacity(scan.len());
-
-    for &(angle, distance, quality) in scan {
-        // Filter by range and quality
-        if distance < min_range || distance > max_range || quality < 10 {
-            continue;
-        }
-
-        // Convert polar to Cartesian
-        let x = distance * angle.cos();
-        let y = distance * angle.sin();
-        cloud.push(Point2D::new(x, y));
+    if let Some(mode) = &args.odometry_mode {
+        config.odometry.mode = mode.clone();
     }
-
-    cloud
+    config
 }
 
 fn main() {
@@ -315,24 +321,39 @@ fn run_main_loop(
     log::info!("Publisher listening on port {}", config.output.bind_port);
 
     // Initialize odometry pipeline
+    // For wheel-only mode, set alpha=0 (ignore gyro) and disable gyro calibration
+    let use_wheel_only = config.odometry.mode.to_lowercase() == "wheel";
     let pipeline_config = OdometryPipelineConfig {
         wheel_odom: WheelOdometryConfig {
             ticks_per_meter: config.odometry.ticks_per_meter,
             wheel_base: config.odometry.wheel_base,
         },
         filter: ComplementaryConfig {
-            alpha: config.odometry.alpha,
+            // alpha=0 means pure wheel odometry (ignore gyro for heading)
+            alpha: if use_wheel_only {
+                0.0
+            } else {
+                config.odometry.alpha
+            },
             gyro_scale: config.odometry.gyro_scale,
             gyro_bias_z: config.odometry.gyro_bias_z,
         },
         output_rate_hz: config.output.odometry_rate_hz,
-        calibration_samples: 1500, // ~3 seconds at 500Hz for gyro bias calibration
+        // Skip gyro calibration for wheel-only mode
+        calibration_samples: if use_wheel_only { 0 } else { 1500 },
     };
     let mut pipeline = OdometryPipeline::new(pipeline_config);
 
     // Initialize SLAM if enabled
     let mut slam: Option<OnlineSlam> = if config.slam.enabled {
-        let mut slam_engine = OnlineSlam::new(OnlineSlamConfig::default());
+        // Configure SLAM with encoder weight and matching settings
+        let slam_config = OnlineSlamConfig {
+            encoder_weight: config.slam.encoder_weight,
+            use_submap_matching: config.slam.use_submap_matching,
+            ..Default::default()
+        };
+
+        let mut slam_engine = OnlineSlam::new(slam_config);
 
         // Set initial mode
         let mode = match config.slam.initial_mode.to_lowercase().as_str() {
@@ -354,11 +375,51 @@ fn run_main_loop(
     };
 
     log::info!("Pipeline initialized");
+    log::info!(
+        "  odometry_mode: {}",
+        if use_wheel_only {
+            "wheel-only"
+        } else {
+            "complementary"
+        }
+    );
     log::info!("  ticks_per_meter: {}", config.odometry.ticks_per_meter);
     log::info!("  wheel_base: {} m", config.odometry.wheel_base);
-    log::info!("  alpha: {}", config.odometry.alpha);
-    log::info!("  gyro_scale: {}", config.odometry.gyro_scale);
-    log::info!("Gyro calibration: collecting 1500 samples (~3 seconds)...");
+    if !use_wheel_only {
+        log::info!("  alpha: {}", config.odometry.alpha);
+        log::info!("  gyro_scale: {}", config.odometry.gyro_scale);
+        log::info!("Gyro calibration: collecting 1500 samples (~3 seconds)...");
+    }
+    // Initialize scan preprocessor (matching slam_benchmark configuration)
+    let preprocessor = ScanPreprocessor::new(PreprocessorConfig {
+        range_filter: RangeFilterConfig {
+            min_range: config.slam.min_range,
+            max_range: config.slam.max_range,
+        },
+        outlier_filter: OutlierFilterConfig::default(),
+        downsampler: AngularDownsamplerConfig {
+            target_points: 180,                   // ~180 points for 360° scan (2° resolution)
+            min_angle_step: 1.0_f32.to_radians(), // 1 degree minimum spacing
+        },
+    });
+
+    if config.slam.enabled {
+        log::info!("SLAM matcher: HybridP2L (Correlative + Point-to-Line ICP)");
+        log::info!("  encoder_weight: {}", config.slam.encoder_weight);
+        log::info!(
+            "  matching_mode: {}",
+            if config.slam.use_submap_matching {
+                "scan-to-submap"
+            } else {
+                "scan-to-scan"
+            }
+        );
+        log::info!(
+            "  preprocessing: range={:.2}-{:.2}m, downsample=1deg",
+            config.slam.min_range,
+            config.slam.max_range
+        );
+    }
 
     let mut last_log_time = Instant::now();
     let mut last_status_time = Instant::now();
@@ -421,14 +482,12 @@ fn run_main_loop(
             && let Some(slam_engine) = slam.as_mut()
             && let Some(lidar_data) = msg.as_lidar()
         {
-            // Convert lidar scan to point cloud (already filtered by range/quality)
-            let scan_cloud = lidar_to_pointcloud(
-                lidar_data.data,
-                config.slam.min_range,
-                config.slam.max_range,
-            );
+            // Convert to LaserScan and preprocess (same as slam_benchmark)
+            // This applies: range filtering, outlier removal, angular downsampling
+            let laser_scan = LaserScan::from_lidar_scan(lidar_data.data);
+            let scan_cloud = preprocessor.process(&laser_scan);
 
-            // Skip if scan is too sparse
+            // Skip if scan is too sparse after preprocessing
             if scan_cloud.len() < 50 {
                 continue;
             }

@@ -7,13 +7,18 @@ license = "MIT"
 
 [dependencies]
 base64 = "0.22"
+clap = { version = "4.5", features = ["derive"] }  # CLI parsing for binaries
 ctrlc = "3.5"
 env_logger = "0.11"
 kiddo = "4.2"  # K-d tree for nearest neighbor queries
 log = "0.4"
 postcard = { version = "1.1", features = ["alloc"] }  # For bag file format (internal)
 prost = "0.13"
+rand = "0.9"  # Random number generation for benchmark sampling
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"  # JSON output for benchmarks
+sysinfo = "0.32"  # Memory monitoring for benchmarks
+image = "0.25"  # PNG export for map visualization
 thiserror = "2.0"
 toml = "0.8"
 
@@ -23,21 +28,25 @@ prost-build = "0.13"
 [dev-dependencies]
 approx = "0.5"
 criterion = { version = "0.5", features = ["html_reports"] }
-serde_json = "1.0"  # For tests only
 tempfile = "3.23"
 
-[[bin]]
-name = "dhruva-slam-node"
-path = "src/bin/dhruva_slam_node.rs"
+[[example]]
+name = "dhruva_slam_node"
+path = "examples/dhruva_slam_node.rs"
 
-[[bin]]
-name = "bag-record"
-path = "src/bin/bag_record.rs"
+[[example]]
+name = "bag_record"
+path = "examples/bag_record.rs"
 
-[[bin]]
-name = "bag-info"
-path = "src/bin/bag_info.rs"
+[[example]]
+name = "slam_benchmark"
+path = "examples/slam_benchmark.rs"
 
-[[bench]]
-name = "slam_benchmarks"
-harness = false
+[[example]]
+name = "scan_match_benchmark"
+path = "examples/scan_match_benchmark.rs"
+
+[[example]]
+name = "bag_inspect"
+path = "examples/bag_inspect.rs"
+

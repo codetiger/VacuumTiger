@@ -11,6 +11,18 @@
 //! LaserScan → RangeFilter → OutlierFilter → AngularDownsampler → PointCloud2D
 //! ```
 //!
+//! # ScanFilter Trait
+//!
+//! All scan filters implement the [`ScanFilter`] trait for consistent interface:
+//!
+//! ```ignore
+//! use dhruva_slam::preprocessing::{ScanFilter, RangeFilter, RangeFilterConfig};
+//!
+//! let filter = RangeFilter::new(RangeFilterConfig::default());
+//! let filtered = filter.filter(&scan);
+//! println!("Filter '{}' applied", filter.name());
+//! ```
+//!
 //! # Example
 //!
 //! ```ignore
@@ -39,6 +51,62 @@ pub use outlier::{OutlierFilter, OutlierFilterConfig};
 pub use range_filter::{RangeFilter, RangeFilterConfig};
 
 use crate::core::types::{LaserScan, PointCloud2D};
+
+/// Trait for scan filtering operations.
+///
+/// All scan filters implement this trait, providing a consistent interface
+/// for applying filters to laser scans.
+///
+/// # Example
+///
+/// ```ignore
+/// use dhruva_slam::preprocessing::{ScanFilter, RangeFilter};
+///
+/// fn apply_filter<F: ScanFilter>(filter: &F, scan: &LaserScan) -> LaserScan {
+///     println!("Applying filter: {}", filter.name());
+///     filter.filter(scan)
+/// }
+/// ```
+pub trait ScanFilter: Send + Sync {
+    /// Apply the filter to a laser scan, returning a filtered scan.
+    fn filter(&self, scan: &LaserScan) -> LaserScan;
+
+    /// Get the name of this filter for diagnostics.
+    fn name(&self) -> &'static str;
+}
+
+// Implement ScanFilter for RangeFilter
+impl ScanFilter for RangeFilter {
+    fn filter(&self, scan: &LaserScan) -> LaserScan {
+        self.apply(scan)
+    }
+
+    fn name(&self) -> &'static str {
+        "RangeFilter"
+    }
+}
+
+// Implement ScanFilter for OutlierFilter
+impl ScanFilter for OutlierFilter {
+    fn filter(&self, scan: &LaserScan) -> LaserScan {
+        self.apply(scan)
+    }
+
+    fn name(&self) -> &'static str {
+        "OutlierFilter"
+    }
+}
+
+// Implement ScanFilter for AngularDownsampler
+impl ScanFilter for AngularDownsampler {
+    fn filter(&self, scan: &LaserScan) -> LaserScan {
+        self.apply(scan)
+    }
+
+    fn name(&self) -> &'static str {
+        "AngularDownsampler"
+    }
+}
 
 /// Configuration for the scan preprocessor pipeline.
 #[derive(Debug, Clone, Default)]

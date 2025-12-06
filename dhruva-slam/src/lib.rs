@@ -110,6 +110,16 @@ pub mod engine;
 pub mod io;
 
 // ============================================================================
+// Layer 6: Metrics (depends on algorithms)
+// ============================================================================
+pub mod metrics;
+
+// ============================================================================
+// Utilities for examples and tools
+// ============================================================================
+pub mod utils;
+
+// ============================================================================
 // Convenience re-exports (flat namespace for common use)
 // ============================================================================
 
@@ -130,14 +140,14 @@ pub use sensors::odometry::{
 pub use sensors::preprocessing::{
     AngularDownsampler, AngularDownsamplerConfig, DynamicFilter, DynamicFilterConfig,
     DynamicFilterStats, OutlierFilter, OutlierFilterConfig, PreprocessorConfig, RangeFilter,
-    RangeFilterConfig, ScanConverter, ScanPreprocessor,
+    RangeFilterConfig, ScanConverter, ScanFilter, ScanPreprocessor,
 };
 
 // Algorithms - Matching
 pub use algorithms::matching::{
-    CorrelativeConfig, CorrelativeMatcher, IcpConfig, MultiResolutionConfig,
-    MultiResolutionMatcher, PointToLineIcp, PointToLineIcpConfig, PointToPointIcp, ScanMatchResult,
-    ScanMatcher,
+    CorrelativeConfig, CorrelativeMatcher, HybridMultiResConfig, HybridMultiResMatcher,
+    HybridP2LMatcherConfig, IcpConfig, MultiResolutionConfig, MultiResolutionMatcher,
+    PointToLineIcp, PointToLineIcpConfig, PointToPointIcp, ScanMatchResult, ScanMatcher,
 };
 
 // Algorithms - Mapping
@@ -169,7 +179,9 @@ pub use engine::graph::{
 };
 
 // I/O - SangamIO client
-pub use io::sangam_client::{LidarPoint, LidarScan, SangamClient};
+pub use io::sangam_client::{
+    ComponentActionType, LidarPoint, LidarScan, SangamClient, SensorValue,
+};
 
 // I/O - Bag
 pub use io::bag::{BagHeader, BagInfo, BagMessage, BagPlayer, BagRecorder, SimulatedClient};

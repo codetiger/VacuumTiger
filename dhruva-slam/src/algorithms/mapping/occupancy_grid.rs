@@ -817,4 +817,277 @@ mod tests {
         // Clean up
         std::fs::remove_file(temp_path).ok();
     }
+
+    // ========================================================================
+    // Map Quality / Accuracy Tests
+    // ========================================================================
+
+    #[test]
+    fn test_known_wall_at_correct_position() {
+        // Test that when we mark a wall at a known position,
+        // the occupied cell is at the correct world coordinate
+        let config = OccupancyGridConfig {
+            resolution: 0.05, // 5cm cells
+            initial_width: 10.0,
+            initial_height: 10.0,
+            ..Default::default()
+        };
+        let mut grid = OccupancyGrid::new(config);
+
+        // Mark a wall at position (2.0, 1.5)
+        let wall_x = 2.0;
+        let wall_y = 1.5;
+
+        // Convert to cell and mark as occupied
+        if let Some((cx, cy)) = grid.world_to_cell(wall_x, wall_y) {
+            for _ in 0..5 {
+                grid.update_cell(cx, cy, true);
+            }
+
+            // Convert cell center back to world
+            let (recovered_x, recovered_y) = grid.cell_to_world(cx, cy);
+
+            // Error should be < resolution/2 = 2.5cm
+            let error_x = (recovered_x - wall_x).abs();
+            let error_y = (recovered_y - wall_y).abs();
+
+            assert!(
+                error_x < grid.resolution(),
+                "X error {:.4}m exceeds resolution {:.4}m",
+                error_x,
+                grid.resolution()
+            );
+            assert!(
+                error_y < grid.resolution(),
+                "Y error {:.4}m exceeds resolution {:.4}m",
+                error_y,
+                grid.resolution()
+            );
+
+            // Cell should be marked occupied
+            assert_eq!(
+                grid.get_state(cx, cy),
+                CellState::Occupied,
+                "Wall cell should be occupied"
+            );
+        } else {
+            panic!("Wall position should be inside grid");
+        }
+    }
+
+    #[test]
+    fn test_probability_always_bounded() {
+        // Verify probability is always in [0, 1] even after many updates
+        let config = OccupancyGridConfig {
+            log_odds_max: 100.0,  // Very high clamp
+            log_odds_min: -100.0, // Very low clamp
+            ..Default::default()
+        };
+        let mut grid = OccupancyGrid::new(config);
+
+        let (cx, cy) = grid.world_to_cell(0.0, 0.0).unwrap();
+
+        // Many occupied updates
+        for _ in 0..1000 {
+            grid.update_cell(cx, cy, true);
+        }
+        let prob_occupied = grid.get_probability(cx, cy);
+        assert!(
+            prob_occupied >= 0.0 && prob_occupied <= 1.0,
+            "Probability {} out of bounds after many occupied updates",
+            prob_occupied
+        );
+        assert!(
+            prob_occupied > 0.99,
+            "Probability {} should be very high after many occupied updates",
+            prob_occupied
+        );
+
+        // Reset and do many free updates
+        grid.clear();
+        for _ in 0..1000 {
+            grid.update_cell(cx, cy, false);
+        }
+        let prob_free = grid.get_probability(cx, cy);
+        assert!(
+            prob_free >= 0.0 && prob_free <= 1.0,
+            "Probability {} out of bounds after many free updates",
+            prob_free
+        );
+        assert!(
+            prob_free < 0.01,
+            "Probability {} should be very low after many free updates",
+            prob_free
+        );
+    }
+
+    #[test]
+    fn test_log_odds_numerical_stability() {
+        // Verify no NaN, Inf, or numerical overflow
+        let config = OccupancyGridConfig::default();
+        let mut grid = OccupancyGrid::new(config);
+
+        let (cx, cy) = grid.world_to_cell(0.0, 0.0).unwrap();
+
+        // Alternate occupied/free to stress test
+        for i in 0..10000 {
+            grid.update_cell(cx, cy, i % 2 == 0);
+        }
+
+        let log_odds = grid.get_log_odds(cx, cy);
+        let prob = grid.get_probability(cx, cy);
+
+        assert!(
+            log_odds.is_finite(),
+            "Log-odds {} should be finite",
+            log_odds
+        );
+        assert!(prob.is_finite(), "Probability {} should be finite", prob);
+        assert!(
+            !log_odds.is_nan(),
+            "Log-odds should not be NaN after stress test"
+        );
+        assert!(!prob.is_nan(), "Probability should not be NaN");
+    }
+
+    #[test]
+    fn test_grid_resize_preserves_accuracy() {
+        // Verify that resize operations preserve data within the original bounds
+        let config = OccupancyGridConfig {
+            resolution: 0.05,
+            initial_width: 2.0,
+            initial_height: 2.0,
+            ..Default::default()
+        };
+        let mut grid = OccupancyGrid::new(config);
+
+        // Mark a specific position near the center (less likely to be affected by resize)
+        let reference_x = 0.5;
+        let reference_y = 0.5;
+        let (orig_cx, orig_cy) = grid.world_to_cell(reference_x, reference_y).unwrap();
+
+        for _ in 0..10 {
+            grid.update_cell(orig_cx, orig_cy, true);
+        }
+        let original_log_odds = grid.get_log_odds(orig_cx, orig_cy);
+        assert!(
+            original_log_odds > 1.0,
+            "Should have high log-odds after 10 occupied updates"
+        );
+
+        // Expand grid in positive direction only (simpler case)
+        grid.ensure_contains(3.0, 3.0);
+
+        // Find the same world position after resize
+        let (new_cx, new_cy) = grid.world_to_cell(reference_x, reference_y).unwrap();
+        let new_log_odds = grid.get_log_odds(new_cx, new_cy);
+
+        // Log-odds should be preserved (data should be copied correctly)
+        assert_relative_eq!(new_log_odds, original_log_odds, epsilon = 0.001);
+
+        // World coordinate of cell should be accurate
+        let (recovered_x, recovered_y) = grid.cell_to_world(new_cx, new_cy);
+        let error_x = (recovered_x - reference_x).abs();
+        let error_y = (recovered_y - reference_y).abs();
+
+        // Allow 1 cell of error from coordinate quantization
+        assert!(
+            error_x < grid.resolution(),
+            "X position error {:.4}m after resize exceeds tolerance",
+            error_x
+        );
+        assert!(
+            error_y < grid.resolution(),
+            "Y position error {:.4}m after resize exceeds tolerance",
+            error_y
+        );
+    }
+
+    #[test]
+    fn test_cell_state_thresholds() {
+        // Verify cell state transitions at correct thresholds
+        let config = OccupancyGridConfig {
+            occupied_threshold: 0.5,
+            free_threshold: -0.5,
+            log_odds_occupied: 0.2,
+            log_odds_free: -0.2,
+            ..Default::default()
+        };
+        let mut grid = OccupancyGrid::new(config);
+
+        let (cx, cy) = grid.world_to_cell(0.0, 0.0).unwrap();
+
+        // Initially unknown (log_odds = 0)
+        assert_eq!(grid.get_state(cx, cy), CellState::Unknown);
+
+        // 3 occupied updates = 0.6 log_odds > 0.5 threshold
+        grid.update_cell(cx, cy, true);
+        grid.update_cell(cx, cy, true);
+        grid.update_cell(cx, cy, true);
+        assert_eq!(
+            grid.get_state(cx, cy),
+            CellState::Occupied,
+            "Should be occupied at log_odds = {}",
+            grid.get_log_odds(cx, cy)
+        );
+
+        // Clear and do free updates
+        grid.clear();
+        grid.update_cell(cx, cy, false);
+        grid.update_cell(cx, cy, false);
+        grid.update_cell(cx, cy, false);
+        assert_eq!(
+            grid.get_state(cx, cy),
+            CellState::Free,
+            "Should be free at log_odds = {}",
+            grid.get_log_odds(cx, cy)
+        );
+    }
+
+    #[test]
+    fn test_coordinate_conversion_round_trip() {
+        // Test that world -> cell -> world is accurate
+        let config = OccupancyGridConfig {
+            resolution: 0.05, // 5cm
+            initial_width: 20.0,
+            initial_height: 20.0,
+            ..Default::default()
+        };
+        let grid = OccupancyGrid::new(config);
+
+        let test_points = [
+            (0.0, 0.0),
+            (1.234, 2.567),
+            (-3.14, 1.59),
+            (5.0, -5.0),
+            (-7.5, 7.5),
+        ];
+
+        for (wx, wy) in test_points {
+            if let Some((cx, cy)) = grid.world_to_cell(wx, wy) {
+                let (rx, ry) = grid.cell_to_world(cx, cy);
+
+                // Error should be < resolution (cell centers)
+                let error_x = (rx - wx).abs();
+                let error_y = (ry - wy).abs();
+
+                assert!(
+                    error_x < grid.resolution(),
+                    "X round-trip error {:.4}m for ({:.3}, {:.3})",
+                    error_x,
+                    wx,
+                    wy
+                );
+                assert!(
+                    error_y < grid.resolution(),
+                    "Y round-trip error {:.4}m for ({:.3}, {:.3})",
+                    error_y,
+                    wx,
+                    wy
+                );
+            } else {
+                panic!("Point ({}, {}) should be inside grid", wx, wy);
+            }
+        }
+    }
 }

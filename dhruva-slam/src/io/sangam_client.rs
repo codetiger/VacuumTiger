@@ -31,7 +31,7 @@
 use crate::core::types::Timestamped;
 use prost::Message as ProstMessage;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 use thiserror::Error;
@@ -304,6 +304,41 @@ impl SensorValue {
             None => SensorValue::Bool(false), // Default fallback
         }
     }
+
+    /// Convert to protobuf sensor value
+    fn to_proto(&self) -> proto::sangamio::SensorValue {
+        use proto::sangamio::sensor_value::Value;
+        proto::sangamio::SensorValue {
+            value: Some(match self {
+                SensorValue::Bool(v) => Value::BoolVal(*v),
+                SensorValue::U32(v) => Value::U32Val(*v),
+                SensorValue::U64(v) => Value::U64Val(*v),
+                SensorValue::I32(v) => Value::I32Val(*v),
+                SensorValue::I64(v) => Value::I64Val(*v),
+                SensorValue::F32(v) => Value::F32Val(*v),
+                SensorValue::F64(v) => Value::F64Val(*v),
+                SensorValue::String(v) => Value::StringVal(v.clone()),
+                SensorValue::Bytes(v) => Value::BytesVal(v.clone()),
+                SensorValue::Vector3(v) => Value::Vector3Val(proto::sangamio::Vector3 {
+                    x: v[0],
+                    y: v[1],
+                    z: v[2],
+                }),
+                SensorValue::PointCloud2D(points) => {
+                    Value::PointcloudVal(proto::sangamio::PointCloud2D {
+                        points: points
+                            .iter()
+                            .map(|(angle, dist, quality)| proto::sangamio::LidarPoint {
+                                angle_rad: *angle,
+                                distance_m: *dist,
+                                quality: *quality as u32,
+                            })
+                            .collect(),
+                    })
+                }
+            }),
+        }
+    }
 }
 
 /// Default buffer size (64KB should handle most messages)
@@ -380,23 +415,60 @@ impl SangamClient {
 
     /// Receive with timeout, returns None on timeout.
     ///
-    /// Temporarily sets timeout, attempts to receive, then restores
-    /// previous timeout setting.
+    /// Uses timeout only for the initial length read. Once we start reading
+    /// a message, we use a longer timeout to ensure we don't leave the stream
+    /// in a corrupted state from partial reads.
     pub fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<Message>> {
         let old_timeout = self.stream.read_timeout()?;
         self.stream.set_read_timeout(Some(timeout))?;
 
-        let result = match self.recv() {
-            Ok(msg) => Ok(Some(msg)),
-            Err(ClientError::Connection(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                Ok(None)
+        // Try to read length prefix - timeout OK here
+        let mut len_buf = [0u8; 4];
+        match self.stream.read_exact(&mut len_buf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                self.stream.set_read_timeout(old_timeout)?;
+                return Ok(None);
             }
-            Err(ClientError::Connection(e)) if e.kind() == std::io::ErrorKind::TimedOut => Ok(None),
-            Err(e) => Err(e),
-        };
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                self.stream.set_read_timeout(old_timeout)?;
+                return Ok(None);
+            }
+            Err(e) => {
+                self.stream.set_read_timeout(old_timeout)?;
+                return Err(ClientError::Connection(e));
+            }
+        }
+
+        let len = u32::from_be_bytes(len_buf) as usize;
+
+        // Now we've committed to reading a message - use longer timeout for payload
+        // to avoid corrupting the stream
+        self.stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+
+        // Grow buffer if needed (up to max)
+        if len > self.buffer.len() {
+            if len > MAX_BUFFER_SIZE {
+                self.stream.set_read_timeout(old_timeout)?;
+                return Err(ClientError::BufferTooSmall(len));
+            }
+            self.buffer.resize(len, 0);
+        }
+
+        // Read payload - must succeed now that we've started
+        match self.stream.read_exact(&mut self.buffer[..len]) {
+            Ok(()) => {}
+            Err(e) => {
+                self.stream.set_read_timeout(old_timeout)?;
+                return Err(ClientError::Connection(e));
+            }
+        }
 
         self.stream.set_read_timeout(old_timeout)?;
-        result
+
+        // Decode protobuf message
+        let proto_msg = proto::sangamio::Message::decode(&self.buffer[..len])?;
+        Message::from_proto(proto_msg).map(Some)
     }
 
     /// Try to receive a message without blocking.
@@ -406,6 +478,106 @@ impl SangamClient {
         // Use 1ms timeout since 0 duration is not allowed on some platforms
         self.recv_timeout(Duration::from_millis(1))
     }
+
+    /// Send a component control command to the robot.
+    ///
+    /// # Arguments
+    /// * `component_id` - Component to control (e.g., "imu", "drive", "vacuum")
+    /// * `action` - Action type (Enable, Disable, Reset, Configure)
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Enable IMU calibration
+    /// client.send_component_command("imu", ComponentActionType::Enable)?;
+    /// ```
+    pub fn send_component_command(
+        &mut self,
+        component_id: &str,
+        action: ComponentActionType,
+    ) -> Result<()> {
+        self.send_component_command_with_config(component_id, action, HashMap::new())
+    }
+
+    /// Send a component control command with configuration parameters.
+    ///
+    /// # Arguments
+    /// * `component_id` - Component to control (e.g., "lidar", "drive", "vacuum")
+    /// * `action` - Action type (Enable, Disable, Reset, Configure)
+    /// * `config` - Configuration parameters (e.g., {"pwm": 60} for lidar)
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Enable lidar at 60% PWM
+    /// let mut config = HashMap::new();
+    /// config.insert("pwm".to_string(), SensorValue::U32(60));
+    /// client.send_component_command_with_config("lidar", ComponentActionType::Configure, config)?;
+    /// ```
+    pub fn send_component_command_with_config(
+        &mut self,
+        component_id: &str,
+        action: ComponentActionType,
+        config: HashMap<String, SensorValue>,
+    ) -> Result<()> {
+        use proto::sangamio::{
+            ComponentAction, ComponentControl, Message as ProtoMessage,
+            command::Command as CommandPayload, component_action::ActionType,
+        };
+
+        let action_type = match action {
+            ComponentActionType::Enable => ActionType::Enable,
+            ComponentActionType::Disable => ActionType::Disable,
+            ComponentActionType::Reset => ActionType::Reset,
+            ComponentActionType::Configure => ActionType::Configure,
+        };
+
+        // Convert SensorValue to proto SensorValue
+        let proto_config: HashMap<String, proto::sangamio::SensorValue> =
+            config.into_iter().map(|(k, v)| (k, v.to_proto())).collect();
+
+        let command = ProtoMessage {
+            topic: "command".to_string(),
+            payload: Some(proto::sangamio::message::Payload::Command(
+                proto::sangamio::Command {
+                    command: Some(CommandPayload::ComponentControl(ComponentControl {
+                        id: component_id.to_string(),
+                        action: Some(ComponentAction {
+                            r#type: action_type as i32,
+                            config: proto_config,
+                        }),
+                    })),
+                },
+            )),
+        };
+
+        self.send_proto(&command)
+    }
+
+    /// Send a raw protobuf message.
+    fn send_proto(&mut self, msg: &proto::sangamio::Message) -> Result<()> {
+        let encoded = msg.encode_to_vec();
+        let len = encoded.len() as u32;
+
+        // Write length prefix (big-endian)
+        self.stream.write_all(&len.to_be_bytes())?;
+        // Write payload
+        self.stream.write_all(&encoded)?;
+        self.stream.flush()?;
+
+        Ok(())
+    }
+}
+
+/// Action types for component control commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentActionType {
+    /// Enable component (for IMU: triggers calibration state query)
+    Enable,
+    /// Disable component
+    Disable,
+    /// Reset component (for IMU: triggers factory calibration)
+    Reset,
+    /// Configure component with parameters
+    Configure,
 }
 
 #[cfg(test)]

@@ -110,6 +110,7 @@ impl OutlierFilter {
         }
 
         let mut new_ranges = Vec::with_capacity(scan.ranges.len());
+        let mut new_angles = Vec::with_capacity(scan.ranges.len());
         let mut new_intensities = scan
             .intensities
             .as_ref()
@@ -120,7 +121,7 @@ impl OutlierFilter {
 
         for i in 0..scan.ranges.len() {
             if !self.is_outlier(&scan.ranges, i) {
-                let angle = scan.angle_at(i);
+                let angle = scan.get_angle(i);
 
                 if new_angle_min.is_none() {
                     new_angle_min = Some(angle);
@@ -128,6 +129,7 @@ impl OutlierFilter {
                 new_angle_max = angle;
 
                 new_ranges.push(scan.ranges[i]);
+                new_angles.push(angle);
 
                 if let (Some(new_int), Some(old_int)) = (&mut new_intensities, &scan.intensities)
                     && let Some(&intensity) = old_int.get(i)
@@ -152,6 +154,12 @@ impl OutlierFilter {
             range_max: scan.range_max,
             ranges: new_ranges,
             intensities: new_intensities,
+            // Preserve actual angles from the filtered points
+            angles: if scan.angles.is_some() {
+                Some(new_angles)
+            } else {
+                None
+            },
         }
     }
 

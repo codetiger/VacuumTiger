@@ -7,8 +7,7 @@ use std::time::Instant;
 
 use crate::algorithms::mapping::{OccupancyGrid, OccupancyGridConfig};
 use crate::algorithms::matching::{
-    HybridMatcher, HybridMatcherConfig, HybridP2LMatcher, HybridP2LMatcherConfig, ScanMatchResult,
-    ScanMatcher,
+    HybridP2LMatcher, HybridP2LMatcherConfig, ScanMatchResult, ScanMatcher,
 };
 use crate::core::types::{Covariance2D, PointCloud2D, Pose2D};
 use crate::io::streaming::{
@@ -117,8 +116,12 @@ pub struct OnlineSlamConfig {
     /// Submap manager configuration.
     pub submap: SubmapManagerConfig,
 
-    /// Scan matcher configuration.
-    pub matcher: HybridMatcherConfig,
+    /// Scan-to-scan matcher configuration (Correlative + P2L ICP).
+    /// Same as slam_benchmark for consistent results.
+    pub matcher: HybridP2LMatcherConfig,
+
+    /// Submap matcher configuration (Correlative + P2L ICP for scan-to-submap).
+    pub submap_matcher: HybridP2LMatcherConfig,
 
     /// Global map configuration.
     pub global_map: OccupancyGridConfig,
@@ -134,6 +137,10 @@ pub struct OnlineSlamConfig {
 
     /// Minimum points in scan to process.
     pub min_scan_points: usize,
+
+    /// Encoder weight for initial guess (0.0 = identity, 1.0 = full odometry).
+    /// Higher values trust encoder more for initial guess.
+    pub encoder_weight: f32,
 }
 
 impl Default for OnlineSlamConfig {
@@ -141,12 +148,18 @@ impl Default for OnlineSlamConfig {
         Self {
             keyframe: KeyframeManagerConfig::default(),
             submap: SubmapManagerConfig::default(),
-            matcher: HybridMatcherConfig::default(),
+            // Use HybridP2L (same as slam_benchmark) for consistent results
+            matcher: HybridP2LMatcherConfig::default(),
+            submap_matcher: HybridP2LMatcherConfig::default(),
             global_map: OccupancyGridConfig::default(),
             min_match_score: 0.3,
             lost_threshold: 0.1,
-            use_submap_matching: true,
+            // Use scan-to-scan matching by default - submap matching has semantic
+            // issues where match_to_submap returns absolute pose but apply_scan_match
+            // expects relative transform
+            use_submap_matching: false,
             min_scan_points: 50,
+            encoder_weight: 0.8, // Trust encoder 80% for initial guess
         }
     }
 }
@@ -172,8 +185,9 @@ pub struct OnlineSlam {
     /// Submap manager.
     submaps: SubmapManager,
 
-    /// Hybrid scan matcher.
-    matcher: HybridMatcher,
+    /// Scan-to-scan matcher (Correlative + Point-to-Line ICP).
+    /// Same as slam_benchmark for consistent results.
+    matcher: HybridP2LMatcher,
 
     /// Scan-to-submap matcher (Correlative + Point-to-Line ICP for rotation handling).
     submap_matcher: HybridP2LMatcher,
@@ -230,11 +244,16 @@ impl OnlineSlam {
 
     /// Create a new online SLAM instance.
     pub fn new(config: OnlineSlamConfig) -> Self {
-        let matcher = HybridMatcher::new(config.matcher.clone());
+        // Use Correlative + Point-to-Line ICP for scan-to-scan matching:
+        // - Same as slam_benchmark for consistent results
+        // - Correlative handles large initial errors (especially rotation)
+        // - Point-to-Line ICP provides sub-cm accuracy for structured environments
+        let matcher = HybridP2LMatcher::new(config.matcher.clone());
+
         // Use Correlative + Point-to-Line ICP for submap matching:
         // - Correlative handles large initial errors (especially rotation)
         // - Point-to-Line ICP provides sub-cm accuracy for structured environments
-        let submap_matcher = HybridP2LMatcher::new(HybridP2LMatcherConfig::default());
+        let submap_matcher = HybridP2LMatcher::new(config.submap_matcher.clone());
 
         // Pre-allocate scan buffers to avoid reallocation during hot path
         Self {
@@ -344,6 +363,10 @@ impl OnlineSlam {
     }
 
     /// Match scan to previous scan (scan-to-scan matching).
+    ///
+    /// The initial guess for scan matching should be the transform from source to target.
+    /// Since source=current scan and target=previous scan, and the robot moved by odom_delta,
+    /// the initial guess should be odom_delta.inverse() (to undo the robot motion).
     fn match_to_previous_scan(
         &mut self,
         scan: &PointCloud2D,
@@ -360,7 +383,9 @@ impl OnlineSlam {
             return None;
         }
 
-        let result = self.matcher.match_scans(scan, prev, odom_delta);
+        // Initial guess: inverse of odometry delta (transform from current scan to previous scan)
+        let initial_guess = odom_delta.inverse();
+        let result = self.matcher.match_scans(scan, prev, &initial_guess);
 
         if result.converged && result.score >= self.config.min_match_score {
             Some(result)
@@ -371,14 +396,29 @@ impl OnlineSlam {
 
     /// Process pose update from scan matching.
     ///
-    /// Uses a threshold-based approach instead of linear interpolation to avoid
-    /// erratic pose jumps from small score variations.
+    /// The scan match result contains a transform from current scan to previous scan.
+    /// To compute the corrected pose:
+    /// - previous_pose is where the previous scan was taken
+    /// - match_result.transform maps current scan → previous scan frame
+    /// - So: corrected_pose = previous_pose.compose(match_result.transform.inverse())
+    ///
+    /// Since we don't store previous_pose explicitly, we compute it as:
+    ///   previous_pose = current_pose (before the odom_delta was applied)
+    ///
+    /// Uses a threshold-based approach to blend between scan match and odometry
+    /// to avoid erratic pose jumps from small score variations.
     fn apply_scan_match(&mut self, match_result: &ScanMatchResult, odom_delta: &Pose2D) -> Pose2D {
         let odom_pose = self.current_pose.compose(odom_delta);
 
+        // Compute scan-match-corrected pose:
+        // match_result.transform is the transform from current scan to previous scan
+        // The inverse gives us the relative motion from previous scan to current scan
+        // So: corrected_pose = current_pose.compose(match_result.transform.inverse())
+        let scan_match_pose = self.current_pose.compose(&match_result.transform.inverse());
+
         if match_result.score >= 0.6 {
             // High confidence: trust scan match fully
-            match_result.transform
+            scan_match_pose
         } else if match_result.score >= 0.3 {
             // Medium confidence: blend with bias toward scan match
             // alpha goes from 0.0 (at score=0.3) to 1.0 (at score=0.6)
@@ -386,13 +426,10 @@ impl OnlineSlam {
             // blend_factor goes from 0.5 to 1.0
             let blend_factor = 0.5 + 0.5 * alpha;
 
-            let x = odom_pose.x * (1.0 - blend_factor) + match_result.transform.x * blend_factor;
-            let y = odom_pose.y * (1.0 - blend_factor) + match_result.transform.y * blend_factor;
-            let theta = crate::core::math::angle_lerp(
-                odom_pose.theta,
-                match_result.transform.theta,
-                blend_factor,
-            );
+            let x = odom_pose.x * (1.0 - blend_factor) + scan_match_pose.x * blend_factor;
+            let y = odom_pose.y * (1.0 - blend_factor) + scan_match_pose.y * blend_factor;
+            let theta =
+                crate::core::math::angle_lerp(odom_pose.theta, scan_match_pose.theta, blend_factor);
             Pose2D::new(x, y, theta)
         } else {
             // Low confidence: use odometry only
@@ -481,16 +518,16 @@ impl SlamEngine for OnlineSlam {
 
         // Update scan match stats for diagnostics
         // Use static strings to avoid allocation in hot path
-        const METHOD_SUBMAP_ICP: &str = "submap_icp";
-        const METHOD_HYBRID: &str = "hybrid";
+        const METHOD_SUBMAP_P2L: &str = "submap_p2l";
+        const METHOD_MULTI_RES: &str = "multi_res_icp";
         const METHOD_NONE: &str = "none";
 
         if let Some(ref mr) = match_result {
             self.last_scan_match_stats = ScanMatchStats {
                 method: if self.config.use_submap_matching {
-                    METHOD_SUBMAP_ICP
+                    METHOD_SUBMAP_P2L
                 } else {
-                    METHOD_HYBRID
+                    METHOD_MULTI_RES
                 }
                 .into(),
                 iterations: mr.iterations,

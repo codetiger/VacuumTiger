@@ -1,8 +1,10 @@
 //! Angular downsampling for LiDAR scans.
 //!
-//! Reduces point count while preserving scan structure.
+//! Reduces point count while preserving scan structure using angular bins
+//! for deterministic sampling across consecutive scans.
 
 use crate::core::types::LaserScan;
+use std::f32::consts::TAU;
 
 /// Configuration for angular downsampling.
 #[derive(Debug, Clone, Copy)]
@@ -31,8 +33,18 @@ impl Default for AngularDownsamplerConfig {
 
 /// Angular downsampler for reducing scan point count.
 ///
-/// Uses uniform angular sampling to select a subset of points
-/// while maintaining even coverage around the scan.
+/// Uses **angular-binned sampling** to ensure deterministic point selection
+/// across consecutive scans. This is critical for ICP accuracy because:
+///
+/// 1. Traditional index-based downsampling (`step_by(skip)`) causes aliasing
+///    when consecutive scans have different point counts (e.g., after outlier
+///    removal). The same wall might be sampled at different angles.
+///
+/// 2. Angular bins divide the 360° space into fixed regions. Each bin selects
+///    the point closest to its center, ensuring consistent angular sampling
+///    regardless of which points were removed by upstream filters.
+///
+/// This approach reduces ICP matching error significantly for static scans.
 #[derive(Debug, Clone)]
 pub struct AngularDownsampler {
     config: AngularDownsamplerConfig,
@@ -49,7 +61,11 @@ impl AngularDownsampler {
         &self.config
     }
 
-    /// Apply downsampling to a laser scan.
+    /// Apply angular-binned downsampling to a laser scan.
+    ///
+    /// Divides the angular range into fixed bins and selects the point
+    /// closest to each bin center. This ensures deterministic sampling
+    /// across consecutive scans regardless of upstream filtering.
     ///
     /// Returns a new scan with reduced point count.
     pub fn apply(&self, scan: &LaserScan) -> LaserScan {
@@ -64,42 +80,71 @@ impl AngularDownsampler {
             return scan.clone();
         }
 
-        // Calculate skip factor
-        let skip = (input_count as f32 / self.config.target_points as f32).ceil() as usize;
-        let skip = skip.max(1);
+        // Calculate bin width based on target points
+        // Use 360° (TAU) as the full angular range for consistent binning
+        let bin_width = (TAU / self.config.target_points as f32).max(self.config.min_angle_step);
+        let num_bins = (TAU / bin_width).ceil() as usize;
 
-        // Calculate expected output angle increment
-        let new_angle_increment = scan.angle_increment * skip as f32;
+        // Pre-allocate bin storage: (best_index, best_distance_to_center)
+        // Using Option to track empty bins
+        let mut bins: Vec<Option<(usize, f32)>> = vec![None; num_bins];
 
-        // Ensure minimum angle separation
-        let effective_skip = if new_angle_increment < self.config.min_angle_step {
-            (self.config.min_angle_step / scan.angle_increment).ceil() as usize
-        } else {
-            skip
-        };
+        // Assign each point to its angular bin
+        for i in 0..input_count {
+            let angle = scan
+                .angles
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or_else(|| scan.angle_at(i));
 
-        // Sample points
-        let mut new_ranges = Vec::with_capacity(input_count / effective_skip + 1);
+            // Normalize angle to [0, TAU) for consistent binning
+            let normalized_angle = angle.rem_euclid(TAU);
+            let bin_idx = ((normalized_angle / bin_width) as usize).min(num_bins - 1);
+
+            // Calculate bin center
+            let bin_center = (bin_idx as f32 + 0.5) * bin_width;
+
+            // Distance from point angle to bin center
+            let dist = (normalized_angle - bin_center).abs();
+
+            // Keep the point closest to bin center
+            match &mut bins[bin_idx] {
+                None => bins[bin_idx] = Some((i, dist)),
+                Some((_, best_dist)) if dist < *best_dist => {
+                    bins[bin_idx] = Some((i, dist));
+                }
+                _ => {}
+            }
+        }
+
+        // Collect selected points in angular order
+        let mut new_ranges = Vec::with_capacity(num_bins);
+        let mut new_angles = Vec::with_capacity(num_bins);
         let mut new_intensities = scan
             .intensities
             .as_ref()
-            .map(|_| Vec::with_capacity(input_count / effective_skip + 1));
+            .map(|_| Vec::with_capacity(num_bins));
 
         let mut new_angle_min = None;
         let mut new_angle_max = 0.0f32;
 
-        for i in (0..input_count).step_by(effective_skip) {
-            let angle = scan.angle_at(i);
+        for (idx, _) in bins.iter().flatten() {
+            let angle = scan
+                .angles
+                .as_ref()
+                .and_then(|a| a.get(*idx).copied())
+                .unwrap_or_else(|| scan.angle_at(*idx));
 
             if new_angle_min.is_none() {
                 new_angle_min = Some(angle);
             }
             new_angle_max = angle;
 
-            new_ranges.push(scan.ranges[i]);
+            new_ranges.push(scan.ranges[*idx]);
+            new_angles.push(angle);
 
             if let (Some(new_int), Some(old_int)) = (&mut new_intensities, &scan.intensities)
-                && let Some(&intensity) = old_int.get(i)
+                && let Some(&intensity) = old_int.get(*idx)
             {
                 new_int.push(intensity);
             }
@@ -120,10 +165,16 @@ impl AngularDownsampler {
             range_max: scan.range_max,
             ranges: new_ranges,
             intensities: new_intensities,
+            // Preserve actual angles from the downsampled points
+            angles: if scan.angles.is_some() {
+                Some(new_angles)
+            } else {
+                None
+            },
         }
     }
 
-    /// Calculate the skip factor that would be used for a given input size.
+    /// Calculate the approximate number of output points for a given input.
     pub fn calculate_skip(&self, input_count: usize) -> usize {
         if input_count <= self.config.target_points {
             return 1;
@@ -427,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn test_preserves_first_and_last_angle() {
+    fn test_angular_bins_cover_full_range() {
         let scan = create_uniform_scan(100);
         let config = AngularDownsamplerConfig {
             target_points: 10,
@@ -437,7 +488,55 @@ mod tests {
 
         let result = downsampler.apply(&scan);
 
-        // First point should be at same angle as original first point
-        assert_eq!(result.angle_min, scan.angle_min);
+        // With angular binning, output spans most of the input range
+        // First bin selects point closest to bin center (not necessarily first point)
+        // Verify we get roughly uniform coverage
+        let output_range = result.angle_max - result.angle_min;
+        let input_range = scan.angle_max - scan.angle_min;
+
+        // Output should cover significant portion of input range
+        assert!(output_range > input_range * 0.5);
+    }
+
+    #[test]
+    fn test_consistent_sampling_across_scans() {
+        // This test verifies the key property: consecutive scans with
+        // slightly different point counts produce consistent angular samples
+
+        // Scan 1: 100 points
+        let scan1 = create_uniform_scan(100);
+
+        // Scan 2: 98 points (simulating some points removed by outlier filter)
+        let ranges2: Vec<f32> = (0..98).map(|_| 5.0).collect();
+        let scan2 = LaserScan::new(
+            0.0,
+            TAU * 98.0 / 100.0, // Slightly shorter range
+            TAU / 100.0,        // Same increment
+            0.15,
+            12.0,
+            ranges2,
+        );
+
+        let config = AngularDownsamplerConfig {
+            target_points: 10,
+            min_angle_step: 0.0,
+        };
+        let downsampler = AngularDownsampler::new(config);
+
+        let result1 = downsampler.apply(&scan1);
+        let result2 = downsampler.apply(&scan2);
+
+        // Both should produce similar number of points
+        assert!((result1.len() as i32 - result2.len() as i32).abs() <= 2);
+
+        // First output angles should be very close (within half a bin width)
+        let bin_width = TAU / 10.0;
+        let angle_diff = (result1.angle_min - result2.angle_min).abs();
+        assert!(
+            angle_diff < bin_width,
+            "Angle difference {} should be < bin_width {}",
+            angle_diff,
+            bin_width
+        );
     }
 }

@@ -73,10 +73,7 @@ struct GridParams {
 }
 
 /// Grid-based lookup table for fast scoring.
-struct ScoreGrid<'a> {
-    /// Grid cells: true if near a target point (borrowed from matcher)
-    #[allow(dead_code)]
-    cells: &'a mut [bool],
+struct ScoreGrid {
     /// Grid dimensions
     width: usize,
     height: usize,
@@ -87,7 +84,7 @@ struct ScoreGrid<'a> {
     resolution: f32,
 }
 
-impl<'a> ScoreGrid<'a> {
+impl ScoreGrid {
     /// Build a score grid from target point cloud using an external buffer.
     ///
     /// The buffer is cleared, resized if needed, and populated with the grid data.
@@ -95,12 +92,11 @@ impl<'a> ScoreGrid<'a> {
         cloud: &PointCloud2D,
         resolution: f32,
         padding: f32,
-        buffer: &'a mut Vec<bool>,
+        buffer: &mut Vec<bool>,
     ) -> Self {
         if cloud.is_empty() {
             buffer.clear();
             return Self {
-                cells: buffer.as_mut_slice(),
                 width: 0,
                 height: 0,
                 origin_x: 0.0,
@@ -148,53 +144,12 @@ impl<'a> ScoreGrid<'a> {
         }
 
         Self {
-            cells: &mut buffer[..required_size],
             width,
             height,
             origin_x,
             origin_y,
             resolution,
         }
-    }
-
-    /// Check if a point is near a target point.
-    #[inline]
-    #[allow(dead_code)]
-    fn is_hit(&self, x: f32, y: f32) -> bool {
-        if self.cells.is_empty() {
-            return false;
-        }
-
-        let cx = ((x - self.origin_x) / self.resolution) as isize;
-        let cy = ((y - self.origin_y) / self.resolution) as isize;
-
-        if cx >= 0 && cy >= 0 && (cx as usize) < self.width && (cy as usize) < self.height {
-            self.cells[cy as usize * self.width + cx as usize]
-        } else {
-            false
-        }
-    }
-
-    /// Score a transformed point cloud against this grid.
-    #[allow(dead_code)]
-    fn score(&self, source: &PointCloud2D, transform: &Pose2D) -> f32 {
-        if source.is_empty() {
-            return 0.0;
-        }
-
-        let (sin_t, cos_t) = transform.theta.sin_cos();
-        let mut hits = 0;
-
-        for i in 0..source.len() {
-            let tx = transform.x + source.xs[i] * cos_t - source.ys[i] * sin_t;
-            let ty = transform.y + source.xs[i] * sin_t + source.ys[i] * cos_t;
-
-            if self.is_hit(tx, ty) {
-                hits += 1;
-            }
-        }
-
-        hits as f32 / source.len() as f32
     }
 }
 
@@ -206,9 +161,6 @@ pub struct CorrelativeMatcher {
     config: CorrelativeConfig,
     /// Preallocated grid buffer (reused across matches).
     grid_buffer: Vec<bool>,
-    /// Preallocated candidates buffer (reused across matches).
-    #[allow(dead_code)]
-    candidates_buffer: Vec<Pose2D>,
     /// Preallocated buffer for transformed cloud (reused across matches).
     transformed_xs: Vec<f32>,
     transformed_ys: Vec<f32>,
@@ -222,12 +174,9 @@ impl CorrelativeMatcher {
     pub fn new(config: CorrelativeConfig) -> Self {
         // Pre-allocate grid buffer for typical room size (~10m x 10m at 5cm resolution)
         // 200 x 200 = 40,000 cells
-        // Pre-allocate candidates buffer: typical search produces ~1000-5000 candidates
-        // (30 x-steps × 30 y-steps × 30 theta-steps = 27,000 max)
         Self {
             config,
             grid_buffer: Vec::with_capacity(40_000),
-            candidates_buffer: Vec::with_capacity(30_000),
             transformed_xs: Vec::with_capacity(Self::TYPICAL_SCAN_POINTS),
             transformed_ys: Vec::with_capacity(Self::TYPICAL_SCAN_POINTS),
         }
@@ -236,31 +185,6 @@ impl CorrelativeMatcher {
     /// Get the current configuration.
     pub fn config(&self) -> &CorrelativeConfig {
         &self.config
-    }
-
-    /// Generate candidate poses within search window into preallocated buffer.
-    #[allow(dead_code)]
-    fn generate_candidates_into(&self, center: &Pose2D, output: &mut Vec<Pose2D>) {
-        output.clear();
-
-        let x_steps = (self.config.search_window_x / self.config.linear_resolution).ceil() as i32;
-        let y_steps = (self.config.search_window_y / self.config.linear_resolution).ceil() as i32;
-        let t_steps =
-            (self.config.search_window_theta / self.config.angular_resolution).ceil() as i32;
-
-        for ti in -t_steps..=t_steps {
-            let theta = center.theta + ti as f32 * self.config.angular_resolution;
-
-            for xi in -x_steps..=x_steps {
-                let x = center.x + xi as f32 * self.config.linear_resolution;
-
-                for yi in -y_steps..=y_steps {
-                    let y = center.y + yi as f32 * self.config.linear_resolution;
-
-                    output.push(Pose2D::new(x, y, theta));
-                }
-            }
-        }
     }
 
     /// SIMD-accelerated rotation transform of point cloud.
@@ -649,5 +573,134 @@ mod tests {
         let matcher = CorrelativeMatcher::new(config);
 
         assert_eq!(matcher.config().search_window_x, 0.5);
+    }
+
+    // ========================================================================
+    // Convergence and Quality Tests
+    // ========================================================================
+    //
+    // Note: Correlative scan matching is a grid-based exhaustive search.
+    // Its accuracy is fundamentally limited by the grid resolution.
+    // These tests verify convergence behavior, not strict accuracy.
+
+    #[test]
+    fn test_correlative_converges_for_small_transform() {
+        // Verify correlative matcher can find a small translation
+        let source = create_l_shape(40, 3.0);
+        let true_transform = Pose2D::new(0.10, 0.0, 0.0);
+        let target = source.transform(&true_transform);
+
+        let config = CorrelativeConfig {
+            linear_resolution: 0.02,
+            angular_resolution: 0.02,
+            ..CorrelativeConfig::default()
+        };
+        let mut matcher = CorrelativeMatcher::new(config);
+        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+        // Should converge and find approximate transform
+        assert!(result.converged, "Correlative should converge");
+        assert!(result.score > 0.5, "Should achieve reasonable score");
+
+        // Transform should be in the right direction (positive X)
+        assert!(
+            result.transform.x > 0.0,
+            "Should find positive X transform, got {}",
+            result.transform.x
+        );
+    }
+
+    #[test]
+    fn test_correlative_handles_various_transforms() {
+        // Verify convergence for various transform types
+        let source = create_l_shape(40, 3.0);
+
+        let test_cases = [
+            ("pure X translation", Pose2D::new(0.06, 0.0, 0.0)),
+            ("pure Y translation", Pose2D::new(0.0, 0.06, 0.0)),
+            ("pure rotation", Pose2D::new(0.0, 0.0, 0.06)),
+            ("combined", Pose2D::new(0.04, 0.04, 0.04)),
+        ];
+
+        let mut matcher = CorrelativeMatcher::new(CorrelativeConfig::default());
+
+        for (name, true_transform) in &test_cases {
+            let target = source.transform(true_transform);
+            let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+            assert!(
+                result.converged,
+                "Should converge for {}: {:?}",
+                name, true_transform
+            );
+            assert!(
+                result.score > 0.5,
+                "Should achieve reasonable score for {}, got {}",
+                name,
+                result.score
+            );
+        }
+    }
+
+    #[test]
+    fn test_correlative_resolution_affects_search() {
+        // Higher resolution should search more finely
+        let source = create_l_shape(40, 3.0);
+        let true_transform = Pose2D::new(0.06, 0.04, 0.04);
+        let target = source.transform(&true_transform);
+
+        // Coarse resolution
+        let coarse_config = CorrelativeConfig {
+            linear_resolution: 0.04,
+            angular_resolution: 0.04,
+            ..CorrelativeConfig::default()
+        };
+        let mut coarse = CorrelativeMatcher::new(coarse_config);
+        let coarse_result = coarse.match_scans(&source, &target, &Pose2D::identity());
+
+        // Fine resolution
+        let fine_config = CorrelativeConfig {
+            linear_resolution: 0.02,
+            angular_resolution: 0.02,
+            ..CorrelativeConfig::default()
+        };
+        let mut fine = CorrelativeMatcher::new(fine_config);
+        let fine_result = fine.match_scans(&source, &target, &Pose2D::identity());
+
+        // Both should converge
+        assert!(coarse_result.converged, "Coarse matcher should converge");
+        assert!(fine_result.converged, "Fine matcher should converge");
+
+        // Both should achieve reasonable scores
+        assert!(
+            coarse_result.score > 0.5,
+            "Coarse should have reasonable score"
+        );
+        assert!(fine_result.score > 0.5, "Fine should have reasonable score");
+    }
+
+    #[test]
+    fn test_correlative_score_quality() {
+        let source = create_l_shape(30, 2.0);
+
+        // Perfect match should have high score
+        let mut matcher = CorrelativeMatcher::new(CorrelativeConfig::default());
+        let perfect = matcher.match_scans(&source, &source, &Pose2D::identity());
+
+        assert!(
+            perfect.score > 0.9,
+            "Perfect alignment should have score > 0.9, got {:.3}",
+            perfect.score
+        );
+
+        // Small offset should still have reasonable score
+        let offset_target = source.transform(&Pose2D::new(0.04, 0.02, 0.02));
+        let offset_result = matcher.match_scans(&source, &offset_target, &Pose2D::identity());
+
+        assert!(
+            offset_result.converged && offset_result.score > 0.6,
+            "Small offset should converge with score > 0.6, got {:.3}",
+            offset_result.score
+        );
     }
 }

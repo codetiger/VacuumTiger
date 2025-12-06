@@ -51,20 +51,6 @@ impl SimulatedClient {
         })
     }
 
-    /// Create a simulated client with custom playback speed.
-    ///
-    /// - 0.0 = maximum speed (no timing)
-    /// - 1.0 = real-time
-    /// - 2.0 = 2x speed
-    pub fn from_bag_with_speed(path: impl AsRef<Path>, speed: f32) -> Result<Self, PlayerError> {
-        let mut player = BagPlayer::open(path)?;
-        player.set_speed(speed);
-        Ok(Self {
-            player,
-            finished: false,
-        })
-    }
-
     /// Check if playback is finished.
     pub fn is_finished(&self) -> bool {
         self.finished

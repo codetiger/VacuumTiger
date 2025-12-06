@@ -30,16 +30,38 @@
 
 mod correlative;
 mod icp;
+mod icp_common;
 mod multi_resolution;
 mod point_to_line_icp;
 
 pub use correlative::{CorrelativeConfig, CorrelativeMatcher};
-pub use icp::{CachedKdTree, IcpConfig, PointToPointIcp};
+pub use icp::{CachedKdTree, IcpConfig, PointToPointIcp, RobustKernel};
+pub use icp_common::{build_kdtree, mse_to_score};
 pub use multi_resolution::{MultiResolutionConfig, MultiResolutionMatcher};
 pub use point_to_line_icp::{PointToLineIcp, PointToLineIcpConfig};
 // HybridP2LMatcher is defined in this module and exported directly
 
 use crate::core::types::{Covariance2D, PointCloud2D, Pose2D};
+
+/// Apply encoder weight to blend between identity and full odometry.
+///
+/// Blends the initial guess based on encoder_weight:
+/// - 1.0: Trust odometry fully
+/// - 0.0: Use identity (no prior motion)
+/// - Intermediate values: Linear interpolation
+fn weighted_initial_guess(odom_guess: &Pose2D, encoder_weight: f32) -> Pose2D {
+    if encoder_weight >= 0.99 {
+        *odom_guess
+    } else if encoder_weight <= 0.01 {
+        Pose2D::identity()
+    } else {
+        Pose2D::new(
+            odom_guess.x * encoder_weight,
+            odom_guess.y * encoder_weight,
+            odom_guess.theta * encoder_weight,
+        )
+    }
+}
 
 /// Result of a scan matching operation.
 #[derive(Debug, Clone)]
@@ -206,6 +228,9 @@ pub struct HybridP2LMatcherConfig {
     pub p2l_icp: PointToLineIcpConfig,
     /// If true, always run correlative first. If false, only on ICP failure.
     pub always_correlative: bool,
+    /// Encoder weight for initial guess (0.0 = identity, 1.0 = full odometry).
+    /// Higher values trust encoder odometry more for the initial guess.
+    pub encoder_weight: f32,
 }
 
 impl Default for HybridP2LMatcherConfig {
@@ -223,6 +248,7 @@ impl Default for HybridP2LMatcherConfig {
             },
             p2l_icp: PointToLineIcpConfig::default(),
             always_correlative: true, // Always use correlative for robustness
+            encoder_weight: 1.0,      // Trust encoder fully by default (same as slam_benchmark)
         }
     }
 }
@@ -232,11 +258,15 @@ impl Default for HybridP2LMatcherConfig {
 /// Best for structured environments (indoor with walls):
 /// 1. Correlative search handles large initial errors (especially rotation)
 /// 2. Point-to-Line ICP provides sub-centimeter accuracy refinement
+///
+/// The encoder_weight parameter controls how much the odometry initial guess
+/// is trusted vs identity. Higher values give more weight to encoder odometry.
 #[derive(Debug)]
 pub struct HybridP2LMatcher {
     correlative: CorrelativeMatcher,
     p2l_icp: PointToLineIcp,
     always_correlative: bool,
+    encoder_weight: f32,
 }
 
 impl HybridP2LMatcher {
@@ -246,6 +276,7 @@ impl HybridP2LMatcher {
             correlative: CorrelativeMatcher::new(config.correlative),
             p2l_icp: PointToLineIcp::new(config.p2l_icp),
             always_correlative: config.always_correlative,
+            encoder_weight: config.encoder_weight,
         }
     }
 }
@@ -257,17 +288,22 @@ impl ScanMatcher for HybridP2LMatcher {
         target: &PointCloud2D,
         initial_guess: &Pose2D,
     ) -> ScanMatchResult {
+        // Apply encoder weight to initial guess
+        let weighted_guess = weighted_initial_guess(initial_guess, self.encoder_weight);
+
         let guess = if self.always_correlative {
             // Always use correlative for initial alignment
-            let corr_result = self.correlative.match_scans(source, target, initial_guess);
+            let corr_result = self
+                .correlative
+                .match_scans(source, target, &weighted_guess);
             if corr_result.converged {
                 corr_result.transform
             } else {
-                // Correlative failed, try ICP with original guess
-                *initial_guess
+                // Correlative failed, try ICP with weighted guess
+                weighted_guess
             }
         } else {
-            *initial_guess
+            weighted_guess
         };
 
         // Refine with Point-to-Line ICP
@@ -277,7 +313,9 @@ impl ScanMatcher for HybridP2LMatcher {
             icp_result
         } else if !self.always_correlative {
             // ICP failed without correlative, try correlative first
-            let corr_result = self.correlative.match_scans(source, target, initial_guess);
+            let corr_result = self
+                .correlative
+                .match_scans(source, target, &weighted_guess);
             if corr_result.converged {
                 // Refine correlative result with ICP
                 self.p2l_icp
@@ -292,10 +330,163 @@ impl ScanMatcher for HybridP2LMatcher {
     }
 }
 
+/// Configuration for hybrid Multi-Resolution + Robust ICP matcher.
+///
+/// Based on benchmarks, this combination provides:
+/// - Multi-Resolution: 0.74cm accuracy, robust to poor initial guess
+/// - Robust ICP: Fast refinement with good accuracy when given good initial guess
+#[derive(Debug, Clone)]
+pub struct HybridMultiResConfig {
+    /// Multi-resolution correlative config
+    pub multi_res: MultiResolutionConfig,
+    /// Robust ICP config for refinement
+    pub icp: IcpConfig,
+    /// Whether to always run multi-resolution first
+    pub always_multi_res: bool,
+    /// Encoder weight for initial guess (0.0 = identity, 1.0 = full odometry)
+    pub encoder_weight: f32,
+}
+
+impl Default for HybridMultiResConfig {
+    fn default() -> Self {
+        Self {
+            multi_res: MultiResolutionConfig {
+                num_levels: 3,
+                coarse_search_window_xy: 0.15,
+                coarse_search_window_theta: 0.15,
+                fine_resolution: 0.005,
+                fine_angular_resolution: 0.005,
+                fine_grid_resolution: 0.02,
+                min_score: 0.4,
+                resolution_multiplier: 2.0,
+                window_shrink_factor: 2.0,
+            },
+            icp: IcpConfig {
+                max_iterations: 30,
+                translation_epsilon: 0.001,
+                rotation_epsilon: 0.001,
+                max_correspondence_distance: 0.3,
+                min_correspondences: 10,
+                outlier_ratio: 0.1,
+                robust_kernel: RobustKernel::Welsch,
+                kernel_scale: 0.10,
+                bidirectional_check: true,
+                damping_factor: 0.8,
+            },
+            always_multi_res: true,
+            encoder_weight: 0.8, // Encoder-weighted initial guess
+        }
+    }
+}
+
+/// Combined matcher using Multi-Resolution Correlative + Robust ICP.
+///
+/// Recommended for production SLAM:
+/// 1. Multi-Resolution handles large initial errors efficiently (~0.85ms)
+/// 2. Robust ICP refines with Welsch kernel for sub-cm accuracy
+///
+/// The encoder_weight parameter controls how much the odometry initial guess
+/// is trusted vs identity. Higher values give more weight to encoder odometry.
+#[derive(Debug)]
+pub struct HybridMultiResMatcher {
+    multi_res: MultiResolutionMatcher,
+    icp: PointToPointIcp,
+    always_multi_res: bool,
+    encoder_weight: f32,
+}
+
+impl HybridMultiResMatcher {
+    /// Create a new hybrid Multi-Resolution + ICP matcher.
+    pub fn new(config: HybridMultiResConfig) -> Self {
+        Self {
+            multi_res: MultiResolutionMatcher::new(config.multi_res),
+            icp: PointToPointIcp::new(config.icp),
+            always_multi_res: config.always_multi_res,
+            encoder_weight: config.encoder_weight,
+        }
+    }
+}
+
+impl ScanMatcher for HybridMultiResMatcher {
+    fn match_scans(
+        &mut self,
+        source: &PointCloud2D,
+        target: &PointCloud2D,
+        initial_guess: &Pose2D,
+    ) -> ScanMatchResult {
+        // Apply encoder weight to initial guess
+        let weighted_guess = weighted_initial_guess(initial_guess, self.encoder_weight);
+
+        let guess = if self.always_multi_res {
+            // Always use multi-resolution for initial alignment
+            let multi_result = self.multi_res.match_scans(source, target, &weighted_guess);
+            if multi_result.converged {
+                multi_result.transform
+            } else {
+                weighted_guess
+            }
+        } else {
+            weighted_guess
+        };
+
+        // Refine with Robust ICP
+        let icp_result = self.icp.match_scans(source, target, &guess);
+
+        if icp_result.converged {
+            icp_result
+        } else if !self.always_multi_res {
+            // ICP failed without multi-res, try multi-res first
+            let multi_result = self.multi_res.match_scans(source, target, &weighted_guess);
+            if multi_result.converged {
+                // Refine multi-res result with ICP
+                self.icp
+                    .match_scans(source, target, &multi_result.transform)
+            } else {
+                ScanMatchResult::failed()
+            }
+        } else {
+            // Both multi-res and ICP failed
+            ScanMatchResult::failed()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::types::Point2D;
+
+    /// Create a room-shaped point cloud (four walls).
+    fn create_room(n: usize, width: f32, height: f32) -> PointCloud2D {
+        let mut cloud = PointCloud2D::new();
+        let points_per_wall = n / 4;
+
+        // Bottom wall
+        for i in 0..points_per_wall {
+            let x = (i as f32 / points_per_wall as f32) * width;
+            let noise = (i as f32) * 0.0001;
+            cloud.push(Point2D::new(x, noise));
+        }
+        // Right wall
+        for i in 0..points_per_wall {
+            let y = (i as f32 / points_per_wall as f32) * height;
+            let noise = (i as f32) * 0.0001;
+            cloud.push(Point2D::new(width + noise, y));
+        }
+        // Top wall
+        for i in 0..points_per_wall {
+            let x = width - (i as f32 / points_per_wall as f32) * width;
+            let noise = (i as f32) * 0.0001;
+            cloud.push(Point2D::new(x, height + noise));
+        }
+        // Left wall
+        for i in 0..points_per_wall {
+            let y = height - (i as f32 / points_per_wall as f32) * height;
+            let noise = (i as f32) * 0.0001;
+            cloud.push(Point2D::new(noise, y));
+        }
+        cloud
+    }
 
     #[test]
     fn test_scan_match_result_default() {
@@ -315,40 +506,12 @@ mod tests {
         assert_eq!(result.iterations, 10);
     }
 
-    /// Create room with slight noise to avoid k-d tree bucket issues
-    fn create_room_cloud(n: usize, width: f32, height: f32) -> PointCloud2D {
-        let mut cloud = PointCloud2D::new();
-        let points_per_wall = n / 4;
-
-        for i in 0..points_per_wall {
-            let x = (i as f32 / points_per_wall as f32) * width;
-            let noise = (i as f32) * 0.0001;
-            cloud.push(Point2D::new(x, noise)); // Bottom
-        }
-        for i in 0..points_per_wall {
-            let y = (i as f32 / points_per_wall as f32) * height;
-            let noise = (i as f32) * 0.0001;
-            cloud.push(Point2D::new(width + noise, y)); // Right
-        }
-        for i in 0..points_per_wall {
-            let x = width - (i as f32 / points_per_wall as f32) * width;
-            let noise = (i as f32) * 0.0001;
-            cloud.push(Point2D::new(x, height + noise)); // Top
-        }
-        for i in 0..points_per_wall {
-            let y = height - (i as f32 / points_per_wall as f32) * height;
-            let noise = (i as f32) * 0.0001;
-            cloud.push(Point2D::new(noise, y)); // Left
-        }
-        cloud
-    }
-
     #[test]
     fn test_hybrid_p2l_large_rotation() {
         use approx::assert_relative_eq;
 
         // Test large rotation (25°) - correlative should find it
-        let source = create_room_cloud(100, 4.0, 3.0);
+        let source = create_room(100, 4.0, 3.0);
         let transform = Pose2D::new(0.0, 0.0, 0.44); // ~25 degrees
         let target = source.transform(&transform);
 
@@ -364,7 +527,7 @@ mod tests {
         use approx::assert_relative_eq;
 
         // Test combined translation + rotation
-        let source = create_room_cloud(100, 4.0, 3.0);
+        let source = create_room(100, 4.0, 3.0);
         let transform = Pose2D::new(0.2, 0.15, 0.35); // ~20 degrees + translation
         let target = source.transform(&transform);
 
