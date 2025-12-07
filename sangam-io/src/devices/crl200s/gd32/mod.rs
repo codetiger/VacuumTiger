@@ -67,6 +67,7 @@ mod state;
 pub use state::ComponentState;
 
 // Internal imports
+use crate::config::AxisTransform3D;
 use crate::core::types::{Command, SensorGroupData, StreamSender};
 use crate::devices::crl200s::constants::{INIT_RETRY_DELAY_MS, SERIAL_READ_TIMEOUT_MS};
 use crate::error::{Error, Result};
@@ -167,11 +168,15 @@ impl GD32Driver {
     /// - `sensor_data`: Shared mutex for latest sensor values (for polling-based access)
     /// - `version_data`: Shared mutex for version info (one-time update)
     /// - `stream_tx`: Optional channel sender for streaming sensor data at full 500Hz rate
+    /// - `gyro_transform`: Axis transform for gyroscope data (identity = no change)
+    /// - `accel_transform`: Axis transform for accelerometer data (identity = no change)
     pub fn start(
         &mut self,
         sensor_data: Arc<Mutex<SensorGroupData>>,
         version_data: Option<Arc<Mutex<SensorGroupData>>>,
         stream_tx: Option<StreamSender>,
+        gyro_transform: AxisTransform3D,
+        accel_transform: AxisTransform3D,
     ) -> Result<()> {
         let shutdown = Arc::clone(&self.shutdown);
         let port = Arc::clone(&self.port);
@@ -209,6 +214,8 @@ impl GD32Driver {
                         sensor_data,
                         version_data,
                         stream_tx,
+                        gyro_transform,
+                        accel_transform,
                     );
                 })
                 .map_err(|e| Error::Other(format!("Failed to spawn reader thread: {}", e)))?,

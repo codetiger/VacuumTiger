@@ -11,6 +11,7 @@
 
 use super::packet::version_request_packet;
 use super::protocol::{PacketReader, RxPacket};
+use crate::config::AxisTransform3D;
 use crate::core::types::{SensorGroupData, SensorValue, StreamSender};
 use crate::devices::crl200s::constants::{
     BATTERY_VOLTAGE_MAX, BATTERY_VOLTAGE_MIN, CMD_PROTOCOL_SYNC, CMD_STATUS, CMD_VERSION,
@@ -63,6 +64,8 @@ pub(super) fn reader_loop(
     sensor_data: Arc<Mutex<SensorGroupData>>,
     version_data: Option<Arc<Mutex<SensorGroupData>>>,
     stream_tx: Option<StreamSender>,
+    gyro_transform: AxisTransform3D,
+    accel_transform: AxisTransform3D,
 ) {
     let mut reader = PacketReader::new();
     let mut version_requested = false;
@@ -120,7 +123,12 @@ pub(super) fn reader_loop(
 
                 // Handle sensor status data
                 if packet.cmd == CMD_STATUS && packet.payload_len() >= STATUS_PAYLOAD_MIN_SIZE {
-                    if let Some(cloned) = handle_status_packet(packet, &sensor_data) {
+                    if let Some(cloned) = handle_status_packet(
+                        packet,
+                        &sensor_data,
+                        &gyro_transform,
+                        &accel_transform,
+                    ) {
                         // Push to streaming channel if available (for 500Hz TCP streaming)
                         if let Some(ref tx) = stream_tx {
                             // Use try_send to avoid blocking - drop message if channel full
@@ -203,6 +211,8 @@ fn handle_version_packet(
 fn handle_status_packet(
     packet: &RxPacket,
     sensor_data: &Arc<Mutex<SensorGroupData>>,
+    gyro_transform: &AxisTransform3D,
+    accel_transform: &AxisTransform3D,
 ) -> Option<SensorGroupData> {
     // Update shared data directly (no allocations)
     let Ok(mut data) = sensor_data.lock() else {
@@ -303,51 +313,28 @@ fn handle_status_packet(
         SensorValue::Bool((payload[OFFSET_DUSTBOX_FLAGS] & FLAG_DUSTBOX_ATTACHED) != 0),
     );
 
-    // IMU: Gyroscope raw values (i16 LE)
-    data.set(
-        "gyro_x",
-        SensorValue::I16(i16::from_le_bytes([
-            payload[OFFSET_GYRO_X],
-            payload[OFFSET_GYRO_X + 1],
-        ])),
-    );
-    data.set(
-        "gyro_y",
-        SensorValue::I16(i16::from_le_bytes([
-            payload[OFFSET_GYRO_Y],
-            payload[OFFSET_GYRO_Y + 1],
-        ])),
-    );
-    data.set(
-        "gyro_z",
-        SensorValue::I16(i16::from_le_bytes([
-            payload[OFFSET_GYRO_Z],
-            payload[OFFSET_GYRO_Z + 1],
-        ])),
-    );
+    // IMU: Gyroscope values with axis transform (i16 LE)
+    // Raw values are extracted then transformed to ROS REP-103 frame
+    let raw_gyro = [
+        i16::from_le_bytes([payload[OFFSET_GYRO_X], payload[OFFSET_GYRO_X + 1]]),
+        i16::from_le_bytes([payload[OFFSET_GYRO_Y], payload[OFFSET_GYRO_Y + 1]]),
+        i16::from_le_bytes([payload[OFFSET_GYRO_Z], payload[OFFSET_GYRO_Z + 1]]),
+    ];
+    let gyro = gyro_transform.apply(raw_gyro);
+    data.set("gyro_x", SensorValue::I16(gyro[0])); // Roll (X rotation)
+    data.set("gyro_y", SensorValue::I16(gyro[1])); // Pitch (Y rotation)
+    data.set("gyro_z", SensorValue::I16(gyro[2])); // Yaw (Z rotation)
 
-    // IMU: Accelerometer raw values (i16 LE)
-    data.set(
-        "accel_x",
-        SensorValue::I16(i16::from_le_bytes([
-            payload[OFFSET_ACCEL_X],
-            payload[OFFSET_ACCEL_X + 1],
-        ])),
-    );
-    data.set(
-        "accel_y",
-        SensorValue::I16(i16::from_le_bytes([
-            payload[OFFSET_ACCEL_Y],
-            payload[OFFSET_ACCEL_Y + 1],
-        ])),
-    );
-    data.set(
-        "accel_z",
-        SensorValue::I16(i16::from_le_bytes([
-            payload[OFFSET_ACCEL_Z],
-            payload[OFFSET_ACCEL_Z + 1],
-        ])),
-    );
+    // IMU: Accelerometer values with axis transform (i16 LE)
+    let raw_accel = [
+        i16::from_le_bytes([payload[OFFSET_ACCEL_X], payload[OFFSET_ACCEL_X + 1]]),
+        i16::from_le_bytes([payload[OFFSET_ACCEL_Y], payload[OFFSET_ACCEL_Y + 1]]),
+        i16::from_le_bytes([payload[OFFSET_ACCEL_Z], payload[OFFSET_ACCEL_Z + 1]]),
+    ];
+    let accel = accel_transform.apply(raw_accel);
+    data.set("accel_x", SensorValue::I16(accel[0]));
+    data.set("accel_y", SensorValue::I16(accel[1]));
+    data.set("accel_z", SensorValue::I16(accel[2]));
 
     // IMU: Low-pass filtered tilt vector (gravity direction, i16 LE)
     data.set(

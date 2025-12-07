@@ -29,6 +29,37 @@ lidar_port = "/dev/ttyS1"
 # See src/devices/crl200s/gd32/heartbeat.rs for details
 heartbeat_interval_ms = 20
 
+# Coordinate frame transforms (ROS REP-103)
+# Transforms raw sensor data to standard robot frame:
+#   X = forward (direction robot drives)
+#   Y = left (port side)
+#   Z = up
+#   Angles = counter-clockwise (CCW) positive
+#
+# All transforms default to identity (no change) if not specified.
+
+[device.hardware.frame_transforms]
+
+# Lidar angle transform: output = scale * input + offset
+# CRL-200S: mounted backward (offset=π), clockwise angles (scale=-1)
+[device.hardware.frame_transforms.lidar]
+scale = -1.0           # -1 converts CW to CCW
+offset = 3.14159265    # π radians = 180° rotation for backward mount
+
+# IMU gyroscope axis remap: [source_axis, sign]
+# CRL-200S hardware: x=yaw, y=pitch, z=roll
+# ROS standard:      x=roll, y=pitch, z=yaw
+[device.hardware.frame_transforms.imu_gyro]
+x = [2, 1]    # output_x (roll) = input_z * 1
+y = [1, 1]    # output_y (pitch) = input_y * 1
+z = [0, -1]   # output_z (yaw) = input_x * -1 (sign flip)
+
+# IMU accelerometer axis remap (identity for CRL-200S)
+# [device.hardware.frame_transforms.imu_accel]
+# x = [0, 1]
+# y = [1, 1]
+# z = [2, 1]
+
 [network]
 # TCP server bind address for client connections
 # Format: "host:port"

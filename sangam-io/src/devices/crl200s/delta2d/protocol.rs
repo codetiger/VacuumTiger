@@ -18,7 +18,9 @@
 //! 4. **Bounded buffer**: Limits buffer growth to prevent memory exhaustion
 //!    on prolonged parse failures.
 
+use crate::config::AffineTransform1D;
 use crate::error::{Error, Result};
+use std::f32::consts::TAU;
 use std::io::Read;
 
 /// Maximum buffer size before forced clear (safety limit)
@@ -74,14 +76,21 @@ pub struct Delta2DPacketReader {
     bytes_discarded: u64,
     /// Count of CRC failures (for diagnostics)
     crc_failures: u64,
+    /// Angle transform to apply to all lidar angles
+    angle_transform: AffineTransform1D,
 }
 
 impl Delta2DPacketReader {
-    pub fn new() -> Self {
+    /// Create a new reader with custom angle transform
+    ///
+    /// The transform is applied to all lidar angles: output = scale * input + offset
+    /// Use identity transform for no angle modification.
+    pub fn with_transform(angle_transform: AffineTransform1D) -> Self {
         Self {
             buffer: Vec::with_capacity(2048),
             bytes_discarded: 0,
             crc_failures: 0,
+            angle_transform,
         }
     }
 
@@ -143,16 +152,6 @@ impl Delta2DPacketReader {
 
         // Try to parse one packet using loop-based resync
         self.try_parse_scan_with_resync()
-    }
-
-    /// Try to read and parse a scan from the port (legacy combined method)
-    #[allow(dead_code)]
-    pub fn read_scan<R: Read>(&mut self, port: &mut R) -> Result<Option<LidarScan>> {
-        self.read_bytes(port)?;
-        match self.parse_next()? {
-            ParseResult::Scan(scan) => Ok(Some(scan)),
-            _ => Ok(None),
-        }
     }
 
     /// Parse scan with loop-based resync on failure
@@ -291,9 +290,9 @@ impl Delta2DPacketReader {
         true
     }
 
-    /// Validate packet CRC
+    /// Validate packet CRC (test-only, algorithm not confirmed for production use)
     /// Delta-2D uses a simple checksum: sum of all bytes from header to payload
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn validate_crc(&self, total_len: usize) -> bool {
         if total_len < 10 {
             // Minimum: 8 header + 2 CRC
@@ -350,8 +349,19 @@ impl Delta2DPacketReader {
             // Angle: start_angle + (point_index * angle_increment)
             // Distance: raw * 0.25mm = raw * 0.00025m
             let angle_deg = (start_angle_raw as f32 * 0.01) + (point_index as f32 * 1.0);
-            let angle_rad = angle_deg.to_radians();
+            let raw_angle_rad = angle_deg.to_radians();
             let distance_m = distance_raw as f32 * 0.00025;
+
+            // Apply configurable transform (identity = no change)
+            let mut angle_rad = self.angle_transform.apply(raw_angle_rad);
+
+            // Normalize to [0, 2π) for consistency
+            while angle_rad < 0.0 {
+                angle_rad += TAU;
+            }
+            while angle_rad >= TAU {
+                angle_rad -= TAU;
+            }
 
             // Only add valid points (distance > 0, quality > 0)
             // Also validate angle range
@@ -384,7 +394,7 @@ mod tests {
 
     #[test]
     fn test_crc_calculation() {
-        let mut reader = Delta2DPacketReader::new();
+        let mut reader = Delta2DPacketReader::with_transform(AffineTransform1D::identity());
         // Build a test packet with known CRC
         // Header: AA 00 0A 01 00 AD 00 02 (8 bytes)
         // Payload: 01 02 (2 bytes)
@@ -399,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_resync_on_false_sync() {
-        let mut reader = Delta2DPacketReader::new();
+        let mut reader = Delta2DPacketReader::with_transform(AffineTransform1D::identity());
         // Simulate false sync byte in data followed by real packet
         // False sync at position 0, real sync at position 3
         reader.buffer = vec![

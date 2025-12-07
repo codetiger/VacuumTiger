@@ -5,12 +5,25 @@
 //! The Delta-2D lidar provides continuous 360° scans at approximately 5Hz.
 //! Each scan is delivered as a stream of individual point measurements.
 //!
-//! ## Coordinate Frame
+//! ## Coordinate Frame (Output)
 //!
-//! - **0° (forward)**: Robot's front direction
+//! After applying the configurable `AffineTransform1D` from `sangamio.toml`,
+//! output data follows **ROS REP-103** convention:
+//!
+//! - **0° = forward**: Robot's front direction (+X axis)
+//! - **Rotation**: Counter-clockwise (CCW) positive when viewed from above
+//! - **90° = left**: Robot's left side (+Y axis)
+//! - **Angle range**: 0.0 to 2π radians
+//! - **Distance units**: Meters (m)
+//!
+//! ## Raw Hardware (Before Transform)
+//!
+//! The Delta-2D hardware outputs:
+//! - **0° = backward**: Opposite to robot forward (lidar mounted facing rear)
 //! - **Rotation**: Clockwise (CW) when viewed from above
-//! - **Angle range**: 0.0° to 360.0° (wraps at 360°)
-//! - **Distance units**: Millimeters (mm)
+//! - **Distance units**: 0.25mm per unit
+//!
+//! The CRL-200S transform (`scale=-1, offset=π`) converts to ROS convention.
 //!
 //! ## Scan Accumulation State Machine
 //!
@@ -52,6 +65,7 @@
 
 pub mod protocol;
 
+use crate::config::AffineTransform1D;
 use crate::core::types::{SensorGroupData, SensorValue};
 use crate::error::{Error, Result};
 use protocol::{Delta2DPacketReader, ParseResult};
@@ -89,6 +103,8 @@ pub struct Delta2DDriver {
     error_count: Arc<AtomicU64>,
     // Shared state with GD32 for lidar PWM auto-tuning
     scan_timestamp: Arc<AtomicU64>,
+    /// Angle transform for coordinate frame conversion
+    angle_transform: AffineTransform1D,
 }
 
 impl Delta2DDriver {
@@ -97,7 +113,12 @@ impl Delta2DDriver {
     /// # Arguments
     /// - `port_path`: Serial port path (e.g., "/dev/ttyS1")
     /// - `scan_timestamp`: Shared timestamp updated when measurement scans arrive (for GD32 PWM tuning)
-    pub fn new(port_path: &str, scan_timestamp: Arc<AtomicU64>) -> Self {
+    /// - `angle_transform`: Transform applied to all lidar angles (use `AffineTransform1D::identity()` for no change)
+    pub fn new(
+        port_path: &str,
+        scan_timestamp: Arc<AtomicU64>,
+        angle_transform: AffineTransform1D,
+    ) -> Self {
         Self {
             port_path: port_path.to_string(),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -105,6 +126,7 @@ impl Delta2DDriver {
             scan_count: Arc::new(AtomicU64::new(0)),
             error_count: Arc::new(AtomicU64::new(0)),
             scan_timestamp,
+            angle_transform,
         }
     }
 
@@ -128,6 +150,7 @@ impl Delta2DDriver {
         let scan_count = Arc::clone(&self.scan_count);
         let error_count = Arc::clone(&self.error_count);
         let scan_timestamp = Arc::clone(&self.scan_timestamp);
+        let angle_transform = self.angle_transform;
 
         self.reader_handle = Some(
             thread::Builder::new()
@@ -140,6 +163,7 @@ impl Delta2DDriver {
                         scan_count,
                         error_count,
                         scan_timestamp,
+                        angle_transform,
                     );
                 })
                 .map_err(|e| Error::Other(format!("Failed to spawn lidar thread: {}", e)))?,
@@ -157,8 +181,9 @@ impl Delta2DDriver {
         scan_count: Arc<AtomicU64>,
         error_count: Arc<AtomicU64>,
         scan_timestamp: Arc<AtomicU64>,
+        angle_transform: AffineTransform1D,
     ) {
-        let mut reader = Delta2DPacketReader::new();
+        let mut reader = Delta2DPacketReader::with_transform(angle_transform);
         let mut accumulated_points: Vec<(f32, f32, u8)> = Vec::with_capacity(400);
         let mut last_angle: f32 = 0.0;
         let mut last_scan_time = Instant::now();

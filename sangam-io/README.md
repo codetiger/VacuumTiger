@@ -106,6 +106,16 @@ gd32_port = "/dev/ttyS3"
 lidar_port = "/dev/ttyS1"
 heartbeat_interval_ms = 20
 
+# Coordinate frame transforms (ROS REP-103)
+[device.hardware.frame_transforms.lidar]
+scale = -1.0           # Convert CW to CCW
+offset = 3.14159265    # Rotate 180° (lidar mounted backward)
+
+[device.hardware.frame_transforms.imu_gyro]
+x = [2, 1]    # output_x (Roll) = input_z
+y = [1, 1]    # output_y (Pitch) = input_y
+z = [0, -1]   # output_z (Yaw) = input_x * -1
+
 [network]
 bind_address = "0.0.0.0:5555"
 ```
@@ -116,8 +126,27 @@ bind_address = "0.0.0.0:5555"
 | `lidar_port` | Lidar sensor serial port | Device path |
 | `heartbeat_interval_ms` | Safety heartbeat interval | **20-50ms only** |
 | `bind_address` | TCP server bind address | `host:port` |
+| `frame_transforms` | Coordinate transforms (optional) | See below |
 
 > **Critical**: The GD32 has a hardware watchdog requiring heartbeats every 20-50ms. Values outside this range will cause motors to stop.
+
+### Coordinate Frame Transforms
+
+SangamIO transforms raw sensor data to **ROS REP-103** convention:
+- **X = forward** (direction robot drives)
+- **Y = left** (port side)
+- **Z = up**
+- **Angles = counter-clockwise (CCW) positive**
+
+All transforms default to identity (no change) if not specified. The CRL-200S requires transforms because:
+- **Lidar**: Mounted backward (0° = rear), clockwise angles
+- **IMU**: Non-standard axis mapping (gyro_x = yaw, not roll)
+
+| Transform | Type | Formula | CRL-200S Value |
+|-----------|------|---------|----------------|
+| `lidar` | AffineTransform1D | `out = scale * in + offset` | `scale=-1, offset=π` |
+| `imu_gyro` | AxisTransform3D | `[source_axis, sign]` | Remap + flip yaw |
+| `imu_accel` | AxisTransform3D | `[source_axis, sign]` | Identity (default)
 
 ## TCP Protocol
 
@@ -237,10 +266,14 @@ The `sensor_status` group includes:
 | `battery_voltage` | F32 | Battery voltage (V) |
 | `battery_percent` | F32 | Estimated charge % |
 | `wheel_left`, `wheel_right` | U16 | Encoder ticks |
-| `gyro_x`, `gyro_y`, `gyro_z` | F32 | Angular velocity (rad/s) |
-| `accel_x`, `accel_y`, `accel_z` | F32 | Acceleration (m/s²) |
+| `gyro_x` | I16 | Roll rate (after transform) |
+| `gyro_y` | I16 | Pitch rate (after transform) |
+| `gyro_z` | I16 | Yaw rate (after transform, CCW positive) |
+| `accel_x`, `accel_y`, `accel_z` | I16 | Acceleration (raw units) |
 | `start_button`, `dock_button` | Bool | Button states |
 | `water_tank_level` | U8 | Mop water level |
+
+> **Note**: IMU values are in ROS REP-103 frame after applying `frame_transforms`.
 
 ## Thread Model
 

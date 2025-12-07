@@ -121,13 +121,23 @@ impl DeviceDriver for CRL200SDriver {
         gd32.initialize()?;
 
         // Start reader and heartbeat threads with streaming channel
-        gd32.start(gd32_data, Some(version_data), Some(stream_tx))?;
+        gd32.start(
+            gd32_data,
+            Some(version_data),
+            Some(stream_tx),
+            self.config.hardware.frame_transforms.imu_gyro,
+            self.config.hardware.frame_transforms.imu_accel,
+        )?;
 
         self.gd32 = Some(gd32);
 
         // Initialize lidar driver with shared state
         // Driver starts but lidar motor is OFF - will be enabled via command
-        let mut lidar = Delta2DDriver::new(&self.config.hardware.lidar_port, lidar_scan_timestamp);
+        let mut lidar = Delta2DDriver::new(
+            &self.config.hardware.lidar_port,
+            lidar_scan_timestamp,
+            self.config.hardware.frame_transforms.lidar,
+        );
         lidar.start(lidar_data)?;
         self.lidar = Some(lidar);
         log::info!("Lidar driver started (motor OFF - PWM auto-tuned when enabled)");

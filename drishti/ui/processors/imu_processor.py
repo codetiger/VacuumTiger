@@ -1,16 +1,20 @@
 """
 IMU Processor - Mahony AHRS filter with quaternion orientation.
 
-Movement-validated axis mapping:
-  B40-41: Gyro Yaw rate   (most active during flat rotation) -> Z axis
-  B44-45: Gyro Pitch rate (most active during nose up/down)  -> Y axis
-  B48-49: Gyro Roll rate  (most active during left/right tilt) -> X axis
-  B52-57: LP Gravity vector for tilt correction
+Coordinate Convention (ROS REP-103):
+  SangamIO transforms raw IMU data to standard robot frame:
+  - gyro_x = Roll rate  (X axis rotation, left/right tilt)
+  - gyro_y = Pitch rate (Y axis rotation, nose up/down)
+  - gyro_z = Yaw rate   (Z axis rotation, CCW positive)
 
-Physical axes:
-  Y axis = Nose up/down (pitch)
-  X axis = Left/Right tilt (roll)
-  Z axis = Rotating on floor (yaw)
+  Robot frame:
+  - X = forward (direction robot drives)
+  - Y = left (port side)
+  - Z = up
+
+Note: The axis remapping from hardware to ROS convention is done in SangamIO
+via the [device.hardware.frame_transforms.imu_gyro] config. This processor
+receives already-transformed data.
 """
 
 import math
@@ -56,14 +60,15 @@ class IMUProcessor:
         Process IMU data using Mahony AHRS filter.
 
         Args:
-            gyro_x: Raw gyro X (B40-41) - Yaw rate (Z rotation)
-            gyro_y: Raw gyro Y (B44-45) - Pitch rate (Y rotation)
-            gyro_z: Raw gyro Z (B48-49) - Roll rate (X rotation)
-            tilt_x: LP gravity X (B52-53)
-            tilt_y: LP gravity Y (B54-55)
-            tilt_z: LP gravity Z (B56-57)
+            gyro_x: Roll rate (X axis rotation) - already transformed by SangamIO
+            gyro_y: Pitch rate (Y axis rotation) - already transformed by SangamIO
+            gyro_z: Yaw rate (Z axis rotation, CCW positive) - already transformed by SangamIO
+            tilt_x: LP gravity X
+            tilt_y: LP gravity Y
+            tilt_z: LP gravity Z
 
-        Data order is interleaved: [Gx][Ax][Gy][Ay][Gz][Az][LP_Ax][LP_Ay][LP_Az]
+        Note: SangamIO applies axis transforms via [device.hardware.frame_transforms.imu_gyro]
+        so input data is already in ROS REP-103 convention.
 
         Returns:
             (roll, pitch, yaw) in degrees
@@ -86,13 +91,21 @@ class IMUProcessor:
             return (0.0, 0.0, 0.0)
 
         # Remove bias and convert to rad/s
-        # With interleaved data order [Gx][Ax][Gy][Ay][Gz][Az]:
-        # gyro_x (B40-41) = Yaw rate -> gz (Z axis rotation)
-        # gyro_y (B44-45) = Pitch rate -> gy (Y axis nose up/down)
-        # gyro_z (B48-49) = Roll rate -> gx (X axis tilt)
-        gx = (gyro_z - self.gyro_bias[2]) * self.GYRO_SCALE  # Roll
+        # SangamIO sends gyro data in ROS REP-103 convention:
+        #   gyro_x = Roll rate (from hardware gyro_z)
+        #   gyro_y = Pitch rate (from hardware gyro_y)
+        #   gyro_z = Yaw rate (from hardware gyro_x, sign flipped)
+        #
+        # The OLD code (before SangamIO transforms) worked with raw hardware:
+        #   gx = raw_gyro_z (Roll)
+        #   gy = raw_gyro_y (Pitch)
+        #   gz = raw_gyro_x (Yaw)
+        #
+        # Now SangamIO remaps, so new gyro_x = old gyro_z, etc.
+        # But gyro_z has a sign flip, so we negate it to match old behavior.
+        gx = (gyro_x - self.gyro_bias[0]) * self.GYRO_SCALE  # Roll
         gy = (gyro_y - self.gyro_bias[1]) * self.GYRO_SCALE  # Pitch
-        gz = (gyro_x - self.gyro_bias[0]) * self.GYRO_SCALE  # Yaw
+        gz = -(gyro_z - self.gyro_bias[2]) * self.GYRO_SCALE  # Yaw (negate to undo SangamIO sign flip)
 
         # Get current quaternion values
         q0, q1, q2, q3 = self.q

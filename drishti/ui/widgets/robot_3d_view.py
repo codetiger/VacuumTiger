@@ -139,12 +139,16 @@ class Robot3DView(QWidget):
     """
     Full-screen 3D wireframe robot visualization.
 
-    Coordinate system (robot frame):
+    Display coordinate system (for 3D rendering):
     - Origin at robot center
-    - +X points right
+    - +X points right (robot's starboard side)
     - +Y points forward (front of robot)
     - +Z points up
     - All dimensions in mm
+
+    Note: This display convention differs from ROS REP-103 sensor data convention
+    (where +X is forward). Sensor data from SangamIO uses ROS REP-103 frame and
+    is transformed for display as needed.
     """
 
     # Robot physical dimensions (mm) - CRL-200S
@@ -1043,6 +1047,12 @@ class Robot3DView(QWidget):
 
         Args:
             points: List of (angle_rad, distance_m, quality) tuples
+                    Angles are in ROS REP-103 convention:
+                    - 0 rad = forward (+X)
+                    - CCW positive when viewed from above
+
+        Note: SangamIO transforms raw lidar angles to ROS REP-103 convention
+        before streaming.
         """
         if hasattr(self, 'lidar_overlay'):
             self.lidar_overlay.update_scan(points)
@@ -1054,6 +1064,15 @@ class Robot3DView(QWidget):
 
         Called at 500Hz from telemetry thread. Updates every call for
         smooth real-time response (labels decimated separately).
+
+        Args:
+            gyro_x: Roll rate (X axis rotation) - ROS REP-103 frame
+            gyro_y: Pitch rate (Y axis rotation) - ROS REP-103 frame
+            gyro_z: Yaw rate (Z axis rotation, CCW positive) - ROS REP-103 frame
+            tilt_x, tilt_y, tilt_z: LP-filtered gravity vector
+
+        Note: SangamIO transforms raw IMU axes to ROS REP-103 convention before
+        streaming, so the input data is already in standard robot frame.
         """
         roll, pitch, yaw = self.imu_processor.process(
             gyro_x, gyro_y, gyro_z,

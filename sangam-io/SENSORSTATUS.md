@@ -133,21 +133,37 @@ percentage = (voltage - 13.5) / (15.5 - 13.5) * 100
 
 The IMU data is interleaved: Gyro-Accel pairs for each axis.
 
-**Axis Mapping (Movement-validated):**
-- Gyro at 0x28 = Z axis (Yaw rate - most active during flat rotation)
-- Gyro at 0x2C = Y axis (Pitch rate - most active during nose up/down)
-- Gyro at 0x30 = X axis (Roll rate - most active during left/right tilt)
+**Raw Hardware Axis Mapping (Before Transform):**
+- Gyro at 0x28 = Hardware "X" (actually Yaw rate - most active during flat rotation)
+- Gyro at 0x2C = Hardware "Y" (actually Pitch rate - most active during nose up/down)
+- Gyro at 0x30 = Hardware "Z" (actually Roll rate - most active during left/right tilt)
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
-| 0x28-0x29 | 2 | Gyro X/Yaw | i16 LE - Angular velocity around vertical axis |
+| 0x28-0x29 | 2 | Gyro X (raw) | i16 LE - Angular velocity (Yaw in hardware coords) |
 | 0x2A-0x2B | 2 | Accel X | i16 LE - Linear acceleration X |
-| 0x2C-0x2D | 2 | Gyro Y/Pitch | i16 LE - Angular velocity around lateral axis |
+| 0x2C-0x2D | 2 | Gyro Y (raw) | i16 LE - Angular velocity (Pitch in hardware coords) |
 | 0x2E-0x2F | 2 | Accel Y | i16 LE - Linear acceleration Y |
-| 0x30-0x31 | 2 | Gyro Z/Roll | i16 LE - Angular velocity around longitudinal axis |
+| 0x30-0x31 | 2 | Gyro Z (raw) | i16 LE - Angular velocity (Roll in hardware coords) |
 | 0x32-0x33 | 2 | Accel Z | i16 LE - Linear acceleration Z |
 
-**Code Reference:** `constants.rs:73-83`, `reader.rs:288-332`
+**Coordinate Frame Transform:**
+
+SangamIO applies a configurable axis transform (via `sangamio.toml`) to convert raw hardware axes to **ROS REP-103** standard:
+
+```toml
+[device.hardware.frame_transforms.imu_gyro]
+x = [2, 1]   # output_x (Roll) = input_z * 1
+y = [1, 1]   # output_y (Pitch) = input_y * 1
+z = [0, -1]  # output_z (Yaw) = input_x * -1 (sign flip)
+```
+
+**Output (After Transform):**
+- `gyro_x` = Roll rate (X axis rotation, left/right tilt)
+- `gyro_y` = Pitch rate (Y axis rotation, nose up/down)
+- `gyro_z` = Yaw rate (Z axis rotation, CCW positive)
+
+**Code Reference:** `constants.rs:73-88`, `reader.rs:313-323`
 
 ### LP-Filtered Tilt Vector (0x34-0x39)
 
@@ -295,5 +311,6 @@ These may contain additional sensor data, error codes, or internal state. Furthe
 
 ## Changelog
 
+- **2024-12-07:** Added coordinate frame transform documentation for IMU data (ROS REP-103 conversion)
 - **2024-11-30:** Fixed encoder and button sizes to match actual reader.rs implementation (u16, not u64/u32)
 - **2024-11-30:** Initial documentation based on reverse-engineered constants and MITM captures

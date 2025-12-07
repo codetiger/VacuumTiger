@@ -14,16 +14,184 @@
 //! lidar_port = "/dev/ttyS1"
 //! heartbeat_interval_ms = 20
 //!
+//! # Coordinate frame transforms (optional, defaults to identity)
+//! [device.hardware.frame_transforms.lidar]
+//! scale = -1.0      # -1 converts CW to CCW
+//! offset = 3.14159  # π radians = 180° rotation
+//!
+//! [device.hardware.frame_transforms.imu_gyro]
+//! x = [2, 1]   # output_x = input_z * 1
+//! y = [1, 1]   # output_y = input_y * 1
+//! z = [0, -1]  # output_z = input_x * -1
+//!
 //! [network]
 //! bind_address = "0.0.0.0:5555"
 //! ```
 //!
 //! See `sangamio.toml` for complete example.
+//!
+//! # Coordinate Frame Transforms
+//!
+//! SangamIO transforms raw sensor data to **ROS REP-103** convention:
+//! - **X = forward** (direction robot drives)
+//! - **Y = left** (port side)
+//! - **Z = up**
+//! - **Angles = counter-clockwise (CCW) positive**
+//!
+//! Transform types:
+//! - [`AffineTransform1D`]: For lidar angles (`output = scale * input + offset`)
+//! - [`AxisTransform3D`]: For IMU axis remapping (`[source_index, sign]` per axis)
+//! - [`FrameTransforms`]: Container for all sensor transforms
+//!
+//! All transforms default to identity (no change) if not specified in config.
 
 use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
+
+// ============================================================================
+// Coordinate Frame Transforms (ROS REP-103)
+// ============================================================================
+
+/// 1D affine transform for scalar values (e.g., angles).
+///
+/// Applies: `output = scale * input + offset`
+///
+/// # Examples
+///
+/// - Identity (no change): `scale = 1.0, offset = 0.0`
+/// - Flip direction: `scale = -1.0, offset = 0.0`
+/// - Rotate 180°: `scale = 1.0, offset = π`
+/// - CRL-200S lidar (CW→CCW + 180°): `scale = -1.0, offset = π`
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct AffineTransform1D {
+    /// Scale factor (use -1.0 to flip direction)
+    #[serde(default = "default_scale")]
+    pub scale: f32,
+
+    /// Offset to add after scaling (radians for angles)
+    #[serde(default)]
+    pub offset: f32,
+}
+
+fn default_scale() -> f32 {
+    1.0
+}
+
+impl Default for AffineTransform1D {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
+impl AffineTransform1D {
+    /// Identity transform (no change)
+    pub fn identity() -> Self {
+        Self {
+            scale: 1.0,
+            offset: 0.0,
+        }
+    }
+
+    /// Apply the transform to an input value
+    #[inline]
+    pub fn apply(&self, input: f32) -> f32 {
+        self.scale * input + self.offset
+    }
+}
+
+/// 3D axis remapping transform for IMU data.
+///
+/// Each axis specifies: `[source_index, sign]`
+/// - `source_index`: 0=x, 1=y, 2=z (which input axis to read)
+/// - `sign`: 1 or -1 (multiply by this value)
+///
+/// # Examples
+///
+/// - Identity: `x=[0,1], y=[1,1], z=[2,1]` (no remapping)
+/// - Swap X and Z: `x=[2,1], y=[1,1], z=[0,1]`
+/// - Flip Z sign: `x=[0,1], y=[1,1], z=[2,-1]`
+/// - CRL-200S IMU: `x=[2,1], y=[1,1], z=[0,-1]` (remap + flip yaw)
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct AxisTransform3D {
+    /// Transform for X output: [source_index (0=x,1=y,2=z), sign]
+    #[serde(default = "default_x_axis")]
+    pub x: [i8; 2],
+
+    /// Transform for Y output: [source_index, sign]
+    #[serde(default = "default_y_axis")]
+    pub y: [i8; 2],
+
+    /// Transform for Z output: [source_index, sign]
+    #[serde(default = "default_z_axis")]
+    pub z: [i8; 2],
+}
+
+fn default_x_axis() -> [i8; 2] {
+    [0, 1]
+}
+fn default_y_axis() -> [i8; 2] {
+    [1, 1]
+}
+fn default_z_axis() -> [i8; 2] {
+    [2, 1]
+}
+
+impl Default for AxisTransform3D {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
+impl AxisTransform3D {
+    /// Identity transform (no remapping)
+    pub fn identity() -> Self {
+        Self {
+            x: [0, 1],
+            y: [1, 1],
+            z: [2, 1],
+        }
+    }
+
+    /// Apply transform to 3 i16 values
+    #[inline]
+    pub fn apply(&self, input: [i16; 3]) -> [i16; 3] {
+        [
+            input[self.x[0] as usize] * self.x[1] as i16,
+            input[self.y[0] as usize] * self.y[1] as i16,
+            input[self.z[0] as usize] * self.z[1] as i16,
+        ]
+    }
+}
+
+/// Coordinate frame transforms for all sensors.
+///
+/// Transforms raw sensor data to ROS REP-103 robot frame:
+/// - X = forward (direction robot drives)
+/// - Y = left (port side)
+/// - Z = up
+/// - Angles = counter-clockwise (CCW) positive
+///
+/// All transforms default to identity (no change) if not specified.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct FrameTransforms {
+    /// Lidar angle transform (identity = no change)
+    #[serde(default)]
+    pub lidar: AffineTransform1D,
+
+    /// IMU gyroscope axis transform (identity = no remapping)
+    #[serde(default)]
+    pub imu_gyro: AxisTransform3D,
+
+    /// IMU accelerometer axis transform (identity = no remapping)
+    #[serde(default)]
+    pub imu_accel: AxisTransform3D,
+}
+
+// ============================================================================
+// Hardware Configuration
+// ============================================================================
 
 /// Hardware configuration for device drivers
 ///
@@ -53,6 +221,15 @@ pub struct HardwareConfig {
     ///
     /// **CRITICAL**: Values outside 20-50ms will cause motors to stop!
     pub heartbeat_interval_ms: u64,
+
+    /// Coordinate frame transforms for sensor data
+    ///
+    /// Transforms raw sensor data to ROS REP-103 robot frame.
+    /// Defaults to identity (no transformation) if not specified.
+    ///
+    /// **Optional**: Yes (defaults to identity transforms)
+    #[serde(default)]
+    pub frame_transforms: FrameTransforms,
 }
 
 /// Device configuration

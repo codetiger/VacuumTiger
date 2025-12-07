@@ -70,15 +70,21 @@ pub const OFFSET_START_BUTTON: usize = 0x3A;
 pub const OFFSET_DOCK_BUTTON: usize = 0x3E;
 
 // IMU data offsets (interleaved: [Gx][Ax][Gy][Ay][Gz][Az][LP_Ax][LP_Ay][LP_Az])
-// Movement-validated axis mapping:
-//   B40-41: Gyro Yaw rate   (most active during flat rotation) -> Z axis
-//   B44-45: Gyro Pitch rate (most active during nose up/down)  -> Y axis
-//   B48-49: Gyro Roll rate  (most active during left/right tilt) -> X axis
-pub const OFFSET_GYRO_X: usize = 0x28; // B40-41: Gyro X raw (i16 LE) - Yaw rate
+// NOTE: Raw hardware positions. Axis transformation to ROS REP-103 frame is applied
+// via [device.hardware.frame_transforms.imu_gyro] and [device.hardware.frame_transforms.imu_accel]
+// in sangamio.toml. Default identity transform = pass-through (no remapping).
+//
+// CRL-200S hardware axis mapping (before transform):
+//   B40-41 (OFFSET_GYRO_X): Gyro Yaw rate   (most active during flat rotation)
+//   B44-45 (OFFSET_GYRO_Y): Gyro Pitch rate (most active during nose up/down)
+//   B48-49 (OFFSET_GYRO_Z): Gyro Roll rate  (most active during left/right tilt)
+//
+// CRL-200S transform remaps to ROS standard: raw_x->out_z (with sign flip), raw_y->out_y, raw_z->out_x
+pub const OFFSET_GYRO_X: usize = 0x28; // B40-41: Gyro X raw (i16 LE)
 pub const OFFSET_ACCEL_X: usize = 0x2A; // B42-43: Accel X raw (i16 LE)
-pub const OFFSET_GYRO_Y: usize = 0x2C; // B44-45: Gyro Y raw (i16 LE) - Pitch rate
+pub const OFFSET_GYRO_Y: usize = 0x2C; // B44-45: Gyro Y raw (i16 LE)
 pub const OFFSET_ACCEL_Y: usize = 0x2E; // B46-47: Accel Y raw (i16 LE)
-pub const OFFSET_GYRO_Z: usize = 0x30; // B48-49: Gyro Z raw (i16 LE) - Roll rate
+pub const OFFSET_GYRO_Z: usize = 0x30; // B48-49: Gyro Z raw (i16 LE)
 pub const OFFSET_ACCEL_Z: usize = 0x32; // B50-51: Accel Z raw (i16 LE)
 
 // LP filtered gravity vector for tilt correction

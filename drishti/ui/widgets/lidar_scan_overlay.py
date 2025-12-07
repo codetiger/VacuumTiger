@@ -3,6 +3,20 @@ Lidar scan overlay widget for real-time 360-degree point cloud visualization.
 
 Displays lidar points in a polar/radial view centered on the robot,
 showing distance and angle of detected obstacles.
+
+Coordinate Convention (ROS REP-103):
+  SangamIO transforms raw lidar data to standard robot frame:
+  - angle = 0 rad → forward (+X direction)
+  - angles increase counter-clockwise (CCW) when viewed from above
+  - angle = π/2 rad → left (+Y direction)
+
+  Robot frame:
+  - X = forward (direction robot drives)
+  - Y = left (port side)
+  - Z = up
+
+Note: The angle transform from hardware to ROS convention is done in SangamIO
+via the [device.hardware.frame_transforms.lidar] config.
 """
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
@@ -118,11 +132,14 @@ class LidarScanWidget(QWidget):
             if distance_m <= 0 or distance_m > self._max_range:
                 continue
 
-            # Convert polar to cartesian
-            # In robot frame: 0 rad = forward (+Y in UI = up)
-            # Rotate by -90 degrees to align with screen coordinates
+            # Convert polar to cartesian for screen display
+            # ROS REP-103: angle=0 is forward (robot +X), CCW positive
+            # Standard polar: robot_x = r*cos(θ), robot_y = r*sin(θ)
+            # Screen mapping: forward=up, left=right
+            #   screen_x = robot_y = r*sin(θ)
+            #   screen_y = -robot_x = -r*cos(θ)  (negative because screen Y points down)
             x = distance_m * math.sin(angle_rad)
-            y = -distance_m * math.cos(angle_rad)  # Negative because Y is inverted
+            y = -distance_m * math.cos(angle_rad)
 
             # Scale to screen coordinates
             px = center_x + int(x * scale)
