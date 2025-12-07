@@ -36,7 +36,7 @@ use crate::error::Result;
 use delta2d::Delta2DDriver;
 use gd32::GD32Driver;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicU8};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 /// CRL-200S device driver coordinating GD32 motor controller and Delta2D lidar.
@@ -105,9 +105,8 @@ impl DeviceDriver for CRL200SDriver {
         log::info!("Created sensor group 'lidar' (360° point cloud @ 5Hz)");
 
         // Create shared state for lidar PWM auto-tuning
-        // These are shared between GD32 (for PWM decisions) and Delta2D (updates on scan/health)
+        // Shared between GD32 (for PWM decisions) and Delta2D (updates on scan)
         let lidar_scan_timestamp = Arc::new(AtomicU64::new(0));
-        let lidar_health_count = Arc::new(AtomicU8::new(0));
 
         // Initialize GD32 motor controller
         let mut gd32 = GD32Driver::new(
@@ -115,9 +114,8 @@ impl DeviceDriver for CRL200SDriver {
             self.config.hardware.heartbeat_interval_ms,
         )?;
 
-        // Set shared lidar state references before initialization
+        // Set shared lidar state reference before initialization
         gd32.set_lidar_scan_timestamp(Arc::clone(&lidar_scan_timestamp));
-        gd32.set_lidar_health_count(Arc::clone(&lidar_health_count));
 
         // Send initialization sequence
         gd32.initialize()?;
@@ -129,11 +127,7 @@ impl DeviceDriver for CRL200SDriver {
 
         // Initialize lidar driver with shared state
         // Driver starts but lidar motor is OFF - will be enabled via command
-        let mut lidar = Delta2DDriver::new(
-            &self.config.hardware.lidar_port,
-            Arc::clone(&lidar_scan_timestamp),
-            Arc::clone(&lidar_health_count),
-        );
+        let mut lidar = Delta2DDriver::new(&self.config.hardware.lidar_port, lidar_scan_timestamp);
         lidar.start(lidar_data)?;
         self.lidar = Some(lidar);
         log::info!("Lidar driver started (motor OFF - PWM auto-tuned when enabled)");

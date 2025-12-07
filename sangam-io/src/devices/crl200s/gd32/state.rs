@@ -3,24 +3,25 @@
 //! This module defines the shared state used by the heartbeat thread to refresh
 //! component commands every 20ms. All fields use atomic types to allow lockless reads.
 
-use std::sync::atomic::{AtomicBool, AtomicI16, AtomicI8, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // Lidar auto-tuning constants
-const SCAN_TIMEOUT_MS: u64 = 200; // Consider "not receiving" if no scan for 200ms
-const SETTLING_TIMEOUT_MS: u64 = 250; // Wait after PWM change before evaluating
-const SETTLING_HEALTH_COUNT: u8 = 3; // OR wait for this many health packets
-const INITIAL_STEP: u8 = 20; // Start with 20% step size
+const SCAN_TIMEOUT_MS: u64 = 500; // Consider "not receiving" if no scan for 500ms
+const SETTLING_TIMEOUT_MS: u64 = 1000; // Wait 1 second after PWM change before evaluating
 const MIN_STEP: u8 = 2; // Converge when step reaches 2%
 const MIN_PWM: u8 = 30; // Never go below 30%
 const MAX_PWM: u8 = 100; // Never exceed 100%
+const INITIAL_PWM: u8 = 60; // Start at known working value
+const RAMP_STEP: u8 = 5; // Step size when ramping up to find max
 const RECOVERY_STEP: u8 = 5; // Fixed step for recovery mode
 
 // Lidar tuning phases
-const PHASE_RAMPING: u8 = 0; // Adaptive stepping to find max stable PWM
-const PHASE_STABLE: u8 = 1; // Optimal found, not sending PWM
-const PHASE_RECOVERY: u8 = 2; // Lost scans, recovering
+const PHASE_RAMP_UP: u8 = 0; // Ramping up to find where scans stop
+const PHASE_FINE_TUNE: u8 = 1; // Binary search to find exact max stable PWM
+const PHASE_STABLE: u8 = 2; // Optimal found, not sending PWM
+const PHASE_RECOVERY: u8 = 3; // Lost scans, recovering
 
 /// Get current time in milliseconds since epoch
 fn current_time_ms() -> u64 {
@@ -68,14 +69,13 @@ pub struct ComponentState {
     // Lidar auto-tuning state
     pub lidar_current_pwm: AtomicU8,
     pub lidar_step_size: AtomicU8,
-    pub lidar_direction: AtomicI8, // +1 = increasing, -1 = decreasing
     pub lidar_tuning_phase: AtomicU8,
     pub lidar_last_pwm_change_ms: AtomicU64,
-    pub lidar_last_had_scans: AtomicBool,
+    pub lidar_max_working_pwm: AtomicU8, // Highest PWM where scans worked
+    pub lidar_min_failing_pwm: AtomicU8, // Lowest PWM where scans stopped
 
-    // Shared with Delta2D driver (set via setters after construction)
+    // Shared with Delta2D driver (set via setter after construction)
     pub lidar_last_scan_ms: Arc<AtomicU64>,
-    pub lidar_health_count: Arc<AtomicU8>,
 }
 
 impl Default for ComponentState {
@@ -91,15 +91,14 @@ impl Default for ComponentState {
             angular_velocity: AtomicI16::new(0),
             wheel_motor_enabled: AtomicBool::new(false),
             // Lidar auto-tuning defaults
-            lidar_current_pwm: AtomicU8::new(MAX_PWM),
-            lidar_step_size: AtomicU8::new(INITIAL_STEP),
-            lidar_direction: AtomicI8::new(-1), // Start decreasing
-            lidar_tuning_phase: AtomicU8::new(PHASE_RAMPING),
+            lidar_current_pwm: AtomicU8::new(INITIAL_PWM),
+            lidar_step_size: AtomicU8::new(RAMP_STEP),
+            lidar_tuning_phase: AtomicU8::new(PHASE_RAMP_UP),
             lidar_last_pwm_change_ms: AtomicU64::new(0),
-            lidar_last_had_scans: AtomicBool::new(false),
-            // Shared state (will be replaced via setters)
+            lidar_max_working_pwm: AtomicU8::new(0),
+            lidar_min_failing_pwm: AtomicU8::new(MAX_PWM + 1),
+            // Shared state (will be replaced via setter)
             lidar_last_scan_ms: Arc::new(AtomicU64::new(0)),
-            lidar_health_count: Arc::new(AtomicU8::new(0)),
         }
     }
 }
@@ -117,12 +116,14 @@ impl ComponentState {
         self.wheel_motor_enabled.store(false, Ordering::Relaxed);
         self.motor_mode_set.store(false, Ordering::Relaxed);
         // Reset lidar tuning state
-        self.lidar_current_pwm.store(MAX_PWM, Ordering::Relaxed);
-        self.lidar_step_size.store(INITIAL_STEP, Ordering::Relaxed);
-        self.lidar_direction.store(-1, Ordering::Relaxed);
-        self.lidar_tuning_phase.store(PHASE_RAMPING, Ordering::Relaxed);
+        self.lidar_current_pwm.store(INITIAL_PWM, Ordering::Relaxed);
+        self.lidar_step_size.store(RAMP_STEP, Ordering::Relaxed);
+        self.lidar_tuning_phase
+            .store(PHASE_RAMP_UP, Ordering::Relaxed);
         self.lidar_last_pwm_change_ms.store(0, Ordering::Relaxed);
-        self.lidar_last_had_scans.store(false, Ordering::Relaxed);
+        self.lidar_max_working_pwm.store(0, Ordering::Relaxed);
+        self.lidar_min_failing_pwm
+            .store(MAX_PWM + 1, Ordering::Relaxed);
     }
 
     /// Check if any component is active (determines if motor mode 0x02 is needed)
@@ -156,34 +157,32 @@ impl ComponentState {
     /// Initialize lidar auto-tuning state for a new enable cycle
     pub fn init_lidar_tuning(&self) {
         let now = current_time_ms();
-        self.lidar_current_pwm.store(MAX_PWM, Ordering::Relaxed);
-        self.lidar_step_size.store(INITIAL_STEP, Ordering::Relaxed);
-        self.lidar_direction.store(-1, Ordering::Relaxed); // Start decreasing
-        self.lidar_tuning_phase.store(PHASE_RAMPING, Ordering::Relaxed);
+        self.lidar_current_pwm.store(INITIAL_PWM, Ordering::Relaxed);
+        self.lidar_step_size.store(RAMP_STEP, Ordering::Relaxed);
+        self.lidar_tuning_phase
+            .store(PHASE_RAMP_UP, Ordering::Relaxed);
         self.lidar_last_pwm_change_ms.store(now, Ordering::Relaxed);
-        self.lidar_last_had_scans.store(false, Ordering::Relaxed);
-        self.lidar_health_count.store(0, Ordering::Relaxed);
+        self.lidar_max_working_pwm.store(0, Ordering::Relaxed);
+        self.lidar_min_failing_pwm
+            .store(MAX_PWM + 1, Ordering::Relaxed);
     }
 
     /// Update lidar PWM tuning state machine.
     ///
     /// Returns `Some(pwm)` if a PWM command should be sent, `None` if stable/settling.
     ///
-    /// This implements an adaptive binary-search algorithm:
-    /// - Starts at 100% PWM and ramps down with large steps (20%)
-    /// - Halves step size on each direction reversal (when scan state changes)
-    /// - Converges when step size reaches MIN_STEP and scans are stable
-    /// - Waits for settling period (250ms or 3 health packets) after each PWM change
+    /// Algorithm to find MAXIMUM stable PWM (higher = better for SLAM):
+    /// 1. PHASE_RAMP_UP: Start at 60%, increase by 5% until scans stop
+    /// 2. PHASE_FINE_TUNE: Binary search between max_working and min_failing
+    /// 3. PHASE_STABLE: Found optimal, stop sending PWM
+    /// 4. PHASE_RECOVERY: If scans lost, decrease PWM to recover
     pub fn update_lidar_tuning(&self) -> Option<u8> {
         let now = current_time_ms();
 
-        // Check if still settling after PWM change
-        let time_since_change = now.saturating_sub(self.lidar_last_pwm_change_ms.load(Ordering::Relaxed));
-        let health_packets = self.lidar_health_count.load(Ordering::Relaxed);
-        let is_settling =
-            time_since_change < SETTLING_TIMEOUT_MS && health_packets < SETTLING_HEALTH_COUNT;
-
-        if is_settling {
+        // Check if still settling after PWM change (wait 1 second)
+        let time_since_change =
+            now.saturating_sub(self.lidar_last_pwm_change_ms.load(Ordering::Relaxed));
+        if time_since_change < SETTLING_TIMEOUT_MS {
             return None; // Don't change PWM while settling
         }
 
@@ -192,90 +191,141 @@ impl ComponentState {
         let has_scans = now.saturating_sub(last_scan) < SCAN_TIMEOUT_MS;
 
         let phase = self.lidar_tuning_phase.load(Ordering::Relaxed);
+        let current_pwm = self.lidar_current_pwm.load(Ordering::Relaxed);
 
         match phase {
-            PHASE_RAMPING => {
-                let prev_had_scans = self.lidar_last_had_scans.swap(has_scans, Ordering::Relaxed);
+            PHASE_RAMP_UP => {
+                // Ramping up to find where scans stop working
+                if has_scans {
+                    // Scans working at this PWM - record as max working
+                    self.lidar_max_working_pwm
+                        .store(current_pwm, Ordering::Relaxed);
 
-                // Detect direction change (scan state flipped)
-                if has_scans != prev_had_scans {
-                    // Direction reversal - halve step size
-                    let mut step = self.lidar_step_size.load(Ordering::Relaxed);
-                    step = (step / 2).max(MIN_STEP);
-                    self.lidar_step_size.store(step, Ordering::Relaxed);
+                    if current_pwm >= MAX_PWM {
+                        // Already at max and scans work - we're done!
+                        self.lidar_tuning_phase
+                            .store(PHASE_STABLE, Ordering::Relaxed);
+                        log::info!("Lidar stable at max PWM {}%", current_pwm);
+                        return None;
+                    }
 
-                    // Flip direction
-                    let dir = self.lidar_direction.load(Ordering::Relaxed);
-                    self.lidar_direction.store(-dir, Ordering::Relaxed);
-
-                    let pwm = self.lidar_current_pwm.load(Ordering::Relaxed);
-                    log::info!(
-                        "Lidar PWM direction reversal at {}%, new step={}%",
-                        pwm,
-                        step
-                    );
-                }
-
-                let step = self.lidar_step_size.load(Ordering::Relaxed);
-
-                // Check if converged (small step + stable scans)
-                if step <= MIN_STEP && has_scans {
-                    self.lidar_tuning_phase.store(PHASE_STABLE, Ordering::Relaxed);
-                    let pwm = self.lidar_current_pwm.load(Ordering::Relaxed);
-                    log::info!("Lidar stable at PWM {}%", pwm);
-                    return None; // Stop sending PWM
-                }
-
-                // Apply step in current direction
-                let dir = self.lidar_direction.load(Ordering::Relaxed);
-                let current_pwm = self.lidar_current_pwm.load(Ordering::Relaxed);
-                let new_pwm = if dir < 0 {
-                    current_pwm.saturating_sub(step).max(MIN_PWM)
+                    // Try higher PWM
+                    let new_pwm = (current_pwm + RAMP_STEP).min(MAX_PWM);
+                    self.lidar_current_pwm.store(new_pwm, Ordering::Relaxed);
+                    self.lidar_last_pwm_change_ms.store(now, Ordering::Relaxed);
+                    log::info!("Lidar ramp up: {}% -> {}% (scans OK)", current_pwm, new_pwm);
+                    Some(new_pwm)
                 } else {
-                    current_pwm.saturating_add(step).min(MAX_PWM)
-                };
+                    // Scans not working at this PWM
+                    self.lidar_min_failing_pwm
+                        .store(current_pwm, Ordering::Relaxed);
 
-                self.lidar_current_pwm.store(new_pwm, Ordering::Relaxed);
+                    let max_working = self.lidar_max_working_pwm.load(Ordering::Relaxed);
+                    if max_working > 0 {
+                        // We found the boundary - switch to fine tuning
+                        self.lidar_tuning_phase
+                            .store(PHASE_FINE_TUNE, Ordering::Relaxed);
+                        let mid = (max_working + current_pwm) / 2;
+                        self.lidar_current_pwm.store(mid, Ordering::Relaxed);
+                        self.lidar_last_pwm_change_ms.store(now, Ordering::Relaxed);
+                        log::info!(
+                            "Lidar found boundary: works at {}%, fails at {}%, trying {}%",
+                            max_working,
+                            current_pwm,
+                            mid
+                        );
+                        Some(mid)
+                    } else {
+                        // Haven't found working PWM yet - try lower
+                        let new_pwm = current_pwm.saturating_sub(RAMP_STEP).max(MIN_PWM);
+                        if new_pwm == current_pwm {
+                            // Can't go lower, stuck at minimum
+                            log::error!("Lidar: no working PWM found, stuck at {}%", current_pwm);
+                            return None;
+                        }
+                        self.lidar_current_pwm.store(new_pwm, Ordering::Relaxed);
+                        self.lidar_last_pwm_change_ms.store(now, Ordering::Relaxed);
+                        log::info!(
+                            "Lidar ramp down: {}% -> {}% (no scans yet)",
+                            current_pwm,
+                            new_pwm
+                        );
+                        Some(new_pwm)
+                    }
+                }
+            }
+            PHASE_FINE_TUNE => {
+                // Binary search between max_working and min_failing
+                if has_scans {
+                    // This PWM works - update max_working
+                    self.lidar_max_working_pwm
+                        .store(current_pwm, Ordering::Relaxed);
+                } else {
+                    // This PWM fails - update min_failing
+                    self.lidar_min_failing_pwm
+                        .store(current_pwm, Ordering::Relaxed);
+                }
+
+                let max_working = self.lidar_max_working_pwm.load(Ordering::Relaxed);
+                let min_failing = self.lidar_min_failing_pwm.load(Ordering::Relaxed);
+
+                // Check if converged (gap <= MIN_STEP)
+                if min_failing.saturating_sub(max_working) <= MIN_STEP {
+                    // Converged! Use max_working as final value
+                    self.lidar_current_pwm.store(max_working, Ordering::Relaxed);
+                    self.lidar_tuning_phase
+                        .store(PHASE_STABLE, Ordering::Relaxed);
+                    self.lidar_last_pwm_change_ms.store(now, Ordering::Relaxed);
+                    log::info!("Lidar tuning complete: optimal PWM = {}%", max_working);
+                    return Some(max_working);
+                }
+
+                // Binary search: try midpoint
+                let mid = (max_working + min_failing) / 2;
+                self.lidar_current_pwm.store(mid, Ordering::Relaxed);
                 self.lidar_last_pwm_change_ms.store(now, Ordering::Relaxed);
-                self.lidar_health_count.store(0, Ordering::Relaxed);
-
                 log::debug!(
-                    "Lidar PWM: {} -> {}% (step={}%, dir={})",
-                    current_pwm,
-                    new_pwm,
-                    step,
-                    if dir < 0 { "down" } else { "up" }
+                    "Lidar fine tune: trying {}% (range {}%-{}%)",
+                    mid,
+                    max_working,
+                    min_failing
                 );
-
-                Some(new_pwm)
+                Some(mid)
             }
             PHASE_STABLE => {
                 if has_scans {
                     None // All good, don't send PWM
                 } else {
-                    // Lost scans unexpectedly
-                    self.lidar_tuning_phase.store(PHASE_RECOVERY, Ordering::Relaxed);
-                    let pwm = self.lidar_current_pwm.load(Ordering::Relaxed);
-                    log::warn!("Lidar lost scans at PWM {}%, entering recovery", pwm);
+                    // Lost scans unexpectedly - enter recovery
+                    self.lidar_tuning_phase
+                        .store(PHASE_RECOVERY, Ordering::Relaxed);
+                    log::warn!(
+                        "Lidar lost scans at PWM {}%, entering recovery",
+                        current_pwm
+                    );
+                    // Decrease PWM to try to recover
+                    let new_pwm = current_pwm.saturating_sub(RECOVERY_STEP).max(MIN_PWM);
+                    self.lidar_current_pwm.store(new_pwm, Ordering::Relaxed);
                     self.lidar_last_pwm_change_ms.store(now, Ordering::Relaxed);
-                    self.lidar_health_count.store(0, Ordering::Relaxed);
-                    Some(pwm)
+                    Some(new_pwm)
                 }
             }
             PHASE_RECOVERY => {
                 if has_scans {
                     // Recovered! Return to stable
-                    self.lidar_tuning_phase.store(PHASE_STABLE, Ordering::Relaxed);
-                    let pwm = self.lidar_current_pwm.load(Ordering::Relaxed);
-                    log::info!("Lidar recovered at PWM {}%", pwm);
+                    self.lidar_tuning_phase
+                        .store(PHASE_STABLE, Ordering::Relaxed);
+                    log::info!("Lidar recovered at PWM {}%", current_pwm);
                     None
                 } else {
-                    // Still no scans, increase PWM
-                    let current_pwm = self.lidar_current_pwm.load(Ordering::Relaxed);
-                    let new_pwm = current_pwm.saturating_add(RECOVERY_STEP).min(MAX_PWM);
+                    // Still no scans, decrease PWM further
+                    let new_pwm = current_pwm.saturating_sub(RECOVERY_STEP).max(MIN_PWM);
+                    if new_pwm == current_pwm {
+                        log::error!("Lidar: cannot recover, stuck at min PWM {}%", current_pwm);
+                        return None;
+                    }
                     self.lidar_current_pwm.store(new_pwm, Ordering::Relaxed);
                     self.lidar_last_pwm_change_ms.store(now, Ordering::Relaxed);
-                    self.lidar_health_count.store(0, Ordering::Relaxed);
                     log::debug!("Lidar recovery: {} -> {}%", current_pwm, new_pwm);
                     Some(new_pwm)
                 }

@@ -56,7 +56,7 @@ use crate::core::types::{SensorGroupData, SensorValue};
 use crate::error::{Error, Result};
 use protocol::{Delta2DPacketReader, ParseResult};
 use serialport::SerialPort;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -89,7 +89,6 @@ pub struct Delta2DDriver {
     error_count: Arc<AtomicU64>,
     // Shared state with GD32 for lidar PWM auto-tuning
     scan_timestamp: Arc<AtomicU64>,
-    health_count: Arc<AtomicU8>,
 }
 
 impl Delta2DDriver {
@@ -98,12 +97,7 @@ impl Delta2DDriver {
     /// # Arguments
     /// - `port_path`: Serial port path (e.g., "/dev/ttyS1")
     /// - `scan_timestamp`: Shared timestamp updated when measurement scans arrive (for GD32 PWM tuning)
-    /// - `health_count`: Shared counter incremented on each health packet (for GD32 PWM settling)
-    pub fn new(
-        port_path: &str,
-        scan_timestamp: Arc<AtomicU64>,
-        health_count: Arc<AtomicU8>,
-    ) -> Self {
+    pub fn new(port_path: &str, scan_timestamp: Arc<AtomicU64>) -> Self {
         Self {
             port_path: port_path.to_string(),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -111,7 +105,6 @@ impl Delta2DDriver {
             scan_count: Arc::new(AtomicU64::new(0)),
             error_count: Arc::new(AtomicU64::new(0)),
             scan_timestamp,
-            health_count,
         }
     }
 
@@ -135,7 +128,6 @@ impl Delta2DDriver {
         let scan_count = Arc::clone(&self.scan_count);
         let error_count = Arc::clone(&self.error_count);
         let scan_timestamp = Arc::clone(&self.scan_timestamp);
-        let health_count = Arc::clone(&self.health_count);
 
         self.reader_handle = Some(
             thread::Builder::new()
@@ -148,7 +140,6 @@ impl Delta2DDriver {
                         scan_count,
                         error_count,
                         scan_timestamp,
-                        health_count,
                     );
                 })
                 .map_err(|e| Error::Other(format!("Failed to spawn lidar thread: {}", e)))?,
@@ -166,7 +157,6 @@ impl Delta2DDriver {
         scan_count: Arc<AtomicU64>,
         error_count: Arc<AtomicU64>,
         scan_timestamp: Arc<AtomicU64>,
-        health_count: Arc<AtomicU8>,
     ) {
         let mut reader = Delta2DPacketReader::new();
         let mut accumulated_points: Vec<(f32, f32, u8)> = Vec::with_capacity(400);
@@ -270,8 +260,7 @@ impl Delta2DDriver {
                                 }
                             }
                             Ok(ParseResult::Health) => {
-                                // Health packet received - increment counter for PWM settling detection
-                                health_count.fetch_add(1, Ordering::Relaxed);
+                                // Health packet received - no action needed
                             }
                             Ok(ParseResult::None) => {
                                 // No more complete packets in buffer - break inner loop
