@@ -109,7 +109,7 @@ impl Config {
         let content = fs::read_to_string(&path)
             .map_err(|e| Error::Config(format!("Failed to read config: {}", e)))?;
 
-        let config: Config = toml::from_str(&content)
+        let config: Config = basic_toml::from_str(&content)
             .map_err(|e| Error::Config(format!("Failed to parse config: {}", e)))?;
 
         Ok(config)

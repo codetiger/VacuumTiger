@@ -7,20 +7,20 @@ authors = ["CodeTiger"]
 
 [dependencies]
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
-prost = "0.13"
+serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+basic-toml = "0.1"  # Minimal TOML parser (no toml_edit/winnow)
+prost = { version = "0.13", default-features = false, features = ["std", "derive"] }
 
-# Serial port
-serialport = "4.8"
+# Serial port (libudev not needed on embedded Linux)
+serialport = { version = "4.8", default-features = false }
 
 # Logging
 log = "0.4"
-env_logger = "0.10"
+env_logger = { version = "0.10", default-features = false, features = ["humantime"] }
 
 # Concurrency
-crossbeam-queue = "0.3"
-crossbeam-channel = "0.5"
+crossbeam-queue = { version = "0.3", default-features = false, features = ["std"] }
+crossbeam-channel = { version = "0.5", default-features = false, features = ["std"] }
 
 # Error handling
 thiserror = "1.0"
@@ -30,3 +30,13 @@ ctrlc = "3.5"
 
 [build-dependencies]
 prost-build = "0.13"
+
+[profile.release]
+opt-level = "z"         # Optimize for size
+lto = true              # Link-time optimization
+codegen-units = 1       # Single codegen unit for better optimization
+panic = "abort"         # Abort on panic (smaller than unwinding)
+strip = true            # Strip symbols from binary
+
+[profile.release.build-override]
+opt-level = "z"

@@ -7,20 +7,20 @@ license = "MIT"
 
 [dependencies]
 base64 = "0.22"
-clap = { version = "4.5", features = ["derive"] }  # CLI parsing for binaries
+clap = { version = "4.5", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 ctrlc = "3.5"
-env_logger = "0.11"
+env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
 kiddo = "4.2"  # K-d tree for nearest neighbor queries
 log = "0.4"
 postcard = { version = "1.1", features = ["alloc"] }  # For bag file format (internal)
-prost = "0.13"
-rand = "0.9"  # Random number generation for benchmark sampling
-serde = { version = "1.0", features = ["derive"] }
+prost = { version = "0.13", default-features = false, features = ["std", "derive"] }
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "os_rng"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 serde_json = "1.0"  # JSON output for benchmarks
 sysinfo = "0.32"  # Memory monitoring for benchmarks
-image = "0.25"  # PNG export for map visualization
+image = { version = "0.25", default-features = false, features = ["png"] }  # Only PNG export
 thiserror = "2.0"
-toml = "0.8"
+basic-toml = "0.1"  # Minimal TOML parser
 
 [build-dependencies]
 prost-build = "0.13"
@@ -29,6 +29,16 @@ prost-build = "0.13"
 approx = "0.5"
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.23"
+
+[profile.release]
+opt-level = "z"         # Optimize for size
+lto = true              # Link-time optimization
+codegen-units = 1       # Single codegen unit for better optimization
+panic = "abort"         # Abort on panic (smaller than unwinding)
+strip = true            # Strip symbols from binary
+
+[profile.release.build-override]
+opt-level = "z"
 
 [[example]]
 name = "dhruva_slam_node"

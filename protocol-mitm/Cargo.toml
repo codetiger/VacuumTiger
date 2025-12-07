@@ -7,5 +7,15 @@ license = "Apache-2.0"
 repository = "https://github.com/codetiger/VacuumTiger"
 
 [dependencies]
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 libc = "0.2"
+
+[profile.release]
+opt-level = "z"         # Optimize for size
+lto = true              # Link-time optimization
+codegen-units = 1       # Single codegen unit for better optimization
+panic = "abort"         # Abort on panic (smaller than unwinding)
+strip = true            # Strip symbols from binary
+
+[profile.release.build-override]
+opt-level = "z"

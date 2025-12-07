@@ -72,7 +72,7 @@ use crate::devices::crl200s::constants::{INIT_RETRY_DELAY_MS, SERIAL_READ_TIMEOU
 use crate::error::{Error, Result};
 use packet::{initialize_packet, TxPacket};
 use serialport::SerialPort;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -114,6 +114,40 @@ impl GD32Driver {
             reader_handle: None,
             component_state: Arc::new(ComponentState::default()),
         })
+    }
+
+    /// Set shared lidar scan timestamp reference (for PWM auto-tuning)
+    ///
+    /// This must be called before `start()` to share state with the Delta2D driver.
+    /// The timestamp is updated by Delta2D when measurement scans arrive.
+    pub fn set_lidar_scan_timestamp(&mut self, ts: Arc<AtomicU64>) {
+        // We need to modify the Arc-wrapped ComponentState's field
+        // Since ComponentState has public Arc fields, we can swap them
+        // But Arc<ComponentState> means we can't mutate directly...
+        // The solution is to use interior mutability - the Arc fields themselves are Arc<AtomicU64>
+        // which can be cloned into place by recreating the ComponentState.
+        //
+        // Actually, since ComponentState fields are public and we have &mut self,
+        // we need to recreate the Arc<ComponentState> with the new shared reference.
+        // This is only called before start(), so no threads are using it yet.
+        let mut new_state = ComponentState::default();
+        new_state.lidar_last_scan_ms = ts;
+        // Preserve any other state from the old one (though it should be default)
+        self.component_state = Arc::new(new_state);
+    }
+
+    /// Set shared lidar health count reference (for PWM auto-tuning settling detection)
+    ///
+    /// This must be called before `start()` to share state with the Delta2D driver.
+    /// The count is incremented by Delta2D when health packets (0xAE) arrive.
+    pub fn set_lidar_health_count(&mut self, count: Arc<AtomicU8>) {
+        // Similar to above - we need to update the Arc<ComponentState>
+        // Get existing scan timestamp to preserve it
+        let existing_ts = Arc::clone(&self.component_state.lidar_last_scan_ms);
+        let mut new_state = ComponentState::default();
+        new_state.lidar_last_scan_ms = existing_ts;
+        new_state.lidar_health_count = count;
+        self.component_state = Arc::new(new_state);
     }
 
     /// Initialize the GD32 device by sending init commands

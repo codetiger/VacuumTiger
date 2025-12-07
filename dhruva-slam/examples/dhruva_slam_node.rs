@@ -207,7 +207,7 @@ fn print_help() {
 fn load_config(args: &Args) -> Config {
     let config = match &args.config_path {
         Some(path) => match fs::read_to_string(path) {
-            Ok(contents) => match toml::from_str(&contents) {
+            Ok(contents) => match basic_toml::from_str(&contents) {
                 Ok(cfg) => {
                     eprintln!("Loaded config from {}", path);
                     cfg
@@ -226,7 +226,7 @@ fn load_config(args: &Args) -> Config {
             // Try default paths
             for path in &["dhruva-slam.toml", "/etc/dhruva-slam.toml"] {
                 if let Ok(contents) = fs::read_to_string(path)
-                    && let Ok(cfg) = toml::from_str(&contents)
+                    && let Ok(cfg) = basic_toml::from_str(&contents)
                 {
                     eprintln!("Loaded config from {}", path);
                     return apply_overrides(cfg, args);

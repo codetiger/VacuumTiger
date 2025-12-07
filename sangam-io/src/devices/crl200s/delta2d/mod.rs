@@ -54,15 +54,23 @@ pub mod protocol;
 
 use crate::core::types::{SensorGroupData, SensorValue};
 use crate::error::{Error, Result};
-use protocol::Delta2DPacketReader;
+use protocol::{Delta2DPacketReader, ParseResult};
 use serialport::SerialPort;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const LIDAR_BAUD_RATE: u32 = 115200;
 const LIDAR_READ_TIMEOUT_MS: u64 = 100;
+
+/// Get current time in milliseconds since epoch
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// Minimum points required before accepting a scan as complete
 /// This prevents false scan boundaries from angle noise or single bad readings
@@ -79,17 +87,31 @@ pub struct Delta2DDriver {
     reader_handle: Option<JoinHandle<()>>,
     scan_count: Arc<AtomicU64>,
     error_count: Arc<AtomicU64>,
+    // Shared state with GD32 for lidar PWM auto-tuning
+    scan_timestamp: Arc<AtomicU64>,
+    health_count: Arc<AtomicU8>,
 }
 
 impl Delta2DDriver {
     /// Create a new Delta-2D driver
-    pub fn new(port_path: &str) -> Self {
+    ///
+    /// # Arguments
+    /// - `port_path`: Serial port path (e.g., "/dev/ttyS1")
+    /// - `scan_timestamp`: Shared timestamp updated when measurement scans arrive (for GD32 PWM tuning)
+    /// - `health_count`: Shared counter incremented on each health packet (for GD32 PWM settling)
+    pub fn new(
+        port_path: &str,
+        scan_timestamp: Arc<AtomicU64>,
+        health_count: Arc<AtomicU8>,
+    ) -> Self {
         Self {
             port_path: port_path.to_string(),
             shutdown: Arc::new(AtomicBool::new(false)),
             reader_handle: None,
             scan_count: Arc::new(AtomicU64::new(0)),
             error_count: Arc::new(AtomicU64::new(0)),
+            scan_timestamp,
+            health_count,
         }
     }
 
@@ -112,12 +134,22 @@ impl Delta2DDriver {
         let shutdown = Arc::clone(&self.shutdown);
         let scan_count = Arc::clone(&self.scan_count);
         let error_count = Arc::clone(&self.error_count);
+        let scan_timestamp = Arc::clone(&self.scan_timestamp);
+        let health_count = Arc::clone(&self.health_count);
 
         self.reader_handle = Some(
             thread::Builder::new()
                 .name("delta2d-reader".to_string())
                 .spawn(move || {
-                    Self::reader_loop(port, shutdown, sensor_data, scan_count, error_count);
+                    Self::reader_loop(
+                        port,
+                        shutdown,
+                        sensor_data,
+                        scan_count,
+                        error_count,
+                        scan_timestamp,
+                        health_count,
+                    );
                 })
                 .map_err(|e| Error::Other(format!("Failed to spawn lidar thread: {}", e)))?,
         );
@@ -133,6 +165,8 @@ impl Delta2DDriver {
         sensor_data: Arc<Mutex<SensorGroupData>>,
         scan_count: Arc<AtomicU64>,
         error_count: Arc<AtomicU64>,
+        scan_timestamp: Arc<AtomicU64>,
+        health_count: Arc<AtomicU8>,
     ) {
         let mut reader = Delta2DPacketReader::new();
         let mut accumulated_points: Vec<(f32, f32, u8)> = Vec::with_capacity(400);
@@ -150,7 +184,7 @@ impl Delta2DDriver {
                     // Step 2: Drain ALL complete packets from buffer
                     loop {
                         match reader.parse_next() {
-                            Ok(Some(scan)) => {
+                            Ok(ParseResult::Scan(scan)) => {
                                 let count = scan_count.fetch_add(1, Ordering::Relaxed) + 1;
 
                                 // Accumulate points for a complete 360° scan
@@ -172,7 +206,11 @@ impl Delta2DDriver {
                                             last_angle.to_degrees(),
                                             first_point.angle.to_degrees()
                                         );
-                                        Self::publish_scan(&sensor_data, &accumulated_points);
+                                        Self::publish_scan(
+                                            &sensor_data,
+                                            &accumulated_points,
+                                            &scan_timestamp,
+                                        );
                                         accumulated_points.clear();
                                         last_scan_time = Instant::now();
                                     }
@@ -199,7 +237,11 @@ impl Delta2DDriver {
                                         elapsed,
                                         accumulated_points.len()
                                     );
-                                    Self::publish_scan(&sensor_data, &accumulated_points);
+                                    Self::publish_scan(
+                                        &sensor_data,
+                                        &accumulated_points,
+                                        &scan_timestamp,
+                                    );
                                     accumulated_points.clear();
                                     last_scan_time = Instant::now();
                                 }
@@ -227,7 +269,11 @@ impl Delta2DDriver {
                                     last_diagnostic_time = Instant::now();
                                 }
                             }
-                            Ok(None) => {
+                            Ok(ParseResult::Health) => {
+                                // Health packet received - increment counter for PWM settling detection
+                                health_count.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Ok(ParseResult::None) => {
                                 // No more complete packets in buffer - break inner loop
                                 break;
                             }
@@ -247,7 +293,7 @@ impl Delta2DDriver {
                             elapsed,
                             accumulated_points.len()
                         );
-                        Self::publish_scan(&sensor_data, &accumulated_points);
+                        Self::publish_scan(&sensor_data, &accumulated_points, &scan_timestamp);
                         accumulated_points.clear();
                         last_scan_time = Instant::now();
                     }
@@ -266,14 +312,21 @@ impl Delta2DDriver {
         log::info!("Delta-2D reader thread exiting");
     }
 
-    /// Publish accumulated scan to sensor data
-    fn publish_scan(sensor_data: &Arc<Mutex<SensorGroupData>>, points: &[(f32, f32, u8)]) {
+    /// Publish accumulated scan to sensor data and update timestamp for PWM tuning
+    fn publish_scan(
+        sensor_data: &Arc<Mutex<SensorGroupData>>,
+        points: &[(f32, f32, u8)],
+        scan_timestamp: &Arc<AtomicU64>,
+    ) {
         let Ok(mut data) = sensor_data.lock() else {
             log::error!("Failed to lock sensor data for lidar scan");
             return;
         };
         data.touch();
         data.set("scan", SensorValue::PointCloud2D(points.to_vec()));
+
+        // Update shared timestamp for GD32 PWM auto-tuning
+        scan_timestamp.store(current_time_ms(), Ordering::Relaxed);
 
         log::trace!("Published lidar scan with {} points", points.len());
     }

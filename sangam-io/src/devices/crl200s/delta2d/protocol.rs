@@ -46,6 +46,17 @@ pub enum CommandType {
     Unknown = 0xFF,
 }
 
+/// Result of parsing a lidar packet
+#[derive(Debug, Clone)]
+pub enum ParseResult {
+    /// Measurement scan data
+    Scan(LidarScan),
+    /// Health packet (motor is spinning, RPM logged)
+    Health,
+    /// No complete packet available
+    None,
+}
+
 impl From<u8> for CommandType {
     fn from(value: u8) -> Self {
         match value {
@@ -109,9 +120,14 @@ impl Delta2DPacketReader {
 
     /// Parse and return the next complete packet from the buffer
     ///
-    /// Call this in a loop after `read_bytes()` until it returns `Ok(None)`
+    /// Call this in a loop after `read_bytes()` until it returns `Ok(ParseResult::None)`
     /// to drain all available packets from the buffer.
-    pub fn parse_next(&mut self) -> Result<Option<LidarScan>> {
+    ///
+    /// Returns:
+    /// - `ParseResult::Scan(scan)` for measurement packets (0xAD)
+    /// - `ParseResult::Health { rpm }` for health packets (0xAE)
+    /// - `ParseResult::None` when no complete packet is available
+    pub fn parse_next(&mut self) -> Result<ParseResult> {
         // Safety check: if buffer is too large, something is wrong
         if self.buffer.len() > MAX_BUFFER_SIZE {
             log::warn!(
@@ -122,7 +138,7 @@ impl Delta2DPacketReader {
             );
             self.bytes_discarded += self.buffer.len() as u64;
             self.buffer.clear();
-            return Ok(None);
+            return Ok(ParseResult::None);
         }
 
         // Try to parse one packet using loop-based resync
@@ -133,16 +149,19 @@ impl Delta2DPacketReader {
     #[allow(dead_code)]
     pub fn read_scan<R: Read>(&mut self, port: &mut R) -> Result<Option<LidarScan>> {
         self.read_bytes(port)?;
-        self.parse_next()
+        match self.parse_next()? {
+            ParseResult::Scan(scan) => Ok(Some(scan)),
+            _ => Ok(None),
+        }
     }
 
     /// Parse scan with loop-based resync on failure
     /// On parse failure, drains 1 byte and retries instead of clearing buffer
-    fn try_parse_scan_with_resync(&mut self) -> Result<Option<LidarScan>> {
+    fn try_parse_scan_with_resync(&mut self) -> Result<ParseResult> {
         loop {
             // Need at least header (8 bytes)
             if self.buffer.len() < 8 {
-                return Ok(None);
+                return Ok(ParseResult::None);
             }
 
             // Find sync byte 0xAA
@@ -155,7 +174,7 @@ impl Delta2DPacketReader {
                     log::trace!("Lidar: no sync found, discarding {} bytes", discard);
                     self.buffer.drain(0..discard);
                 }
-                return Ok(None);
+                return Ok(ParseResult::None);
             };
 
             // Discard bytes before sync
@@ -167,7 +186,7 @@ impl Delta2DPacketReader {
 
             // Check if we have complete header
             if self.buffer.len() < 8 {
-                return Ok(None);
+                return Ok(ParseResult::None);
             }
 
             // Validate header before proceeding
@@ -198,7 +217,7 @@ impl Delta2DPacketReader {
 
             // Wait for complete packet
             if self.buffer.len() < total_len {
-                return Ok(None);
+                return Ok(ParseResult::None);
             }
 
             // NOTE: CRC validation disabled for now as the Delta-2D protocol's
@@ -228,22 +247,22 @@ impl Delta2DPacketReader {
             let payload = &self.buffer[8..8 + payload_len as usize];
 
             // Parse based on command type
-            let scan = if cmd_type == CommandType::Measurement && payload_len > 5 {
-                Some(self.parse_measurement(payload)?)
+            let result = if cmd_type == CommandType::Measurement && payload_len > 5 {
+                ParseResult::Scan(self.parse_measurement(payload)?)
             } else if cmd_type == CommandType::Health && payload_len >= 1 {
                 let rps_raw = payload[0];
                 let rpm = rps_raw as u16 * 3;
                 let rps = rps_raw as f32 * 0.05;
                 log::info!("Lidar health: RPM={}, RPS={:.2}", rpm, rps);
-                None
+                ParseResult::Health
             } else {
-                None
+                ParseResult::None
             };
 
             // Remove processed packet
             self.buffer.drain(0..total_len);
 
-            return Ok(scan);
+            return Ok(result);
         }
     }
 

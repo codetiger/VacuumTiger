@@ -467,19 +467,21 @@ fn handle_lidar(
                     SensorValue::U32(p) => Some(*p as u8),
                     _ => None,
                 })
-                .unwrap_or(60);
+                .unwrap_or(100); // Default to 100% (auto-tuning will find optimal)
 
-            log::info!("Lidar enable (PWM: {}%)", pwm);
+            log::info!("Lidar enable (auto-tuning from {}%)", pwm);
 
-            // Power on first, then set PWM
+            // Power on first
             pkt.set_lidar_power(true);
             send_packet(port, pkt)?;
-            pkt.set_lidar_pwm(pwm);
-            send_packet(port, pkt)?;
 
-            // Update state for heartbeat
+            // Initialize auto-tuning state and send initial PWM
             component_state.lidar_enabled.store(true, Ordering::Relaxed);
-            component_state.lidar_pwm.store(pwm, Ordering::Relaxed);
+            component_state.init_lidar_tuning();
+
+            // Send initial PWM command
+            pkt.set_lidar_pwm(component_state.get_lidar_pwm());
+            send_packet(port, pkt)?;
 
             Ok(())
         }
@@ -490,7 +492,6 @@ fn handle_lidar(
             component_state
                 .lidar_enabled
                 .store(false, Ordering::Relaxed);
-            component_state.lidar_pwm.store(0, Ordering::Relaxed);
 
             // PWM to 0 first, then power off
             pkt.set_lidar_pwm(0);
@@ -498,19 +499,9 @@ fn handle_lidar(
             pkt.set_lidar_power(false);
             send_packet(port, pkt)
         }
-        ComponentAction::Configure { ref config } => {
-            // Handle both U8 and U32 (protobuf sends U8 as U32)
-            let pwm = match config.get("pwm") {
-                Some(SensorValue::U8(p)) => Some(*p),
-                Some(SensorValue::U32(p)) => Some(*p as u8),
-                _ => None,
-            };
-            if let Some(pwm) = pwm {
-                log::info!("Lidar PWM: {}%", pwm);
-                component_state.lidar_pwm.store(pwm, Ordering::Relaxed);
-                pkt.set_lidar_pwm(pwm);
-                send_packet(port, pkt)?;
-            }
+        ComponentAction::Configure { .. } => {
+            // PWM is now auto-tuned - Configure action is no longer supported
+            log::info!("Lidar PWM is auto-tuned, Configure action ignored");
             Ok(())
         }
         _ => Err(Error::NotImplemented(format!(
