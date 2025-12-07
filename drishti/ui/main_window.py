@@ -44,8 +44,6 @@ class MainWindow(QMainWindow):
         # Drive control state
         self.linear_velocity = 0.0
         self.angular_velocity = 0.0
-        self.linear_step = 0.5  # m/s
-        self.angular_step = 0.5  # rad/s
         self.motor_enabled = False
         self.pressed_keys = set()  # Track currently pressed arrow keys for combinations
 
@@ -537,20 +535,26 @@ class MainWindow(QMainWindow):
         - Up/Down controls linear velocity (forward/backward)
         - Left/Right controls angular velocity (turn left/right)
         - Combinations like Up+Left move forward while turning left
+
+        Speed is controlled by the DriveControl widget's speed slider.
         """
+        # Get speed from DriveControl's slider setting
+        linear_speed = self.control_panel.drive_control._get_linear_speed()
+        angular_speed = self.control_panel.drive_control._get_angular_speed()
+
         # Calculate linear velocity from Up/Down keys
         linear = 0.0
         if Qt.Key_Up in self.pressed_keys:
-            linear += self.linear_step
+            linear += linear_speed
         if Qt.Key_Down in self.pressed_keys:
-            linear -= self.linear_step
+            linear -= linear_speed
 
         # Calculate angular velocity from Left/Right keys
         angular = 0.0
         if Qt.Key_Left in self.pressed_keys:
-            angular += self.angular_step
+            angular += angular_speed
         if Qt.Key_Right in self.pressed_keys:
-            angular -= self.angular_step
+            angular -= angular_speed
 
         self.linear_velocity = linear
         self.angular_velocity = angular

@@ -539,25 +539,33 @@ class PowerControl(QWidget):
 
 
 class DriveControl(QWidget):
-    """Arrow key-style drive control with E-Stop."""
+    """Arrow key-style drive control with E-Stop and speed slider."""
 
     velocity_changed = pyqtSignal(float, float)
     motor_toggled = pyqtSignal(bool)
     emergency_stop = pyqtSignal()
 
+    # Speed limits for manual control
+    MAX_LINEAR_VELOCITY = 1.0    # m/s
+    MAX_ANGULAR_VELOCITY = 1.0   # rad/s (~57 deg/s)
+    DEFAULT_SPEED_PERCENT = 50   # Default slider position (50%)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.linear_velocity = 0.0
         self.angular_velocity = 0.0
-        self.linear_step = 0.5
-        self.angular_step = 0.5
+        self.speed_percent = self.DEFAULT_SPEED_PERCENT  # 0-100%
         self.motor_enabled = False
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(6)
+
+        # Top row: Arrow buttons + controls
+        top_row = QHBoxLayout()
+        top_row.setSpacing(10)
 
         # Arrow buttons grid (left side)
         arrow_widget = QWidget()
@@ -604,7 +612,7 @@ class DriveControl(QWidget):
         self.btn_right.released.connect(self._on_released)
         grid.addWidget(self.btn_right, 1, 2)
 
-        layout.addWidget(arrow_widget)
+        top_row.addWidget(arrow_widget)
 
         # Right side: Motor toggle, velocity, E-Stop
         right_widget = QWidget()
@@ -650,20 +658,78 @@ class DriveControl(QWidget):
         self.estop_btn.clicked.connect(self._on_estop)
         right_layout.addWidget(self.estop_btn)
 
-        layout.addWidget(right_widget)
-        layout.addStretch()
+        top_row.addWidget(right_widget)
+        top_row.addStretch()
+        layout.addLayout(top_row)
+
+        # Speed slider row
+        speed_row = QHBoxLayout()
+        speed_row.setSpacing(6)
+
+        speed_label = QLabel("Speed")
+        speed_label.setStyleSheet("color: #aaa; font-size: 10px;")
+        speed_label.setFixedWidth(35)
+        speed_row.addWidget(speed_label)
+
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.setRange(1, 10)  # 10% to 100% in 10% steps
+        self.speed_slider.setValue(self.DEFAULT_SPEED_PERCENT // 10)
+        self.speed_slider.setTickPosition(QSlider.TicksBelow)
+        self.speed_slider.setTickInterval(1)
+        self.speed_slider.setSingleStep(1)
+        self.speed_slider.setPageStep(1)
+        self.speed_slider.setFocusPolicy(Qt.NoFocus)
+        self.speed_slider.valueChanged.connect(self._on_speed_changed)
+        self.speed_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                background: #444;
+                height: 6px;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #4CAF50;
+                width: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #4CAF50;
+                border-radius: 3px;
+            }
+        """)
+        speed_row.addWidget(self.speed_slider)
+
+        self.speed_value_label = QLabel(f"{self.DEFAULT_SPEED_PERCENT}%")
+        self.speed_value_label.setFixedWidth(32)
+        self.speed_value_label.setStyleSheet("color: #4CAF50; font-size: 10px; font-weight: bold;")
+        speed_row.addWidget(self.speed_value_label)
+
+        layout.addLayout(speed_row)
+
+    def _on_speed_changed(self, value):
+        """Handle speed slider changes. Value is 1-10, representing 10%-100%."""
+        self.speed_percent = value * 10
+        self.speed_value_label.setText(f"{self.speed_percent}%")
+
+    def _get_linear_speed(self):
+        """Get current linear speed based on slider percentage."""
+        return self.MAX_LINEAR_VELOCITY * self.speed_percent / 100.0
+
+    def _get_angular_speed(self):
+        """Get current angular speed based on slider percentage."""
+        return self.MAX_ANGULAR_VELOCITY * self.speed_percent / 100.0
 
     def _on_forward(self):
         if not self.motor_enabled:
             return
-        self.linear_velocity = self.linear_step
+        self.linear_velocity = self._get_linear_speed()
         self.angular_velocity = 0.0
         self._emit_velocity()
 
     def _on_backward(self):
         if not self.motor_enabled:
             return
-        self.linear_velocity = -self.linear_step
+        self.linear_velocity = -self._get_linear_speed()
         self.angular_velocity = 0.0
         self._emit_velocity()
 
@@ -671,14 +737,14 @@ class DriveControl(QWidget):
         if not self.motor_enabled:
             return
         self.linear_velocity = 0.0
-        self.angular_velocity = self.angular_step
+        self.angular_velocity = self._get_angular_speed()
         self._emit_velocity()
 
     def _on_right(self):
         if not self.motor_enabled:
             return
         self.linear_velocity = 0.0
-        self.angular_velocity = -self.angular_step
+        self.angular_velocity = -self._get_angular_speed()
         self._emit_velocity()
 
     def _on_released(self):
