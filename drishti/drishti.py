@@ -281,33 +281,17 @@ class RobotClient:
         self.send_command(command)
         logger.info(f"Main brush speed set to {speed}%")
 
-    def enable_lidar(self, pwm: int):
-        """
-        Enable lidar with specified PWM speed
-
-        Args:
-            pwm: PWM duty cycle 0-100% (lidar motor speed)
-        """
-        command = {"EnableLidar": {"pwm": max(0, min(100, pwm))}}
+    def enable_lidar(self):
+        """Enable lidar (speed is auto-tuned by SangamIO)"""
+        command = "EnableLidar"
         self.send_command(command)
-        logger.info(f"Lidar enabled at {pwm}% PWM")
+        logger.info("Lidar enabled")
 
     def disable_lidar(self):
         """Disable lidar motor"""
         command = "DisableLidar"
         self.send_command(command)
         logger.info("Lidar disabled")
-
-    def set_lidar_pwm(self, pwm: int):
-        """
-        Set lidar PWM speed (without power cycling)
-
-        Args:
-            pwm: PWM duty cycle 0-100%
-        """
-        command = {"SetLidarPWM": {"pwm": max(0, min(100, pwm))}}
-        self.send_command(command)
-        logger.info(f"Lidar PWM set to {pwm}%")
 
     def emergency_stop(self):
         """Emergency stop all motors and actuators"""
