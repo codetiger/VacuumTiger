@@ -81,8 +81,9 @@ impl TxPacket {
 
     /// Set motor velocity (CMD 0x66)
     ///
-    /// Linear: forward/backward speed (ticks/sec, positive = forward)
-    /// Angular: rotation speed (ticks/sec, positive = counter-clockwise)
+    /// Linear: forward/backward speed (empirical units, positive = forward)
+    /// Angular: rotation speed (empirical units, positive = counter-clockwise)
+    /// Note: Units are converted from m/s and rad/s using VELOCITY_TO_DEVICE_UNITS (523)
     #[inline]
     pub fn set_velocity(&mut self, linear: i16, angular: i16) {
         self.data[2] = 11; // LEN = cmd(1) + payload(8) + crc(2)

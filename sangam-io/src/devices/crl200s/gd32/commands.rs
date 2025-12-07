@@ -5,23 +5,23 @@
 //!
 //! # Unit Conversions
 //!
-//! The GD32 protocol expects specific units for motion commands:
+//! The GD32 protocol expects velocity in internal units (empirically calibrated):
 //!
-//! - **Linear velocity**: mm/s (millimeters per second)
+//! - **Linear velocity**: Empirical units
 //!   - Input: m/s (meters per second)
-//!   - Conversion: multiply by 1000
-//!   - Range: -32768 to 32767 mm/s (±32.7 m/s max)
+//!   - Conversion: multiply by 523 (empirically calibrated)
 //!
-//! - **Angular velocity**: mrad/s (milliradians per second)
+//! - **Angular velocity**: Empirical units
 //!   - Input: rad/s (radians per second)
-//!   - Conversion: multiply by 1000
-//!   - Range: -32768 to 32767 mrad/s (±32.7 rad/s max)
+//!   - Conversion: multiply by 523 (empirically calibrated)
 //!
-//! - **Tank drive speeds**: Direct motor units (mm/s equivalent)
+//! - **Tank drive speeds**: Same empirical units
 //!   - Input: m/s (meters per second)
-//!   - Conversion: multiply by 1000
+//!   - Conversion: multiply by 523
 //!
-//! These conversions are defined by the GD32F103 firmware protocol.
+//! Note: The conversion factor was calibrated by comparing commanded angular velocity
+//! (0.35 rad/s) with encoder-measured actual velocity (0.669 rad/s), giving a
+//! correction ratio of 1000/1.91 ≈ 523.
 //!
 //! # Protobuf Type Handling
 //!
@@ -49,8 +49,11 @@ use std::sync::{Arc, Mutex};
 // Constants
 // ============================================================================
 
-/// Conversion factor from m/s to GD32 velocity units (mm/s)
-const VELOCITY_TO_DEVICE_UNITS: f32 = 1000.0;
+/// Conversion factor from m/s or rad/s to GD32 velocity units.
+///
+/// Empirically calibrated: commanded 0.35 rad/s resulted in 0.669 rad/s actual,
+/// so the correction factor is 1000 / 1.91 ≈ 523.
+const VELOCITY_TO_DEVICE_UNITS: f32 = 523.0;
 
 /// Default IMU calibration payload observed in R2D logs
 const IMU_DEFAULT_PAYLOAD: [u8; 4] = [0x10, 0x0E, 0x00, 0x00];
