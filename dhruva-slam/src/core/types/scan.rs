@@ -83,20 +83,20 @@ impl LaserScan {
         let mut sorted: Vec<_> = scan.to_vec();
         sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
+        // Preserve the ACTUAL angles from the lidar - this is critical for accuracy!
+        let angles: Vec<f32> = sorted.iter().map(|p| p.0).collect();
+        let ranges: Vec<f32> = sorted.iter().map(|p| p.1).collect();
+        let intensities: Vec<u8> = sorted.iter().map(|p| p.2).collect();
+
         let angle_min = sorted.first().map(|p| p.0).unwrap_or(0.0);
         let angle_max = sorted.last().map(|p| p.0).unwrap_or(0.0);
 
-        // Estimate angle increment for legacy compatibility, but we'll use actual angles
+        // Estimate angle increment for legacy compatibility
         let angle_increment = if sorted.len() > 1 {
             (angle_max - angle_min) / (sorted.len() - 1) as f32
         } else {
             0.0
         };
-
-        // Preserve the ACTUAL angles from the lidar - this is critical for accuracy!
-        let angles: Vec<f32> = sorted.iter().map(|p| p.0).collect();
-        let ranges: Vec<f32> = sorted.iter().map(|p| p.1).collect();
-        let intensities: Vec<u8> = sorted.iter().map(|p| p.2).collect();
 
         Self {
             angle_min,
@@ -106,7 +106,7 @@ impl LaserScan {
             range_max: 12.0, // Delta-2D typical maximum
             ranges,
             intensities: Some(intensities),
-            angles: Some(angles), // Use original angles for better accuracy
+            angles: Some(angles), // CCW angles for scan matching
         }
     }
 

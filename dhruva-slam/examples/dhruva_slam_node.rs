@@ -337,6 +337,7 @@ fn run_main_loop(
             },
             gyro_scale: config.odometry.gyro_scale,
             gyro_bias_z: config.odometry.gyro_bias_z,
+            ..ComplementaryConfig::default() // Uses gyro_sign=-1.0 for CRL-200S
         },
         output_rate_hz: config.output.odometry_rate_hz,
         // Skip gyro calibration for wheel-only mode

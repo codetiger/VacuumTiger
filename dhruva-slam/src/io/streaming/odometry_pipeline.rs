@@ -315,6 +315,7 @@ mod tests {
                 alpha: 0.98,
                 gyro_scale: 0.001,
                 gyro_bias_z: 0.0,
+                gyro_sign: 1.0, // Tests use synthetic data
             },
             output_rate_hz: 50.0,   // 20ms interval
             calibration_samples: 0, // Disable calibration for tests

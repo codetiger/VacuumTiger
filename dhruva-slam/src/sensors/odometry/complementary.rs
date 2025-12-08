@@ -23,9 +23,10 @@ use crate::core::types::Pose2D;
 
 /// Gyroscope scale factor for CRL-200S IMU.
 ///
-/// Raw gyro values are in units of 0.1 deg/s.
-/// Convert to rad/s: 0.1 * (π / 180) ≈ 0.001745329
-pub const CRL200S_GYRO_SCALE: f32 = 0.1 * (std::f32::consts::PI / 180.0);
+/// Calibrated using encoder ground truth from rotation bags.
+/// Raw gyro value of ~3740 at 38.33°/s encoder-measured rotation gives:
+/// 38.33 / 3740 = 0.01025 deg/s per LSB = 0.000179 rad/s per LSB
+pub const CRL200S_GYRO_SCALE: f32 = 0.01025 * (std::f32::consts::PI / 180.0);
 
 /// Configuration for the complementary filter.
 #[derive(Debug, Clone, Copy)]
@@ -44,11 +45,20 @@ pub struct ComplementaryConfig {
     /// For CRL-200S: raw units are 0.1 deg/s → use `CRL200S_GYRO_SCALE` (0.001745)
     pub gyro_scale: f32,
 
-    /// Gyroscope Z bias in raw units (before scaling).
+    /// Gyroscope yaw (Z axis) bias in raw units (before scaling).
     ///
     /// This is subtracted from the raw gyro reading before scaling.
     /// Should be calibrated at startup when robot is stationary.
+    ///
+    /// Note: For ROS REP-103 compliance, pass `gyro_raw[2]` (Z axis) as the
+    /// yaw rate to `update()`. See `utils::constants::GYRO_YAW_INDEX`.
     pub gyro_bias_z: f32,
+
+    /// Gyroscope sign multiplier.
+    ///
+    /// Use -1.0 if gyro reports opposite sign to encoder rotation.
+    /// With SangamIO frame transforms, gyro sign should match encoder convention.
+    pub gyro_sign: f32,
 }
 
 impl Default for ComplementaryConfig {
@@ -61,6 +71,7 @@ impl Default for ComplementaryConfig {
             alpha: 0.90,
             gyro_scale: CRL200S_GYRO_SCALE, // CRL-200S: raw units are 0.1 deg/s
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0, // Sign correction now done in SangamIO frame_transforms
         }
     }
 }
@@ -140,7 +151,8 @@ impl ComplementaryFilter {
     /// # Arguments
     ///
     /// * `encoder_delta` - Pose delta from wheel odometry (in robot frame)
-    /// * `gyro_z_raw` - Raw gyroscope Z reading (before calibration)
+    /// * `gyro_z_raw` - Raw gyroscope yaw (Z axis) reading before calibration.
+    ///   For ROS REP-103: use `gyro_raw[2]` from the sensor status.
     /// * `timestamp_us` - Current timestamp in microseconds
     ///
     /// # Returns
@@ -161,9 +173,10 @@ impl ComplementaryFilter {
         };
         self.last_timestamp_us = Some(timestamp_us);
 
-        // Apply calibration to gyro and compute angular change
-        let gyro_z_calibrated =
-            (gyro_z_raw as f32 - self.config.gyro_bias_z) * self.config.gyro_scale;
+        // Apply calibration and sign correction to gyro and compute angular change
+        let gyro_z_calibrated = (gyro_z_raw as f32 - self.config.gyro_bias_z)
+            * self.config.gyro_scale
+            * self.config.gyro_sign;
         let dtheta_gyro = gyro_z_calibrated * dt;
 
         // Get encoder heading change
@@ -250,6 +263,7 @@ mod tests {
             alpha: 0.98,
             gyro_scale: 0.001, // 1 raw unit = 0.001 rad/s
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0, // Tests use synthetic data with same sign convention
         }
     }
 
@@ -278,6 +292,7 @@ mod tests {
             alpha: 0.0, // Trust encoder only
             gyro_scale: 1.0,
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0,
         };
         let mut filter = ComplementaryFilter::new(config);
 
@@ -300,6 +315,7 @@ mod tests {
             alpha: 0.98,
             gyro_scale: 1.0, // 1 unit = 1 rad/s
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0,
         };
         let mut filter = ComplementaryFilter::new(config);
 
@@ -323,6 +339,7 @@ mod tests {
             alpha: 1.0, // Trust gyro only for heading
             gyro_scale: 0.001,
             gyro_bias_z: 100.0, // Bias of 100 raw units
+            gyro_sign: 1.0,
         };
         let mut filter = ComplementaryFilter::new(config);
 
@@ -377,6 +394,7 @@ mod tests {
             alpha: 0.98,
             gyro_scale: 1.0, // ignored for calibrated
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0,
         };
         let mut filter = ComplementaryFilter::new(config);
 
@@ -398,6 +416,7 @@ mod tests {
             alpha: 0.5, // Equal weight
             gyro_scale: 1.0,
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0,
         };
         let mut filter = ComplementaryFilter::new(config);
 
@@ -447,6 +466,7 @@ mod tests {
             alpha: 0.98,
             gyro_scale: 1.0,
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0,
         };
         let mut filter = ComplementaryFilter::new(config);
 
@@ -483,6 +503,7 @@ mod tests {
             alpha: 0.0, // Pure encoder
             gyro_scale: 1.0,
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0,
         };
         let mut filter = ComplementaryFilter::new(config);
 
@@ -502,6 +523,7 @@ mod tests {
             alpha: 1.0, // Pure gyro
             gyro_scale: 1.0,
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0,
         };
         let mut filter = ComplementaryFilter::new(config);
 
@@ -537,6 +559,7 @@ mod tests {
             alpha: 1.0,
             gyro_scale: 0.001,
             gyro_bias_z: 1000.0, // Large bias
+            gyro_sign: 1.0,
         };
         let mut filter = ComplementaryFilter::new(config);
 
@@ -556,6 +579,7 @@ mod tests {
             alpha: 0.98,
             gyro_scale: 0.01, // 0.01 rad/s per unit
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0,
         };
         let mut filter = ComplementaryFilter::new(config);
 

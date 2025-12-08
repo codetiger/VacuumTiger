@@ -172,6 +172,7 @@ mod tests {
                     encoder: EncoderTicks::new(i as u16 * 10, i as u16 * 10 + 1),
                     gyro_raw: [i as i16, 0, 0],
                     accel_raw: [0, 0, 1638],
+                    tilt_raw: [0, 0, 1000],
                 })
                 .unwrap();
         }

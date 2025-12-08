@@ -582,15 +582,19 @@ impl PointToLineIcp {
                 // Identity snapping: If we have a high-quality match and both the initial guess
                 // and final transform are very close to identity, snap to the initial guess.
                 // This prevents quantization drift in static/slow-motion scenarios.
+                //
+                // We check translation and rotation separately with appropriate thresholds:
+                // - Translation: 3cm (typical encoder noise)
+                // - Rotation: 0.05 rad (~3°, typical gyro/P2L drift for static scans)
                 let final_transform = if score > 0.95 {
-                    let init_mag = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt()
-                        + initial_guess.theta.abs();
-                    let curr_mag = (current_transform.x.powi(2) + current_transform.y.powi(2))
-                        .sqrt()
-                        + current_transform.theta.abs();
+                    let init_trans = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt();
+                    let init_rot = initial_guess.theta.abs();
+                    let curr_trans = (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt();
+                    let curr_rot = current_transform.theta.abs();
 
-                    // If both initial guess and result are near-identity (<1cm, <1°), snap to initial
-                    if init_mag < 0.02 && curr_mag < 0.02 {
+                    // If both initial guess and result are near-identity, snap to initial
+                    // This prevents P2L aperture problem from causing rotation drift
+                    if init_trans < 0.03 && init_rot < 0.05 && curr_trans < 0.03 && curr_rot < 0.05 {
                         *initial_guess
                     } else {
                         current_transform
@@ -612,12 +616,11 @@ impl PointToLineIcp {
 
                 // Identity snapping (same as above)
                 let final_transform = if score > 0.95 {
-                    let init_mag = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt()
-                        + initial_guess.theta.abs();
-                    let curr_mag = (current_transform.x.powi(2) + current_transform.y.powi(2))
-                        .sqrt()
-                        + current_transform.theta.abs();
-                    if init_mag < 0.02 && curr_mag < 0.02 {
+                    let init_trans = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt();
+                    let init_rot = initial_guess.theta.abs();
+                    let curr_trans = (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt();
+                    let curr_rot = current_transform.theta.abs();
+                    if init_trans < 0.03 && init_rot < 0.05 && curr_trans < 0.03 && curr_rot < 0.05 {
                         *initial_guess
                     } else {
                         current_transform
@@ -654,11 +657,11 @@ impl PointToLineIcp {
 
         // Identity snapping for max-iteration case
         let final_transform = if score > 0.95 {
-            let init_mag =
-                (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt() + initial_guess.theta.abs();
-            let curr_mag = (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt()
-                + current_transform.theta.abs();
-            if init_mag < 0.02 && curr_mag < 0.02 {
+            let init_trans = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt();
+            let init_rot = initial_guess.theta.abs();
+            let curr_trans = (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt();
+            let curr_rot = current_transform.theta.abs();
+            if init_trans < 0.03 && init_rot < 0.05 && curr_trans < 0.03 && curr_rot < 0.05 {
                 *initial_guess
             } else {
                 current_transform

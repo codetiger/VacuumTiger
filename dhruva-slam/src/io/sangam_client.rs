@@ -171,12 +171,14 @@ impl Message {
         Some((left, right))
     }
 
-    /// Extract gyroscope Z raw value if this is a sensor_status message.
+    /// Extract gyroscope Z (Yaw) raw value from sensor_status message.
     ///
-    /// **Note**: This returns `gyro_z` which is actually the Roll axis on CRL-200S.
-    /// For yaw (heading), use [`gyro_yaw_raw`] instead.
+    /// SangamIO transforms gyro data to ROS REP-103 frame:
+    /// - gyro_x = Roll rate (X axis rotation, left/right tilt)
+    /// - gyro_y = Pitch rate (Y axis rotation, nose up/down)
+    /// - gyro_z = Yaw rate (Z axis rotation, heading change)
     ///
-    /// Returns raw I16 value from IMU (stored as I32 in protobuf).
+    /// Returns raw I16 value in 0.1 deg/s units (stored as I32 in protobuf).
     pub fn gyro_z_raw(&self) -> Option<i16> {
         if self.group_id != "sensor_status" {
             return None;
@@ -190,27 +192,27 @@ impl Message {
 
     /// Extract gyroscope Yaw rate (for 2D heading) from sensor_status message.
     ///
-    /// On CRL-200S, the yaw rate is in `gyro_x` due to axis mapping:
-    /// - gyro_x (B40-41) = Yaw rate (Z axis rotation on floor)
-    /// - gyro_y (B44-45) = Pitch rate (nose up/down)
-    /// - gyro_z (B48-49) = Roll rate (left/right tilt)
+    /// SangamIO transforms gyro data to ROS REP-103 frame, so yaw is in `gyro_z`:
+    /// - gyro_x = Roll rate (X axis rotation)
+    /// - gyro_y = Pitch rate (Y axis rotation)
+    /// - gyro_z = Yaw rate (Z axis rotation, CCW positive)
     ///
     /// Returns raw I16 value in 0.1 deg/s units.
     pub fn gyro_yaw_raw(&self) -> Option<i16> {
         if self.group_id != "sensor_status" {
             return None;
         }
-        // Yaw rate is in gyro_x on CRL-200S
-        if let Some(SensorValue::I32(v)) = self.values.get("gyro_x") {
+        // Yaw rate is now correctly in gyro_z after SangamIO transform
+        if let Some(SensorValue::I32(v)) = self.values.get("gyro_z") {
             Some(*v as i16)
         } else {
             None
         }
     }
 
-    /// Extract full gyroscope raw reading [x, y, z].
+    /// Extract full gyroscope raw reading [x, y, z] in ROS REP-103 frame.
     ///
-    /// Returns raw I16 values from IMU.
+    /// Returns raw I16 values from IMU: [roll_rate, pitch_rate, yaw_rate]
     pub fn gyro_raw(&self) -> Option<[i16; 3]> {
         if self.group_id != "sensor_status" {
             return None;
@@ -246,6 +248,28 @@ impl Message {
             _ => return None,
         };
         let z = match self.values.get("accel_z") {
+            Some(SensorValue::I32(v)) => *v as i16,
+            _ => return None,
+        };
+        Some([x, y, z])
+    }
+
+    /// Extract LP-filtered tilt/gravity vector [x, y, z].
+    ///
+    /// Returns raw I16 values from IMU. Used for Mahony AHRS gravity correction.
+    pub fn tilt_raw(&self) -> Option<[i16; 3]> {
+        if self.group_id != "sensor_status" {
+            return None;
+        }
+        let x = match self.values.get("tilt_x") {
+            Some(SensorValue::I32(v)) => *v as i16,
+            _ => return None,
+        };
+        let y = match self.values.get("tilt_y") {
+            Some(SensorValue::I32(v)) => *v as i16,
+            _ => return None,
+        };
+        let z = match self.values.get("tilt_z") {
             Some(SensorValue::I32(v)) => *v as i16,
             _ => return None,
         };
@@ -503,14 +527,15 @@ impl SangamClient {
     /// # Arguments
     /// * `component_id` - Component to control (e.g., "lidar", "drive", "vacuum")
     /// * `action` - Action type (Enable, Disable, Reset, Configure)
-    /// * `config` - Configuration parameters (e.g., {"pwm": 60} for lidar)
+    /// * `config` - Configuration parameters (e.g., velocity for drive)
     ///
     /// # Example
     /// ```ignore
-    /// // Enable lidar at 60% PWM
+    /// // Set drive velocity
     /// let mut config = HashMap::new();
-    /// config.insert("pwm".to_string(), SensorValue::U32(60));
-    /// client.send_component_command_with_config("lidar", ComponentActionType::Configure, config)?;
+    /// config.insert("linear".to_string(), SensorValue::F32(0.1));
+    /// config.insert("angular".to_string(), SensorValue::F32(0.0));
+    /// client.send_component_command_with_config("drive", ComponentActionType::Configure, config)?;
     /// ```
     pub fn send_component_command_with_config(
         &mut self,

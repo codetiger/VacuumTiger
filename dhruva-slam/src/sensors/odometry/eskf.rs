@@ -80,6 +80,8 @@ pub struct EskfConfig {
     pub gyro_scale: f32,
     /// Gyroscope bias in raw units
     pub gyro_bias_z: f32,
+    /// Gyroscope sign multiplier (1.0 with SangamIO REP-103 compliance)
+    pub gyro_sign: f32,
     /// Initial position variance (m²)
     pub initial_position_variance: f32,
     /// Initial heading variance (rad²)
@@ -91,8 +93,11 @@ impl Default for EskfConfig {
         Self {
             process_noise: ProcessNoise::default(),
             measurement_noise: MeasurementNoise::default(),
-            gyro_scale: 0.1 * (std::f32::consts::PI / 180.0), // 0.1 deg/s per unit
+            // Calibrated using encoder ground truth from rotation bags.
+            // Raw gyro value of ~3740 at 38.33°/s gives 0.01025 deg/s per LSB.
+            gyro_scale: 0.01025 * (std::f32::consts::PI / 180.0),
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0, // SangamIO provides REP-103 compliant data (CCW positive)
             initial_position_variance: 0.01, // 10cm std dev
             initial_heading_variance: 0.01,  // ~6° std dev
         }
@@ -304,8 +309,10 @@ impl Eskf {
             return;
         }
 
-        // Convert raw gyro to rad/s
-        let gyro_z_rad_s = (gyro_z_raw as f32 - self.config.gyro_bias_z) * self.config.gyro_scale;
+        // Convert raw gyro to rad/s with sign correction
+        let gyro_z_rad_s = (gyro_z_raw as f32 - self.config.gyro_bias_z)
+            * self.config.gyro_scale
+            * self.config.gyro_sign;
 
         // Heading change from gyro over this time interval
         let dtheta_gyro = gyro_z_rad_s * dt;
@@ -503,6 +510,7 @@ mod tests {
             },
             gyro_scale: 0.001, // 1 raw unit = 0.001 rad/s
             gyro_bias_z: 0.0,
+            gyro_sign: 1.0, // Tests use synthetic data with same sign convention
             initial_position_variance: 0.01,
             initial_heading_variance: 0.01,
         }

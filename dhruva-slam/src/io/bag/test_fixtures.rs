@@ -47,6 +47,7 @@ impl BagTestFixture {
                     encoder: EncoderTicks::new(encoder_value, encoder_value),
                     gyro_raw: [0, 0, 0],
                     accel_raw: [0, 0, 1638], // ~1g on Z axis
+                    tilt_raw: [0, 0, 1000],  // Gravity vector on Z
                 })
                 .expect("Failed to record sensor status");
 
@@ -108,6 +109,7 @@ impl BagTestFixture {
                     encoder: EncoderTicks::new(ticks, ticks),
                     gyro_raw: [0, 0, 0],
                     accel_raw: [0, 0, 1638],
+                    tilt_raw: [0, 0, 1000],
                 })
                 .expect("Failed to record sensor status");
 
@@ -150,8 +152,9 @@ impl BagTestFixture {
                 .record_sensor_status(&SensorStatusMsg {
                     timestamp_us: time,
                     encoder: EncoderTicks::new(encoder_value, encoder_value),
-                    gyro_raw: [gyro_raw_z, 0, 0], // gyro_x is yaw on CRL-200S
+                    gyro_raw: [0, 0, gyro_raw_z], // ROS REP-103: gyro_z is yaw
                     accel_raw: [0, 0, 1638],
+                    tilt_raw: [0, 0, 1000],
                 })
                 .expect("Failed to record sensor status");
 
@@ -212,6 +215,7 @@ impl BagTestFixture {
                         encoder: EncoderTicks::new(ticks, ticks),
                         gyro_raw: [0, 0, 0],
                         accel_raw: [0, 0, 1638],
+                        tilt_raw: [0, 0, 1000],
                     })
                     .expect("Failed to record");
 
@@ -229,8 +233,9 @@ impl BagTestFixture {
                     .record_sensor_status(&SensorStatusMsg {
                         timestamp_us: time,
                         encoder: EncoderTicks::new(turn_start_ticks, turn_start_ticks),
-                        gyro_raw: [gyro_raw_z, 0, 0],
+                        gyro_raw: [0, 0, gyro_raw_z], // ROS REP-103: gyro_z is yaw
                         accel_raw: [0, 0, 1638],
+                        tilt_raw: [0, 0, 1000],
                     })
                     .expect("Failed to record");
 
@@ -304,7 +309,8 @@ mod tests {
         // Check gyro values are non-zero
         let msg = player.next_immediate().unwrap().unwrap();
         let status = msg.as_sensor_status().unwrap();
-        assert!(status.gyro_raw[0] != 0); // Should have rotation
+        // ROS REP-103: gyro_raw[2] is the yaw (Z) axis - should be non-zero for rotation
+        assert!(status.gyro_raw[2] != 0); // Should have rotation
         assert_eq!(status.encoder.left, status.encoder.right); // No wheel motion
     }
 

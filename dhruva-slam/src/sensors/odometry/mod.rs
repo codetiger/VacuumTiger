@@ -7,12 +7,13 @@
 //! - [`WheelOdometry`]: Convert encoder ticks to pose deltas
 //! - [`ComplementaryFilter`]: Simple complementary filter for encoder + gyro fusion
 //! - [`Eskf`]: Error-State Kalman Filter for production-quality fusion
+//! - [`MahonyAhrs`]: Mahony AHRS filter with automatic gyro bias calibration
 //! - [`OdometryEvaluator`]: Compute drift metrics for calibration and validation
 //!
 //! # Example
 //!
 //! ```ignore
-//! use dhruva_slam::odometry::{WheelOdometry, WheelOdometryConfig, Eskf, EskfConfig};
+//! use dhruva_slam::odometry::{WheelOdometry, WheelOdometryConfig, MahonyAhrs, MahonyConfig};
 //!
 //! let config = WheelOdometryConfig {
 //!     ticks_per_meter: 1000.0,
@@ -28,17 +29,19 @@
 //!     println!("Moved forward: {} m", delta.x);
 //! }
 //!
-//! // Use ESKF for better accuracy
-//! let mut eskf = Eskf::new(EskfConfig::default());
-//! eskf.update(delta, gyro_z, timestamp_us);
+//! // Use Mahony AHRS for orientation with automatic bias calibration
+//! let mut ahrs = MahonyAhrs::new(MahonyConfig::default());
+//! let (roll, pitch, yaw) = ahrs.update(gyro_x, gyro_y, gyro_z, tilt_x, tilt_y, tilt_z, timestamp_us);
 //! ```
 
 mod complementary;
 mod eskf;
 mod evaluator;
+mod mahony;
 mod wheel_odometry;
 
 pub use complementary::{CRL200S_GYRO_SCALE, ComplementaryConfig, ComplementaryFilter};
 pub use eskf::{Eskf, EskfConfig, MeasurementNoise, ProcessNoise};
 pub use evaluator::{EvaluationResult, OdometryEvaluator, ScenarioBounds, Stats, TestScenario};
+pub use mahony::{EulerAngles, MahonyAhrs, MahonyConfig, Quaternion};
 pub use wheel_odometry::{WheelOdometry, WheelOdometryConfig};

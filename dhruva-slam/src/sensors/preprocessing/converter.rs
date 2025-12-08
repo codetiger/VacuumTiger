@@ -20,6 +20,11 @@ impl ScanConverter {
     /// ```
     ///
     /// Points with invalid ranges (zero, negative, NaN, infinite) are skipped.
+    ///
+    /// Note: SangamIO provides lidar data already transformed to ROS REP-103 frame:
+    /// - 0° = forward (robot front direction)
+    /// - Angles increase counter-clockwise (CCW)
+    /// - 90° = left, 270° = right
     pub fn to_point_cloud(scan: &LaserScan) -> PointCloud2D {
         let mut cloud = PointCloud2D::with_capacity(scan.ranges.len());
 
@@ -30,6 +35,7 @@ impl ScanConverter {
             }
 
             let (sin_a, cos_a) = angle.sin_cos();
+            // Standard polar to Cartesian conversion (SangamIO handles frame transform)
             let point = Point2D::new(range * cos_a, range * sin_a);
 
             if scan.intensities.is_some() {
@@ -52,6 +58,7 @@ impl ScanConverter {
         for (angle, range, intensity) in scan.iter() {
             let point = if scan.is_valid_range(range) {
                 let (sin_a, cos_a) = angle.sin_cos();
+                // Standard polar to Cartesian conversion (SangamIO handles frame transform)
                 Point2D::new(range * cos_a, range * sin_a)
             } else {
                 Point2D::new(0.0, 0.0)
@@ -117,6 +124,9 @@ impl ScanConverter {
     }
 
     /// Convert a single polar coordinate to Cartesian.
+    ///
+    /// Standard polar to Cartesian conversion. SangamIO provides lidar data
+    /// already in ROS REP-103 frame (0° = forward, angles CCW positive).
     #[inline]
     pub fn polar_to_cartesian(angle: f32, range: f32) -> Point2D {
         let (sin_a, cos_a) = angle.sin_cos();

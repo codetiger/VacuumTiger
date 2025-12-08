@@ -83,7 +83,7 @@ pub struct OccupancyGridConfig {
 impl Default for OccupancyGridConfig {
     fn default() -> Self {
         Self {
-            resolution: 0.05,     // 5cm cells
+            resolution: 0.02,     // 5cm cells
             initial_width: 20.0,  // 20m
             initial_height: 20.0, // 20m
             log_odds_occupied: 0.9,

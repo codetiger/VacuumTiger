@@ -364,9 +364,10 @@ impl OnlineSlam {
 
     /// Match scan to previous scan (scan-to-scan matching).
     ///
-    /// The initial guess for scan matching should be the transform from source to target.
-    /// Since source=current scan and target=previous scan, and the robot moved by odom_delta,
-    /// the initial guess should be odom_delta.inverse() (to undo the robot motion).
+    /// The scan matcher aligns source (current scan) to target (previous scan).
+    /// The returned transform represents the robot motion from previous to current.
+    /// We pass odom_delta directly as the initial guess since it's exactly the
+    /// expected robot motion.
     fn match_to_previous_scan(
         &mut self,
         scan: &PointCloud2D,
@@ -383,8 +384,11 @@ impl OnlineSlam {
             return None;
         }
 
-        // Initial guess: inverse of odometry delta (transform from current scan to previous scan)
-        let initial_guess = odom_delta.inverse();
+        // Initial guess: odometry delta (the robot motion from previous to current).
+        // The scan matcher aligns source (current scan) to target (previous scan),
+        // returning a transform T that represents the robot motion from prev→curr.
+        // This is exactly odom_delta, so we pass it directly.
+        let initial_guess = *odom_delta;
         let result = self.matcher.match_scans(scan, prev, &initial_guess);
 
         if result.converged && result.score >= self.config.min_match_score {
@@ -396,14 +400,11 @@ impl OnlineSlam {
 
     /// Process pose update from scan matching.
     ///
-    /// The scan match result contains a transform from current scan to previous scan.
+    /// The scan match result transform represents the robot motion from previous to current.
     /// To compute the corrected pose:
-    /// - previous_pose is where the previous scan was taken
-    /// - match_result.transform maps current scan → previous scan frame
-    /// - So: corrected_pose = previous_pose.compose(match_result.transform.inverse())
-    ///
-    /// Since we don't store previous_pose explicitly, we compute it as:
-    ///   previous_pose = current_pose (before the odom_delta was applied)
+    /// - current_pose is the robot's pose before this update
+    /// - match_result.transform is the refined motion estimate (prev→curr)
+    /// - corrected_pose = current_pose.compose(match_result.transform)
     ///
     /// Uses a threshold-based approach to blend between scan match and odometry
     /// to avoid erratic pose jumps from small score variations.
@@ -411,10 +412,9 @@ impl OnlineSlam {
         let odom_pose = self.current_pose.compose(odom_delta);
 
         // Compute scan-match-corrected pose:
-        // match_result.transform is the transform from current scan to previous scan
-        // The inverse gives us the relative motion from previous scan to current scan
-        // So: corrected_pose = current_pose.compose(match_result.transform.inverse())
-        let scan_match_pose = self.current_pose.compose(&match_result.transform.inverse());
+        // match_result.transform is the robot motion from previous to current.
+        // Apply it directly to get the new pose.
+        let scan_match_pose = self.current_pose.compose(&match_result.transform);
 
         if match_result.score >= 0.6 {
             // High confidence: trust scan match fully

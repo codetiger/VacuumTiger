@@ -3,28 +3,76 @@
 //! Records sensor data from a live robot connection to a bag file
 //! for later playback and algorithm development.
 //!
+//! # Initialization Sequence
+//!
+//! The recorder performs the following initialization before recording:
+//! 1. Enable lidar and IMU
+//! 2. Wait 15 seconds for sensors to stabilize
+//! 3. Wait 3 seconds for IMU calibration (gyro bias calculation)
+//! 4. Start recording with calibrated sensors
+//!
 //! # Usage
 //!
 //! ```bash
-//! # Record for 60 seconds
+//! # Record stationary for 60 seconds
 //! cargo run --example bag_record -- --sangam 192.168.68.101:5555 --output recording.bag --duration 60
 //!
-//! # Record until Ctrl-C
-//! cargo run --example bag_record -- --sangam 192.168.68.101:5555 --output recording.bag
+//! # Record with forward motion at 0.1 m/s
+//! cargo run --example bag_record -- -s 192.168.68.101:5555 -o forward.bag --linear 0.1
 //!
-//! # Record with IMU calibration at start
-//! cargo run --example bag_record -- --sangam 192.168.68.101:5555 --output recording.bag --imu-calibrate
+//! # Record rotation at 20 deg/s
+//! cargo run --example bag_record -- -s 192.168.68.101:5555 -o rotate.bag --angular 0.35
 //! ```
 
 use dhruva_slam::io::bag::{BagRecorder, EncoderTicks, SensorStatusMsg};
-use dhruva_slam::utils::{
-    DEFAULT_LIDAR_PWM, DEFAULT_LINEAR_VEL, DEFAULT_ROTATION_ANGULAR_VEL, setup_ctrl_c_handler,
-};
+use dhruva_slam::utils::setup_ctrl_c_handler;
 use dhruva_slam::{ComponentActionType, SangamClient, SensorValue, Timestamped};
 use std::collections::HashMap;
 use std::env;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+
+/// IMU bias calibrator that collects samples and computes average bias.
+struct ImuBiasCalibrator {
+    samples: Vec<[i16; 3]>,
+}
+
+impl ImuBiasCalibrator {
+    fn new() -> Self {
+        Self {
+            samples: Vec::with_capacity(1500), // ~3 seconds at 500Hz
+        }
+    }
+
+    fn add_sample(&mut self, gyro_raw: [i16; 3]) {
+        self.samples.push(gyro_raw);
+    }
+
+    fn sample_count(&self) -> usize {
+        self.samples.len()
+    }
+
+    fn compute_bias(&self) -> [f32; 3] {
+        if self.samples.is_empty() {
+            return [0.0, 0.0, 0.0];
+        }
+
+        let n = self.samples.len() as f64;
+        let sum: (f64, f64, f64) = self.samples.iter().fold((0.0, 0.0, 0.0), |acc, s| {
+            (
+                acc.0 + s[0] as f64,
+                acc.1 + s[1] as f64,
+                acc.2 + s[2] as f64,
+            )
+        });
+
+        [
+            (sum.0 / n) as f32,
+            (sum.1 / n) as f32,
+            (sum.2 / n) as f32,
+        ]
+    }
+}
 
 fn main() {
     env_logger::init();
@@ -49,20 +97,18 @@ struct Config {
     sangam_address: String,
     output_path: String,
     duration_secs: Option<u64>,
-    imu_calibrate: bool,
-    lidar_enable: bool,
-    rotate: bool,
-    forward: bool,
+    /// Linear velocity in m/s (None = stationary)
+    linear_velocity: Option<f32>,
+    /// Angular velocity in rad/s (None = no rotation)
+    angular_velocity: Option<f32>,
 }
 
 fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut sangam_address = None;
     let mut output_path = None;
     let mut duration_secs = None;
-    let mut imu_calibrate = false;
-    let mut lidar_enable = false;
-    let mut rotate = false;
-    let mut forward = false;
+    let mut linear_velocity = None;
+    let mut angular_velocity = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -92,17 +138,27 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                         .map_err(|_| format!("Invalid duration: {}", args[i]))?,
                 );
             }
-            "--imu-calibrate" | "-i" => {
-                imu_calibrate = true;
+            "--linear" | "-l" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("Missing value for --linear".to_string());
+                }
+                linear_velocity = Some(
+                    args[i]
+                        .parse()
+                        .map_err(|_| format!("Invalid linear velocity: {}", args[i]))?,
+                );
             }
-            "--lidar" | "-l" => {
-                lidar_enable = true;
-            }
-            "--rotate" | "-r" => {
-                rotate = true;
-            }
-            "--forward" | "-f" => {
-                forward = true;
+            "--angular" | "-a" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("Missing value for --angular".to_string());
+                }
+                angular_velocity = Some(
+                    args[i]
+                        .parse()
+                        .map_err(|_| format!("Invalid angular velocity: {}", args[i]))?,
+                );
             }
             "--help" | "-h" => {
                 return Err("Help requested".to_string());
@@ -117,18 +173,12 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let sangam_address = sangam_address.ok_or("Missing --sangam argument")?;
     let output_path = output_path.ok_or("Missing --output argument")?;
 
-    if rotate && forward {
-        return Err("Cannot use --rotate and --forward together".to_string());
-    }
-
     Ok(Config {
         sangam_address,
         output_path,
         duration_secs,
-        imu_calibrate,
-        lidar_enable,
-        rotate,
-        forward,
+        linear_velocity,
+        angular_velocity,
     })
 }
 
@@ -139,25 +189,34 @@ Usage: {} [OPTIONS]
 
 Record sensor data from SangamIO to a bag file.
 
+INITIALIZATION:
+    The recorder always performs the following initialization:
+    1. Enable lidar and IMU
+    2. Wait 15 seconds for sensors to stabilize
+    3. Wait 3 seconds for IMU calibration (gyro bias calculation)
+    4. Start recording with calibrated sensors
+
 OPTIONS:
     -s, --sangam <ADDRESS>   SangamIO address (e.g., 192.168.68.101:5555)
     -o, --output <PATH>      Output bag file path
     -d, --duration <SECS>    Recording duration in seconds (default: until Ctrl-C)
-    -i, --imu-calibrate      Send IMU calibration command before recording
-    -l, --lidar              Enable lidar before recording
-    -r, --rotate             Enable rotation during recording (20 deg/s)
-    -f, --forward            Enable forward motion during recording (0.1 m/s)
+    -l, --linear <M/S>       Linear velocity in m/s (e.g., 0.1 for forward)
+    -a, --angular <RAD/S>    Angular velocity in rad/s (e.g., 0.35 for ~20 deg/s)
     -h, --help               Show this help message
 
+VELOCITY:
+    If --linear or --angular is specified, the drive will be enabled before recording.
+    Both can be combined for arc motion.
+
 EXAMPLES:
-    # Record for 60 seconds
+    # Record stationary for 60 seconds
     {} --sangam 192.168.68.101:5555 --output recording.bag --duration 60
 
-    # Record until Ctrl-C
-    {} --sangam 192.168.68.101:5555 --output recording.bag
+    # Record with forward motion at 0.1 m/s
+    {} -s 192.168.68.101:5555 -o forward.bag -l 0.1 -d 30
 
-    # Record with IMU calibration and lidar
-    {} --sangam 192.168.68.101:5555 --output recording.bag --imu-calibrate --lidar -d 120
+    # Record rotation at ~20 deg/s (0.35 rad/s)
+    {} -s 192.168.68.101:5555 -o rotate.bag -a 0.35 -d 60
 "#,
         program, program, program, program
     );
@@ -171,88 +230,133 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut client = SangamClient::connect(&config.sangam_address)?;
     println!("Connected! (wire format: Protobuf)");
 
-    // Enable lidar if requested - do this before IMU calibration
-    if config.lidar_enable {
-        println!("Enabling lidar at {}% PWM...", DEFAULT_LIDAR_PWM);
-        let mut lidar_config = HashMap::new();
-        lidar_config.insert("pwm".to_string(), SensorValue::U32(DEFAULT_LIDAR_PWM));
-        client.send_component_command_with_config(
-            "lidar",
-            ComponentActionType::Configure,
-            lidar_config,
-        )?;
-        std::thread::sleep(Duration::from_secs(1));
-        println!("Waiting 3 seconds for lidar to spin up...");
-        std::thread::sleep(Duration::from_secs(3));
-        println!("Lidar enabled.");
-    }
+    // ===== INITIALIZATION PHASE =====
+    println!("\n=== Initialization Phase ===");
 
-    // Send IMU calibration command if requested (after lidar is running)
-    if config.imu_calibrate {
-        println!("Sending IMU calibration command...");
-        client.send_component_command("imu", ComponentActionType::Enable)?;
-        println!("Waiting 2 seconds for IMU calibration to complete...");
-        std::thread::sleep(Duration::from_secs(2));
-        println!("IMU calibration complete.");
-    }
+    // Step 1: Enable lidar and IMU
+    println!("Enabling lidar...");
+    client.send_component_command("lidar", ComponentActionType::Enable)?;
+    println!("Enabling IMU...");
+    client.send_component_command("imu", ComponentActionType::Enable)?;
 
-    // Enable rotation if requested
-    if config.rotate {
-        println!(
-            "Enabling drive and starting rotation at {:.0} deg/s...",
-            DEFAULT_ROTATION_ANGULAR_VEL.to_degrees()
-        );
-        // Enable drive first
-        client.send_component_command("drive", ComponentActionType::Enable)?;
-        std::thread::sleep(Duration::from_millis(100));
-        // Set angular velocity
-        let mut velocity_config = HashMap::new();
-        velocity_config.insert("linear".to_string(), SensorValue::F32(0.0));
-        velocity_config.insert(
-            "angular".to_string(),
-            SensorValue::F32(DEFAULT_ROTATION_ANGULAR_VEL),
-        );
-        client.send_component_command_with_config(
-            "drive",
-            ComponentActionType::Configure,
-            velocity_config,
-        )?;
-        println!("Rotation enabled.");
-    }
+    // Step 2: Wait for sensors to stabilize (15 seconds)
+    // We must consume messages during this time to prevent TCP buffer overflow
+    println!("Waiting for sensors to stabilize (15 seconds)...");
+    let stabilization_start = Instant::now();
+    let stabilization_duration = Duration::from_secs(15);
+    let mut last_progress = Instant::now();
+    let mut discarded_count = 0u64;
 
-    // Enable forward motion if requested
-    if config.forward {
-        println!(
-            "Enabling drive and starting forward motion at {:.2} m/s...",
-            DEFAULT_LINEAR_VEL
-        );
-        // Enable drive first
-        client.send_component_command("drive", ComponentActionType::Enable)?;
-        std::thread::sleep(Duration::from_millis(100));
-        // Set linear velocity
-        let mut velocity_config = HashMap::new();
-        velocity_config.insert("linear".to_string(), SensorValue::F32(DEFAULT_LINEAR_VEL));
-        velocity_config.insert("angular".to_string(), SensorValue::F32(0.0));
-        client.send_component_command_with_config(
-            "drive",
-            ComponentActionType::Configure,
-            velocity_config,
-        )?;
-        println!("Forward motion enabled.");
-    }
+    while stabilization_start.elapsed() < stabilization_duration && running.load(Ordering::SeqCst) {
+        // Consume messages to prevent buffer overflow
+        match client.recv_timeout(Duration::from_millis(100)) {
+            Ok(Some(_)) => discarded_count += 1,
+            Ok(None) => {}
+            Err(_) => {}
+        }
 
-    // Flush TCP buffer - discard any accumulated messages during setup
-    println!("Flushing TCP buffer...");
+        // Progress indicator every second
+        if last_progress.elapsed() >= Duration::from_secs(1) {
+            let remaining = 15 - stabilization_start.elapsed().as_secs();
+            print!("\r  {} seconds remaining...  ", remaining);
+            std::io::Write::flush(&mut std::io::stdout())?;
+            last_progress = Instant::now();
+        }
+    }
+    println!("\r  Sensors stabilized. (discarded {} msgs)    ", discarded_count);
+
+    // Flush any buffered messages before calibration
     let mut flushed = 0;
     loop {
         match client.recv_timeout(Duration::from_millis(50)) {
             Ok(Some(_)) => flushed += 1,
-            Ok(None) => break, // Timeout with no data - buffer is empty
-            Err(_) => break,   // Error - stop flushing
+            Ok(None) => break,
+            Err(_) => break,
         }
     }
-    println!("Flushed {} buffered messages.", flushed);
+    if flushed > 0 {
+        println!("Flushed {} buffered messages.", flushed);
+    }
 
+    // Step 3: Wait 3 seconds while collecting IMU samples for bias calibration
+    println!("Calibrating IMU (3 seconds - keep robot stationary)...");
+    let mut bias_calibrator = ImuBiasCalibrator::new();
+    let calibration_start = Instant::now();
+    let calibration_duration = Duration::from_secs(3);
+    let mut last_progress = Instant::now();
+
+    while calibration_start.elapsed() < calibration_duration && running.load(Ordering::SeqCst) {
+        match client.recv_timeout(Duration::from_millis(100)) {
+            Ok(Some(msg)) => {
+                if let Some(gyro) = msg.gyro_raw() {
+                    bias_calibrator.add_sample(gyro);
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("Error during calibration: {}", e);
+                break;
+            }
+        }
+
+        // Progress indicator every 500ms
+        if last_progress.elapsed() >= Duration::from_millis(500) {
+            let elapsed = calibration_start.elapsed().as_secs_f32();
+            print!(
+                "\r  Collected {} samples ({:.1}s / 3.0s)...",
+                bias_calibrator.sample_count(),
+                elapsed
+            );
+            std::io::Write::flush(&mut std::io::stdout())?;
+            last_progress = Instant::now();
+        }
+    }
+    println!();
+
+    // Step 4: Calculate and display IMU bias
+    let gyro_bias = bias_calibrator.compute_bias();
+    println!(
+        "IMU Calibration complete: {} samples",
+        bias_calibrator.sample_count()
+    );
+    println!(
+        "  Gyro bias: [{:.2}, {:.2}, {:.2}] (raw units, 0.1 deg/s)",
+        gyro_bias[0], gyro_bias[1], gyro_bias[2]
+    );
+
+    // Check if calibration was interrupted
+    if !running.load(Ordering::SeqCst) {
+        println!("\nCalibration interrupted. Stopping lidar...");
+        client.send_component_command("lidar", ComponentActionType::Disable)?;
+        return Ok(());
+    }
+
+    // ===== MOTION SETUP (if requested) =====
+    let motion_enabled =
+        config.linear_velocity.is_some() || config.angular_velocity.is_some();
+    if motion_enabled {
+        let linear = config.linear_velocity.unwrap_or(0.0);
+        let angular = config.angular_velocity.unwrap_or(0.0);
+        println!(
+            "\nEnabling drive: linear={:.2} m/s, angular={:.2} rad/s ({:.1} deg/s)...",
+            linear,
+            angular,
+            angular.to_degrees()
+        );
+        client.send_component_command("drive", ComponentActionType::Enable)?;
+        std::thread::sleep(Duration::from_millis(100));
+        let mut velocity_config = HashMap::new();
+        velocity_config.insert("linear".to_string(), SensorValue::F32(linear));
+        velocity_config.insert("angular".to_string(), SensorValue::F32(angular));
+        client.send_component_command_with_config(
+            "drive",
+            ComponentActionType::Configure,
+            velocity_config,
+        )?;
+    }
+
+    // ===== RECORDING PHASE =====
+    println!("\n=== Recording Phase ===");
     println!("Creating bag file: {}", config.output_path);
     let mut recorder = BagRecorder::create(&config.output_path)?;
 
@@ -289,12 +393,14 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                     // Extract all sensor data
                     let gyro = msg.gyro_raw().unwrap_or([0, 0, 0]);
                     let accel = msg.accel_raw().unwrap_or([0, 0, 0]);
+                    let tilt = msg.tilt_raw().unwrap_or([0, 0, 0]);
 
                     recorder.record_sensor_status(&SensorStatusMsg {
                         timestamp_us,
                         encoder: EncoderTicks::new(left, right),
                         gyro_raw: gyro,
                         accel_raw: accel,
+                        tilt_raw: tilt,
                     })?;
                     sensor_count += 1;
                 }
@@ -323,29 +429,17 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Stop rotation if it was enabled
-    if config.rotate {
-        println!("\n\nStopping rotation...");
+    // Stop motion if it was enabled
+    if motion_enabled {
+        println!("\n\nStopping drive...");
         client.send_component_command("drive", ComponentActionType::Disable)?;
         std::thread::sleep(Duration::from_millis(500));
-        println!("Rotation stopped.");
     }
 
-    // Stop forward motion if it was enabled
-    if config.forward {
-        println!("\n\nStopping forward motion...");
-        client.send_component_command("drive", ComponentActionType::Disable)?;
-        std::thread::sleep(Duration::from_millis(500));
-        println!("Forward motion stopped.");
-    }
-
-    // Stop lidar if it was enabled
-    if config.lidar_enable {
-        println!("\nStopping lidar...");
-        client.send_component_command("lidar", ComponentActionType::Disable)?;
-        std::thread::sleep(Duration::from_secs(1));
-        println!("Lidar stopped.");
-    }
+    // Always stop lidar (we always start it)
+    println!("\nStopping lidar...");
+    client.send_component_command("lidar", ComponentActionType::Disable)?;
+    std::thread::sleep(Duration::from_millis(500));
 
     println!("\nFinalizing bag file...");
     let info = recorder.finish()?;

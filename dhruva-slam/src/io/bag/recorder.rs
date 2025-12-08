@@ -62,6 +62,7 @@ pub type Result<T> = std::result::Result<T, RecorderError>;
 ///     encoder: EncoderTicks::new(100, 100),
 ///     gyro_raw: [0, 0, 0],
 ///     accel_raw: [0, 0, 1638],
+///     tilt_raw: [0, 0, 1000],
 /// })?;
 ///
 /// // Finalize and close
@@ -245,6 +246,7 @@ mod tests {
                     encoder: EncoderTicks::new(i as u16, i as u16),
                     gyro_raw: [0, 0, 0],
                     accel_raw: [0, 0, 1638],
+                    tilt_raw: [0, 0, 1000],
                 })
                 .unwrap();
         }
@@ -271,6 +273,7 @@ mod tests {
                 encoder: EncoderTicks::new(0, 0),
                 gyro_raw: [0, 0, 0],
                 accel_raw: [0, 0, 0],
+                tilt_raw: [0, 0, 1000],
             })
             .unwrap();
 

@@ -105,6 +105,8 @@ pub struct SensorStatusMsg {
     pub gyro_raw: [i16; 3],
     /// Raw accelerometer values [x, y, z]
     pub accel_raw: [i16; 3],
+    /// LP-filtered tilt/gravity vector [x, y, z] for Mahony AHRS
+    pub tilt_raw: [i16; 3],
 }
 
 impl SensorStatusMsg {
@@ -114,12 +116,14 @@ impl SensorStatusMsg {
         encoder: EncoderTicks,
         gyro_raw: [i16; 3],
         accel_raw: [i16; 3],
+        tilt_raw: [i16; 3],
     ) -> Self {
         Self {
             timestamp_us,
             encoder,
             gyro_raw,
             accel_raw,
+            tilt_raw,
         }
     }
 }
@@ -266,6 +270,7 @@ mod tests {
             encoder: EncoderTicks::new(0, 0),
             gyro_raw: [0, 0, 0],
             accel_raw: [0, 0, 0],
+            tilt_raw: [0, 0, 1000],
         });
         assert_eq!(sensor_msg.timestamp_us(), 1000);
         assert!(sensor_msg.is_sensor_status());

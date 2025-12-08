@@ -5,18 +5,21 @@
 //!   cargo run --example bag_inspect -- <bag_file> --summary - Show summary
 //!   cargo run --example bag_inspect -- <bag_file> --timing  - Show timing analysis
 //!   cargo run --example bag_inspect -- <bag_file> --imu     - Detailed IMU analysis
+//!   cargo run --example bag_inspect -- <bag_file> --pose    - Pose estimation debug
 //!   cargo run --example bag_inspect -- <bag_file> --verbose - Verbose info
 
+use dhruva_slam::core::types::{LaserScan, Pose2D};
 use dhruva_slam::io::bag::{BagMessage, BagPlayer};
 use dhruva_slam::sensors::odometry::{WheelOdometry, WheelOdometryConfig};
-use dhruva_slam::utils::{GYRO_SCALE, I16Stats, WHEEL_BASE, WHEEL_TICKS_PER_METER, std_dev_i16};
+use dhruva_slam::sensors::preprocessing::{PreprocessorConfig, ScanPreprocessor};
+use dhruva_slam::utils::{GYRO_SCALE, GYRO_SIGN, I16Stats, WHEEL_BASE, WHEEL_TICKS_PER_METER, std_dev_i16};
 use std::env;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "Usage: {} <bag_file> [--summary | --timing | --imu | --verbose]",
+            "Usage: {} <bag_file> [--summary | --timing | --imu | --pose | --verbose]",
             args[0]
         );
         std::process::exit(1);
@@ -28,9 +31,244 @@ fn main() {
     match mode {
         Some("--timing") => show_timing_analysis(bag_path),
         Some("--imu") => show_imu_analysis(bag_path),
+        Some("--pose") => show_pose_analysis(bag_path),
         Some("--summary") => show_summary(bag_path),
         Some("--verbose") => show_info(bag_path, true),
         _ => show_info(bag_path, false),
+    }
+}
+
+/// Pose estimation debug analysis
+fn show_pose_analysis(bag_path: &str) {
+    use dhruva_slam::algorithms::matching::{
+        HybridP2LMatcher, HybridP2LMatcherConfig, ScanMatcher,
+    };
+
+    let player = BagPlayer::open(bag_path).expect("Failed to open bag file");
+
+    println!("╔══════════════════════════════════════════════════════════════════╗");
+    println!("║                    POSE DEBUG ANALYSIS                           ║");
+    println!("╚══════════════════════════════════════════════════════════════════╝\n");
+
+    let odom_config = WheelOdometryConfig {
+        ticks_per_meter: WHEEL_TICKS_PER_METER,
+        wheel_base: WHEEL_BASE,
+    };
+    let mut wheel_odom = WheelOdometry::new(odom_config);
+    let preprocessor = ScanPreprocessor::new(PreprocessorConfig::default());
+    let mut matcher = HybridP2LMatcher::new(HybridP2LMatcherConfig::default());
+
+    // Track poses
+    let mut odom_only_pose = Pose2D::identity();   // Pure odometry
+    let mut slam_pose = Pose2D::identity();        // Scan-matched pose (like in benchmark)
+    let mut prev_odom_at_scan = Pose2D::identity();
+    let mut odom_pose = Pose2D::identity();
+
+    // Previous scan for matching
+    use dhruva_slam::core::types::PointCloud2D;
+    let mut previous_scan: Option<PointCloud2D> = None;
+
+    // Encoder tracking
+    let mut first_encoder: Option<(u16, u16)> = None;
+    let mut last_encoder: Option<(u16, u16)> = None;
+
+    let mut scan_count = 0;
+    let mut sensor_count = 0u64;
+
+    println!("Processing bag: {}\n", bag_path);
+
+    for msg in player {
+        match msg {
+            Ok(BagMessage::SensorStatus(status)) => {
+                sensor_count += 1;
+
+                if first_encoder.is_none() {
+                    first_encoder = Some((status.encoder.left, status.encoder.right));
+                }
+                last_encoder = Some((status.encoder.left, status.encoder.right));
+
+                if let Some(delta) = wheel_odom.update(status.encoder.left, status.encoder.right) {
+                    // Compose delta into global pose
+                    odom_pose = odom_pose.compose(&delta);
+
+                    // Show first few deltas
+                    if sensor_count <= 5 {
+                        println!(
+                            "  Sensor #{}: enc=[{}, {}] delta=(x={:.4}, y={:.4}, θ={:.2}°)",
+                            sensor_count,
+                            status.encoder.left,
+                            status.encoder.right,
+                            delta.x,
+                            delta.y,
+                            delta.theta.to_degrees()
+                        );
+                    }
+                }
+            }
+            Ok(BagMessage::Lidar(timestamped)) => {
+                scan_count += 1;
+                let laser_scan = LaserScan::from_lidar_scan(&timestamped.data);
+                let processed = preprocessor.process(&laser_scan);
+
+                if processed.len() >= 50 {
+                    // Compute odom delta since last scan
+                    let odom_delta = prev_odom_at_scan.inverse().compose(&odom_pose);
+
+                    // Update pure odometry pose
+                    odom_only_pose = odom_only_pose.compose(&odom_delta);
+
+                    // Now do scan matching (exactly like in slam_benchmark.rs)
+                    if let Some(ref prev_scan) = previous_scan {
+                        // EXPERIMENT: Try using odom_delta directly without inversion
+                        // The matcher should find the transform that aligns source→target
+                        // which is the robot motion itself
+                        let initial_guess = odom_delta;  // Changed from odom_delta.inverse()
+                        let match_result = matcher.match_scans(&processed, prev_scan, &initial_guess);
+
+                        // The match result gives transform from current→previous
+                        // Invert to get motion from previous→current
+                        let matched_delta = match_result.transform.inverse();
+
+                        // The match_result.transform aligns source to target
+                        // i.e., it transforms points from source frame so they overlap target
+                        // This is the same as robot motion from previous to current!
+                        // BUG FIX: Do NOT invert - use match_result.transform directly
+                        let matched_delta_fixed = match_result.transform;
+
+                        // For debugging, show the transforms
+                        if scan_count <= 10 {
+                            println!("\nScan #{} (at sensor #{})", scan_count, sensor_count);
+                            println!("  Points in scan: {}", processed.len());
+                            println!(
+                                "  Odom delta (prev→curr): (x={:.4}m, y={:.4}m, θ={:.2}°)",
+                                odom_delta.x,
+                                odom_delta.y,
+                                odom_delta.theta.to_degrees()
+                            );
+                            println!(
+                                "  Initial guess (odom direct): (x={:.4}m, y={:.4}m, θ={:.2}°)",
+                                initial_guess.x,
+                                initial_guess.y,
+                                initial_guess.theta.to_degrees()
+                            );
+                            println!(
+                                "  Match result (raw): (x={:.4}m, y={:.4}m, θ={:.2}°) score={:.3}",
+                                match_result.transform.x,
+                                match_result.transform.y,
+                                match_result.transform.theta.to_degrees(),
+                                match_result.score
+                            );
+                            println!(
+                                "  Old matched delta (inverted): (x={:.4}m, y={:.4}m, θ={:.2}°)",
+                                matched_delta.x,
+                                matched_delta.y,
+                                matched_delta.theta.to_degrees()
+                            );
+                            println!(
+                                "  NEW matched delta (direct): (x={:.4}m, y={:.4}m, θ={:.2}°)",
+                                matched_delta_fixed.x,
+                                matched_delta_fixed.y,
+                                matched_delta_fixed.theta.to_degrees()
+                            );
+                        }
+
+                        // Update SLAM pose with FIXED matched delta (no inversion!)
+                        slam_pose = slam_pose.compose(&matched_delta_fixed);
+                    }
+
+                    if scan_count <= 10 || scan_count % 50 == 0 {
+                        if scan_count > 1 {
+                            println!(
+                                "  SLAM pose: (x={:.4}m, y={:.4}m, θ={:.2}°)",
+                                slam_pose.x, slam_pose.y, slam_pose.theta.to_degrees()
+                            );
+                            println!(
+                                "  Odom pose: (x={:.4}m, y={:.4}m, θ={:.2}°)",
+                                odom_only_pose.x, odom_only_pose.y, odom_only_pose.theta.to_degrees()
+                            );
+                        }
+                    }
+
+                    prev_odom_at_scan = odom_pose;
+                    previous_scan = Some(processed);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Replace global_pose with slam_pose for validation
+    let global_pose = slam_pose;
+
+    // Summary
+    println!("\n╔══════════════════════════════════════════════════════════════════╗");
+    println!("║                         SUMMARY                                  ║");
+    println!("╚══════════════════════════════════════════════════════════════════╝\n");
+
+    if let (Some((l1, r1)), Some((l2, r2))) = (first_encoder, last_encoder) {
+        let delta_left = l2 as i32 - l1 as i32;
+        let delta_right = r2 as i32 - r1 as i32;
+        let avg_ticks = (delta_left + delta_right) as f32 / 2.0;
+        let distance_m = avg_ticks / WHEEL_TICKS_PER_METER;
+
+        println!("Encoder Analysis:");
+        println!("  First: left={}, right={}", l1, r1);
+        println!("  Last:  left={}, right={}", l2, r2);
+        println!("  Delta: left={}, right={}", delta_left, delta_right);
+        println!(
+            "  Expected distance: {:.3}m (using {} ticks/m)",
+            distance_m, WHEEL_TICKS_PER_METER
+        );
+        println!();
+    }
+
+    println!("Final Poses:");
+    println!(
+        "  Raw odom_pose: (x={:.4}m, y={:.4}m, θ={:.2}°)",
+        odom_pose.x, odom_pose.y, odom_pose.theta.to_degrees()
+    );
+    println!(
+        "  Odom-only accumulated: (x={:.4}m, y={:.4}m, θ={:.2}°)",
+        odom_only_pose.x, odom_only_pose.y, odom_only_pose.theta.to_degrees()
+    );
+    println!(
+        "  SLAM pose (scan-matched): (x={:.4}m, y={:.4}m, θ={:.2}°)",
+        global_pose.x, global_pose.y, global_pose.theta.to_degrees()
+    );
+
+    println!();
+    println!("Scan statistics:");
+    println!("  Total sensor messages: {}", sensor_count);
+    println!("  Total lidar scans: {}", scan_count);
+
+    // Expected vs actual check
+    if let (Some((l1, r1)), Some((l2, r2))) = (first_encoder, last_encoder) {
+        let delta_left = l2 as i32 - l1 as i32;
+        let delta_right = r2 as i32 - r1 as i32;
+        let expected_x = ((delta_left + delta_right) as f32 / 2.0) / WHEEL_TICKS_PER_METER;
+
+        println!();
+        println!("═══════════════════════════════════════════════════════════════════");
+        println!("                        VALIDATION");
+        println!("═══════════════════════════════════════════════════════════════════");
+        println!();
+
+        if delta_left > 0 && delta_right > 0 {
+            println!("Motion detected: FORWARD ({} ticks)", (delta_left + delta_right) / 2);
+            println!("Expected X position: {:.4}m", expected_x);
+            println!("Actual X position:   {:.4}m", global_pose.x);
+
+            if global_pose.x > 0.0 && expected_x > 0.0 {
+                println!("  ✓ Sign is CORRECT (positive X for forward motion)");
+            } else if global_pose.x < 0.0 && expected_x > 0.0 {
+                println!("  ✗ Sign is WRONG! (negative X but robot moved forward)");
+                println!("    This indicates a coordinate frame issue.");
+            }
+        } else if delta_left < 0 && delta_right < 0 {
+            println!("Motion detected: BACKWARD");
+        } else {
+            println!("Motion detected: MIXED/ROTATION");
+        }
     }
 }
 
@@ -53,10 +291,10 @@ fn show_imu_analysis(bag_path: &str) {
     let mut accel_y_values: Vec<i16> = Vec::new();
     let mut accel_z_values: Vec<i16> = Vec::new();
 
-    // For integration
+    // For integration (ROS REP-103: Z axis is yaw)
     let mut last_timestamp_us: Option<u64> = None;
-    let mut integrated_gyro_z_rad: f64 = 0.0;
-    let mut integrated_gyro_x_rad: f64 = 0.0; // On CRL-200S, gyro X is actually yaw
+    let mut integrated_gyro_z_rad: f64 = 0.0; // Yaw (heading) - primary for 2D nav
+    let mut integrated_gyro_x_rad: f64 = 0.0; // Roll - for reference only
 
     // Wheel odometry for comparison
     let odom_config = WheelOdometryConfig {
@@ -87,14 +325,15 @@ fn show_imu_analysis(bag_path: &str) {
             }
             last_ts_for_duration = status.timestamp_us;
 
-            // Integrate gyroscope
-            // Note: Gyro X (yaw) is negated to match encoder sign convention
+            // Integrate gyroscope (ROS REP-103: gyro_raw[2] is yaw/Z axis)
             if let Some(last_ts) = last_timestamp_us
                 && status.timestamp_us > last_ts
             {
                 let dt_s = (status.timestamp_us - last_ts) as f64 / 1_000_000.0;
-                let gyro_z_rad_s = status.gyro_raw[2] as f64 * GYRO_SCALE as f64;
-                let gyro_x_rad_s = -status.gyro_raw[0] as f64 * GYRO_SCALE as f64; // Negated!
+                // Z axis is yaw (heading) - this is what we compare to encoder rotation
+                let gyro_z_rad_s = status.gyro_raw[2] as f64 * GYRO_SCALE as f64 * GYRO_SIGN as f64;
+                // X axis is roll - included for reference only
+                let gyro_x_rad_s = status.gyro_raw[0] as f64 * GYRO_SCALE as f64;
                 integrated_gyro_z_rad += gyro_z_rad_s * dt_s;
                 integrated_gyro_x_rad += gyro_x_rad_s * dt_s;
             }
@@ -169,7 +408,7 @@ fn show_imu_analysis(bag_path: &str) {
     } else {
         0.0
     };
-    let gyro_x_mean = if !gyro_x_values.is_empty() {
+    let _gyro_x_mean = if !gyro_x_values.is_empty() {
         gyro_x_values.iter().map(|&v| v as f64).sum::<f64>() / gyro_x_values.len() as f64
     } else {
         0.0
@@ -182,36 +421,8 @@ fn show_imu_analysis(bag_path: &str) {
     );
     println!();
 
-    // Show gyro X (yaw on CRL-200S)
-    println!("--- Gyro X (CRL-200S yaw axis) ---");
-    println!(
-        "Integrated Gyro X:  {:>8.2}° ({:.4} rad)",
-        integrated_gyro_x_rad.to_degrees(),
-        integrated_gyro_x_rad
-    );
-    let diff_x_deg = (integrated_gyro_x_rad - encoder_total_theta_rad).to_degrees();
-    println!("Difference:         {:>8.2}°", diff_x_deg);
-
-    // Bias-corrected gyro X (note: negated to match integration)
-    let bias_corrected_gyro_x_rad =
-        integrated_gyro_x_rad - (-gyro_x_mean * GYRO_SCALE as f64 * duration_s);
-    println!(
-        "Gyro X mean (bias): {:>8.2} raw ({:.4} deg/s)",
-        -gyro_x_mean,
-        -gyro_x_mean * 0.01
-    );
-    println!(
-        "Bias-corrected:     {:>8.2}° ({:.4} rad)",
-        bias_corrected_gyro_x_rad.to_degrees(),
-        bias_corrected_gyro_x_rad
-    );
-    let bias_corrected_x_diff = (bias_corrected_gyro_x_rad - encoder_total_theta_rad).to_degrees();
-    println!("Corrected diff:     {:>8.2}°", bias_corrected_x_diff);
-
-    println!();
-
-    // Show gyro Z (roll on CRL-200S, but included for completeness)
-    println!("--- Gyro Z (CRL-200S roll axis, for reference) ---");
+    // Show gyro Z (yaw axis per ROS REP-103 - PRIMARY for 2D navigation)
+    println!("--- Gyro Z (Yaw axis, ROS REP-103) ---");
     println!(
         "Integrated Gyro Z:  {:>8.2}° ({:.4} rad)",
         integrated_gyro_z_rad.to_degrees(),
@@ -220,9 +431,37 @@ fn show_imu_analysis(bag_path: &str) {
     let diff_z_deg = (integrated_gyro_z_rad - encoder_total_theta_rad).to_degrees();
     println!("Difference:         {:>8.2}°", diff_z_deg);
 
-    // Use gyro X for main assessment (correct yaw axis)
-    let diff_deg = diff_x_deg;
-    let _bias_corrected_diff = bias_corrected_x_diff;
+    // Bias-corrected gyro Z
+    let bias_corrected_gyro_z_rad =
+        integrated_gyro_z_rad - (gyro_z_mean * GYRO_SCALE as f64 * GYRO_SIGN as f64 * duration_s);
+    println!(
+        "Gyro Z mean (bias): {:>8.2} raw ({:.4} deg/s)",
+        gyro_z_mean,
+        gyro_z_mean * 0.01025 // 0.01025 deg/s per raw unit (calibrated)
+    );
+    println!(
+        "Bias-corrected:     {:>8.2}° ({:.4} rad)",
+        bias_corrected_gyro_z_rad.to_degrees(),
+        bias_corrected_gyro_z_rad
+    );
+    let bias_corrected_z_diff = (bias_corrected_gyro_z_rad - encoder_total_theta_rad).to_degrees();
+    println!("Corrected diff:     {:>8.2}°", bias_corrected_z_diff);
+
+    println!();
+
+    // Show gyro X (roll axis, for reference only)
+    println!("--- Gyro X (Roll axis, for reference) ---");
+    println!(
+        "Integrated Gyro X:  {:>8.2}° ({:.4} rad)",
+        integrated_gyro_x_rad.to_degrees(),
+        integrated_gyro_x_rad
+    );
+    let diff_x_deg = (integrated_gyro_x_rad - encoder_total_theta_rad).to_degrees();
+    println!("Difference:         {:>8.2}°", diff_x_deg);
+
+    // Use gyro Z for main assessment (correct yaw axis per ROS REP-103)
+    let diff_deg = diff_z_deg;
+    let _bias_corrected_diff = bias_corrected_z_diff;
 
     // Drift rate
     if duration_s > 0.0 {
@@ -270,12 +509,12 @@ fn show_imu_analysis(bag_path: &str) {
         );
         println!();
 
-        // For motion scenarios, compare RAW integrated gyro (not bias-corrected)
+        // For motion scenarios, compare RAW integrated gyro Z (not bias-corrected)
         // Bias correction during motion removes the actual rotation signal!
         let agreement_pct = if encoder_total_theta_rad.abs() > 0.01 {
             100.0
                 * (1.0
-                    - (integrated_gyro_x_rad - encoder_total_theta_rad).abs()
+                    - (integrated_gyro_z_rad - encoder_total_theta_rad).abs()
                         / encoder_total_theta_rad.abs())
         } else {
             0.0

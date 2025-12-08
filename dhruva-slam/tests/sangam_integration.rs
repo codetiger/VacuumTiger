@@ -224,6 +224,7 @@ fn test_complementary_filter_hardware() {
         alpha: 0.98,
         gyro_scale: 0.001, // Estimated, needs calibration based on IMU datasheet
         gyro_bias_z: 0.0,  // Should be calibrated at startup when stationary
+        ..ComplementaryConfig::default() // Uses gyro_sign=-1.0 for CRL-200S
     };
     let mut filter = ComplementaryFilter::new(filter_config);
 

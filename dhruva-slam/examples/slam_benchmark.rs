@@ -52,7 +52,8 @@ use dhruva_slam::metrics::{
     compute_transform_error,
 };
 use dhruva_slam::sensors::odometry::{
-    ComplementaryConfig, ComplementaryFilter, Eskf, EskfConfig, WheelOdometry, WheelOdometryConfig,
+    ComplementaryConfig, ComplementaryFilter, Eskf, EskfConfig, MahonyAhrs, MahonyConfig,
+    WheelOdometry, WheelOdometryConfig,
 };
 use dhruva_slam::sensors::preprocessing::{PreprocessorConfig, ScanPreprocessor};
 use dhruva_slam::utils::{GYRO_SCALE, WHEEL_BASE, WHEEL_TICKS_PER_METER};
@@ -177,6 +178,8 @@ pub enum OdometryType {
     Complementary,
     /// Error-State Kalman Filter (full IMU fusion)
     Eskf,
+    /// Mahony AHRS filter (gyro + gravity fusion)
+    Mahony,
 }
 
 impl std::fmt::Display for MatcherType {
@@ -198,6 +201,7 @@ impl std::fmt::Display for OdometryType {
             OdometryType::Wheel => write!(f, "Wheel"),
             OdometryType::Complementary => write!(f, "Complementary"),
             OdometryType::Eskf => write!(f, "ESKF"),
+            OdometryType::Mahony => write!(f, "Mahony"),
         }
     }
 }
@@ -559,11 +563,12 @@ fn load_scans_with_odometry(
     let mut wheel_odom = WheelOdometry::new(odom_config);
 
     // Use ComplementaryFilter with estimated gyro bias
-    // Note: gyro_raw[0] is the yaw axis on CRL-200S, sign is negated in the filter
+    // ROS REP-103: gyro_raw[2] is the yaw (Z) axis
     let comp_config = ComplementaryConfig {
         alpha: 0.8,
         gyro_scale: GYRO_SCALE,
-        gyro_bias_z: -gyro_bias, // Negate because ComplementaryFilter expects gyro_raw[0] sign
+        gyro_bias_z: gyro_bias, // Raw bias value (filter applies sign correction)
+        ..ComplementaryConfig::default()
     };
     let mut comp_filter = ComplementaryFilter::new(comp_config);
 
@@ -578,11 +583,11 @@ fn load_scans_with_odometry(
                 // Get wheel odometry delta
                 if let Some(delta) = wheel_odom.update(status.encoder.left, status.encoder.right) {
                     // Update complementary filter with encoder delta and gyro
-                    // Note: We use gyro_raw[0] which is yaw on CRL-200S
+                    // ROS REP-103: gyro_raw[2] is the yaw (Z) axis
                     let timestamp_us = status.timestamp_us;
                     if last_sensor_timestamp_us.is_some() {
                         // ComplementaryFilter handles bias correction and stationary detection
-                        comp_filter.update(delta, status.gyro_raw[0], timestamp_us);
+                        comp_filter.update(delta, status.gyro_raw[2], timestamp_us);
                     }
                     accumulated_delta = accumulated_delta.compose(&delta);
                 }
@@ -624,8 +629,8 @@ fn estimate_gyro_bias(bag_path: &str) -> Result<f32, Box<dyn std::error::Error>>
 
     while let Ok(Some(msg)) = player.next_immediate() {
         if let BagMessage::SensorStatus(status) = msg {
-            // Use gyro_raw[0] which is yaw axis on CRL-200S
-            gyro_samples.push(status.gyro_raw[0]);
+            // ROS REP-103: gyro_raw[2] is the yaw (Z) axis
+            gyro_samples.push(status.gyro_raw[2]);
             if gyro_samples.len() >= BIAS_SAMPLES {
                 break;
             }
@@ -695,6 +700,7 @@ fn run_all_full_slam(bag_path: &str, output_dir: &str) -> Result<(), Box<dyn std
         OdometryType::Wheel,
         OdometryType::Complementary,
         OdometryType::Eskf,
+        OdometryType::Mahony,
     ];
 
     let total = matchers.len() * odometries.len();
@@ -744,9 +750,11 @@ fn run_single_full_slam(
     let mut map = OccupancyGrid::new(OccupancyGridConfig::default());
     let integrator = MapIntegrator::new(MapIntegratorConfig::default());
 
-    let mut current_pose = Pose2D::identity();
+    // Separate tracking for raw odometry and scan-matched SLAM pose
+    let mut odom_pose = Pose2D::identity();           // Raw odometry (always accumulating)
+    let mut prev_odom_at_scan = Pose2D::identity();   // Odometry at previous scan
+    let mut slam_pose = Pose2D::identity();           // Scan-matched pose
     let mut previous_scan: Option<PointCloud2D> = None;
-    let mut previous_odom_pose = Pose2D::identity();
     let mut scans_processed = 0u64;
     let mut failed_matches = 0u64;
     let mut total_score = 0.0f64;
@@ -757,18 +765,24 @@ fn run_single_full_slam(
     let mut peak_memory_mb = 0.0f64;
     let pid = sysinfo::get_current_pid().ok();
 
+    // Thresholds for accepting scan match results
+    const MIN_MATCH_SCORE: f32 = 0.3;        // Minimum acceptable match score
+    const MAX_CORRECTION_DIST: f32 = 0.15;   // Max 15cm correction from odometry
+    const MAX_CORRECTION_ANGLE: f32 = 0.35;  // Max ~20 degrees correction
+
     let start_time = Instant::now();
 
     while let Ok(Some(msg)) = player.next_immediate() {
         match msg {
             BagMessage::SensorStatus(status) => {
+                // ROS REP-103: gyro_raw[2] is the yaw (Z) axis
                 if let Some(pose) = odometry.update(
                     status.encoder.left,
                     status.encoder.right,
-                    status.gyro_raw[0],
+                    status.gyro_raw[2],
                     status.timestamp_us,
                 ) {
-                    current_pose = pose;
+                    odom_pose = pose;  // Always raw odometry
                 }
             }
             BagMessage::Lidar(timestamped) => {
@@ -778,24 +792,57 @@ fn run_single_full_slam(
 
                 if processed.len() >= 50 {
                     if let Some(ref prev_scan) = previous_scan {
-                        let odom_delta = previous_odom_pose.inverse().compose(&current_pose);
-                        let initial_guess = odom_delta.inverse();
+                        // Compute robot motion from RAW odometry (prev→current)
+                        let odom_delta = prev_odom_at_scan.inverse().compose(&odom_pose);
 
-                        let result = matcher.match_scans(&processed, prev_scan, &initial_guess);
+                        // Predicted pose from odometry
+                        let predicted_pose = slam_pose.compose(&odom_delta);
 
-                        if result.converged {
-                            current_pose = previous_odom_pose.compose(&result.transform.inverse());
-                            total_score += result.score as f64;
+                        // Use scan matching to refine the pose
+                        // The scan matcher aligns source (current scan) to target (previous scan).
+                        // The transform T it returns represents: "apply T to source points to
+                        // overlap with target points". For a forward-moving robot:
+                        // - Current scan sees objects closer than previous scan
+                        // - T needs to "push" current points forward to match previous
+                        // - So T.x is positive for forward motion
+                        // This is exactly the robot motion from previous to current!
+                        //
+                        // FIX: Pass odom_delta directly (NOT inverted) as initial guess,
+                        // and use match result directly (NOT inverted) as matched_delta.
+                        let initial_guess = odom_delta;
+                        let match_result = matcher.match_scans(&processed, prev_scan, &initial_guess);
+
+                        // The match result transform is the robot motion from prev→current
+                        let matched_delta = match_result.transform;
+
+                        // Validate the match result
+                        let correction_dist = ((matched_delta.x - odom_delta.x).powi(2)
+                            + (matched_delta.y - odom_delta.y).powi(2))
+                        .sqrt();
+                        let correction_angle = (matched_delta.theta - odom_delta.theta).abs();
+
+                        let match_valid = match_result.score >= MIN_MATCH_SCORE
+                            && correction_dist <= MAX_CORRECTION_DIST
+                            && correction_angle <= MAX_CORRECTION_ANGLE;
+
+                        if match_valid {
+                            // Use scan-matched pose
+                            slam_pose = slam_pose.compose(&matched_delta);
+                            total_score += match_result.score as f64;
                         } else {
+                            // Fall back to odometry prediction
+                            slam_pose = predicted_pose;
                             failed_matches += 1;
                         }
                     }
 
-                    let global_scan = processed.transform(&current_pose);
-                    integrator.integrate_cloud(&mut map, &global_scan, &current_pose);
+                    // Transform scan using SLAM pose (not raw odometry)
+                    let global_scan = processed.transform(&slam_pose);
+                    integrator.integrate_cloud(&mut map, &global_scan, &slam_pose);
 
+                    // Store raw odometry for next iteration
+                    prev_odom_at_scan = odom_pose;
                     previous_scan = Some(processed);
-                    previous_odom_pose = current_pose;
                     scans_processed += 1;
                 }
 
@@ -824,8 +871,9 @@ fn run_single_full_slam(
         0.0
     };
 
-    let avg_match_score = if scans_processed > failed_matches && scans_processed > 0 {
-        total_score / (scans_processed - failed_matches) as f64
+    let successful_matches = scans_processed.saturating_sub(failed_matches).saturating_sub(1); // -1 for first scan
+    let avg_match_score = if successful_matches > 0 {
+        total_score / successful_matches as f64
     } else {
         0.0
     };
@@ -844,9 +892,9 @@ fn run_single_full_slam(
         map_noise,
         scan_accuracy: None, // TODO: Add inline accuracy tracking
         final_pose: (
-            current_pose.x as f64,
-            current_pose.y as f64,
-            current_pose.theta as f64,
+            slam_pose.x as f64,
+            slam_pose.y as f64,
+            slam_pose.theta as f64,
         ),
         avg_match_score,
         failed_matches,
@@ -909,6 +957,7 @@ enum DynOdometry {
     Wheel(WheelOdometryWrapper),
     Complementary(ComplementaryOdometry),
     Eskf(EskfOdometry),
+    Mahony(MahonyOdometry),
 }
 
 impl DynOdometry {
@@ -923,6 +972,7 @@ impl DynOdometry {
             DynOdometry::Wheel(o) => o.update(left, right),
             DynOdometry::Complementary(o) => o.update(left, right, gyro_yaw, timestamp_us),
             DynOdometry::Eskf(o) => o.update(left, right, gyro_yaw, timestamp_us),
+            DynOdometry::Mahony(o) => o.update(left, right, gyro_yaw, timestamp_us),
         }
     }
 }
@@ -968,7 +1018,8 @@ impl ComplementaryOdometry {
         let comp_config = ComplementaryConfig {
             alpha: 0.8,
             gyro_scale: GYRO_SCALE,
-            gyro_bias_z: 0.0, // Will be estimated from data
+            gyro_bias_z: 0.0,
+            ..ComplementaryConfig::default() // Uses gyro_sign=-1.0
         };
         Self {
             wheel: WheelOdometry::new(wheel_config),
@@ -1005,8 +1056,8 @@ impl EskfOdometry {
         };
         let eskf_config = EskfConfig {
             gyro_scale: GYRO_SCALE,
-            gyro_bias_z: 0.0, // Will be estimated from data
-            ..EskfConfig::default()
+            gyro_bias_z: 0.0,
+            ..EskfConfig::default() // Uses gyro_sign=-1.0
         };
         Self {
             wheel: WheelOdometry::new(wheel_config),
@@ -1030,11 +1081,80 @@ impl EskfOdometry {
     }
 }
 
+/// Mahony AHRS-based odometry.
+///
+/// Uses the Mahony filter for yaw estimation with automatic gyro bias calibration
+/// and gravity vector correction. The wheel odometry provides translation while
+/// Mahony provides the heading angle.
+struct MahonyOdometry {
+    wheel: WheelOdometry,
+    ahrs: MahonyAhrs,
+    pose: Pose2D,
+    last_yaw: f32,
+}
+
+impl MahonyOdometry {
+    fn new() -> Self {
+        let wheel_config = WheelOdometryConfig {
+            ticks_per_meter: WHEEL_TICKS_PER_METER,
+            wheel_base: WHEEL_BASE,
+        };
+        // Use shorter calibration for benchmark (500 samples = 1 second at 500Hz)
+        let mahony_config = MahonyConfig {
+            calibration_samples: 500,
+            ..MahonyConfig::default()
+        };
+        Self {
+            wheel: WheelOdometry::new(wheel_config),
+            ahrs: MahonyAhrs::new(mahony_config),
+            pose: Pose2D::identity(),
+            last_yaw: 0.0,
+        }
+    }
+
+    fn update(
+        &mut self,
+        left: u16,
+        right: u16,
+        gyro_yaw: i16,
+        timestamp_us: u64,
+    ) -> Option<Pose2D> {
+        // Update Mahony AHRS (uses gyro_yaw as Z-axis rotation)
+        // For 2D odometry, we only need yaw from the AHRS
+        // Pass zeros for other axes and gravity (simplified 2D case)
+        let (_roll, _pitch, yaw) = self.ahrs.update(
+            gyro_yaw, 0, 0, // gyro: yaw on X input (Mahony remaps internally)
+            0, 0, 1000,     // tilt: assume level (gravity pointing down)
+            timestamp_us,
+        );
+
+        // Get wheel odometry delta
+        if let Some(encoder_delta) = self.wheel.update(left, right) {
+            if self.ahrs.is_calibrated() {
+                // Use Mahony yaw for heading
+                let yaw_delta = yaw - self.last_yaw;
+                self.last_yaw = yaw;
+
+                // Create delta with encoder translation but Mahony rotation
+                let delta = Pose2D::new(encoder_delta.x, encoder_delta.y, yaw_delta);
+                self.pose = self.pose.compose(&delta);
+            } else {
+                // During calibration, use encoder-only odometry
+                self.pose = self.pose.compose(&encoder_delta);
+            }
+            Some(self.pose)
+        } else {
+            None
+        }
+    }
+}
+
 fn create_odometry(odometry_type: OdometryType) -> DynOdometry {
     match odometry_type {
         OdometryType::Wheel => DynOdometry::Wheel(WheelOdometryWrapper::new()),
         OdometryType::Complementary => DynOdometry::Complementary(ComplementaryOdometry::new()),
         OdometryType::Eskf => DynOdometry::Eskf(EskfOdometry::new()),
+        OdometryType::Mahony => DynOdometry::Mahony(MahonyOdometry::new()),
     }
 }
 

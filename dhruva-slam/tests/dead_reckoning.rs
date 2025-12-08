@@ -55,6 +55,7 @@ fn test_filter_config() -> ComplementaryConfig {
         alpha: 0.98,
         gyro_scale: 1.0, // Pre-calibrated: 1 unit = 1 rad/s
         gyro_bias_z: 0.0,
+        gyro_sign: 1.0, // Tests use synthetic data with same sign convention
     }
 }
 
