@@ -10,7 +10,7 @@ message Message {
   }
 }
 
-// Sensor data from robot (outbound @ 500Hz for telemetry, 5Hz for lidar)
+// Sensor data from robot (outbound @ 110Hz for telemetry, 5Hz for lidar)
 message SensorGroup {
   string group_id = 1;
   uint64 timestamp_us = 2;

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 pub struct DriverInitResult {
     /// Shared sensor data for polling-based access (for low-rate sensors like lidar)
     pub sensor_data: HashMap<String, Arc<Mutex<SensorGroupData>>>,
-    /// Optional streaming channels for high-rate sensors (e.g., 500Hz GD32 status)
+    /// Optional streaming channels for high-rate sensors (e.g., 110Hz GD32 status)
     /// Key is group_id (e.g., "sensor_status")
     pub stream_receivers: HashMap<String, StreamReceiver>,
 }
@@ -63,7 +63,7 @@ pub trait DeviceDriver: Send {
     ///
     /// Returns [`DriverInitResult`] containing:
     /// - `sensor_data`: Sensor groups keyed by group ID (e.g., "sensor_status", "lidar")
-    /// - `stream_receivers`: Optional streaming channels for high-rate sensors (e.g., 500Hz)
+    /// - `stream_receivers`: Optional streaming channels for high-rate sensors (e.g., 110Hz)
     ///
     /// The TCP publisher uses sensor_data for low-rate polling and stream_receivers
     /// for high-rate streaming without data loss.

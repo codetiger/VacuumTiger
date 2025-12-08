@@ -22,7 +22,7 @@
 //!
 //! - **Latency**: <1ms serialization time (typical)
 //! - **Throughput**: ~50,000 messages/sec
-//! - **Bandwidth**: Sensor stream @ 500Hz ≈ 60KB/s
+//! - **Bandwidth**: Sensor stream @ 110Hz ≈ 13KB/s
 
 use crate::core::types::{Command, SensorGroupData};
 use crate::error::{Error, Result};
@@ -79,7 +79,7 @@ pub fn create_serializer() -> Serializer {
 impl proto::Message {
     /// Create a sensor group message from internal types
     ///
-    /// Uses references where possible to minimize allocations in hot path (~500Hz).
+    /// Uses references where possible to minimize allocations in hot path (~110Hz).
     pub fn from_sensor_group(data: &SensorGroupData) -> Self {
         use std::collections::HashMap;
 
@@ -107,7 +107,7 @@ impl proto::Message {
 impl proto::SensorValue {
     /// Convert from a reference to SensorValue - avoids cloning for primitive types
     ///
-    /// This is the preferred method in hot paths (~500Hz) as it only clones
+    /// This is the preferred method in hot paths (~110Hz) as it only clones
     /// heap-allocated data (String, Bytes, PointCloud2D) when necessary.
     pub fn from_ref(value: &crate::core::types::SensorValue) -> Self {
         use crate::core::types::SensorValue as SV;

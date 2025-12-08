@@ -15,7 +15,7 @@ message Message {
 }
 
 // Sensor data container published by the daemon.
-// Streaming rates: 500Hz for telemetry, 5Hz for lidar scans.
+// Streaming rates: 110Hz for telemetry, 5Hz for lidar scans.
 message SensorGroup {
   // Group identifier matching topic suffix (e.g., "sensor_status", "lidar")
   string group_id = 1;

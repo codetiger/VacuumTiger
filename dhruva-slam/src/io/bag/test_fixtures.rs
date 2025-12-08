@@ -22,7 +22,7 @@ impl BagTestFixture {
     /// Create a synthetic bag file with stationary robot (5 seconds).
     ///
     /// Contains:
-    /// - 2500 sensor status messages at 500 Hz
+    /// - 550 sensor status messages at 110 Hz
     /// - 25 lidar scans at 5 Hz
     /// - Robot stationary at origin
     pub fn synthetic_5_seconds() -> Self {
@@ -33,14 +33,14 @@ impl BagTestFixture {
 
         let start_time_us = 1_000_000_000u64; // 1 second since epoch
         let duration_us = 5_000_000u64; // 5 seconds
-        let sensor_period_us = 2000u64; // 500 Hz
+        let sensor_period_us = 9091u64; // 110 Hz
         let lidar_period_us = 200_000u64; // 5 Hz
 
         let mut time = start_time_us;
         let encoder_value = 1000u16;
 
         while time < start_time_us + duration_us {
-            // Sensor status at 500Hz
+            // Sensor status at 110Hz
             recorder
                 .record_sensor_status(&SensorStatusMsg {
                     timestamp_us: time,
@@ -91,14 +91,14 @@ impl BagTestFixture {
 
         let duration_s = distance_m / speed_mps;
         let duration_us = (duration_s * 1_000_000.0) as u64;
-        let sensor_period_us = 2000u64; // 500 Hz
+        let sensor_period_us = 9091u64; // 110 Hz
 
         let start_time_us = 1_000_000_000u64;
         let mut time = start_time_us;
         let mut position = 0.0f32;
 
         while time < start_time_us + duration_us {
-            let dt = 0.002; // 2ms = 500Hz
+            let dt = 0.00909; // 9.09ms = 110Hz
             position += speed_mps * dt;
 
             let ticks = (position * ticks_per_meter) as u16;
@@ -138,7 +138,7 @@ impl BagTestFixture {
 
         let duration_s = angle_rad.abs() / angular_velocity_radps.abs();
         let duration_us = (duration_s * 1_000_000.0) as u64;
-        let sensor_period_us = 2000u64; // 500 Hz
+        let sensor_period_us = 9091u64; // 110 Hz
 
         let start_time_us = 1_000_000_000u64;
         let mut time = start_time_us;
@@ -191,7 +191,7 @@ impl BagTestFixture {
 
         let straight_time_s = side_length_m / linear_speed_mps;
         let turn_time_s = (std::f32::consts::FRAC_PI_2) / angular_speed_radps;
-        let sensor_period_us = 2000u64;
+        let sensor_period_us = 9091u64; // 110 Hz
 
         let start_time_us = 1_000_000_000u64;
         let mut time = start_time_us;
@@ -204,7 +204,7 @@ impl BagTestFixture {
             let segment_end_time = time + segment_duration_us;
 
             while time < segment_end_time {
-                let dt = 0.002;
+                let dt = 0.00909; // 9.09ms = 110Hz
                 total_distance += linear_speed_mps * dt;
 
                 let ticks = (total_distance * ticks_per_meter) as u16;

@@ -94,7 +94,7 @@ impl EncoderTicks {
 
 /// Sensor status message from SangamIO.
 ///
-/// Contains wheel encoder and IMU data at 500Hz.
+/// Contains wheel encoder and IMU data at 110Hz.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SensorStatusMsg {
     /// Timestamp in microseconds since epoch
@@ -133,7 +133,7 @@ impl SensorStatusMsg {
 /// Each variant corresponds to a different sensor stream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BagMessage {
-    /// Sensor status (500 Hz): encoders + IMU
+    /// Sensor status (110 Hz): encoders + IMU
     SensorStatus(SensorStatusMsg),
     /// LiDAR scan (5 Hz): point cloud
     Lidar(Timestamped<LidarScan>),

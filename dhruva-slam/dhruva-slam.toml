@@ -9,7 +9,7 @@ sangam_address = "192.168.68.101:5555"
 [output]
 # TCP port for visualization clients (Drishti connects here)
 bind_port = 5557
-# Output rate in Hz (decimated from 500Hz input)
+# Output rate in Hz (decimated from 110Hz input)
 odometry_rate_hz = 50
 # SLAM status/diagnostics rate (Hz)
 slam_status_rate_hz = 5.0
@@ -36,7 +36,7 @@ alpha = 0.8
 gyro_scale = 0.0001745
 
 # Gyroscope Z bias in raw units
-# Auto-calibrated at startup (1500 samples ~3 seconds)
+# Auto-calibrated at startup (330 samples ~3 seconds)
 gyro_bias_z = 0.0
 
 [slam]

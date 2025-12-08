@@ -100,7 +100,7 @@ impl SensorGroupData {
     /// Update timestamp to current time and increment sequence number.
     ///
     /// The sequence number ensures each update is detected by the TCP publisher
-    /// even when timestamps appear equal (e.g., at high update rates like 500Hz).
+    /// even when timestamps appear equal (e.g., at high update rates like 110Hz).
     #[inline]
     pub fn touch(&mut self) {
         self.timestamp_us = std::time::SystemTime::now()
@@ -189,8 +189,8 @@ pub enum Command {
 }
 
 /// Bounded channel capacity for streaming sensor data.
-/// At 500Hz with ~150 bytes per message, 1000 messages ≈ 150KB buffer.
-/// This allows ~2 seconds of buffering before dropping messages.
+/// At 110Hz with ~150 bytes per message, 1000 messages ≈ 150KB buffer.
+/// This allows ~9 seconds of buffering before dropping messages.
 pub const STREAM_CHANNEL_CAPACITY: usize = 1000;
 
 /// Streaming channel for sensor data.

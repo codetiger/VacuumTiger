@@ -22,7 +22,7 @@ pub const MAX_PAYLOAD_SIZE: usize = 128;
 /// Zero-allocation parsed packet from GD32
 ///
 /// Uses a fixed-size array instead of `Vec<u8>` to eliminate heap allocations.
-/// At 500Hz packet rate, this saves ~48KB/sec of allocations.
+/// At 110Hz packet rate, this saves ~11KB/sec of allocations.
 #[derive(Debug, Clone, Copy)]
 pub struct RxPacket {
     pub cmd: u8,
@@ -72,7 +72,7 @@ impl Default for RxPacket {
 /// Simple Vec-based packet reader for reliable parsing
 ///
 /// Uses a plain Vec<u8> with drain() for simplicity and correctness.
-/// At 500Hz with ~100 byte packets, the O(n) drain is negligible.
+/// At 110Hz with ~100 byte packets, the O(n) drain is negligible.
 pub struct PacketReader {
     buffer: Vec<u8>,
     /// Reusable packet buffer - avoids allocation on every read

@@ -310,7 +310,7 @@ fn test_filter_straight_line_no_gyro() {
     let mut timestamp = 0u64;
     for (left, right) in ticks {
         if let Some(delta) = odom.update(left, right) {
-            timestamp += 2000; // 2ms per update
+            timestamp += 9091; // 9.09ms per update (110Hz)
             filter.update(delta, 0, timestamp);
         }
     }
@@ -472,7 +472,7 @@ fn run_straight_line_evaluation(
     for (left, right) in ticks {
         if let Some(delta) = odom.update(left, right) {
             pose = pose.compose(&delta);
-            timestamp += 2000; // 2ms per update
+            timestamp += 9091; // 9.09ms per update (110Hz)
             evaluator.add_estimate(pose, timestamp);
         }
     }
@@ -483,7 +483,7 @@ fn run_straight_line_evaluation(
     for (left, right) in return_ticks {
         if let Some(delta) = odom.update(left, right) {
             pose = pose.compose(&delta);
-            timestamp += 2000;
+            timestamp += 9091;
             evaluator.add_estimate(pose, timestamp);
         }
     }

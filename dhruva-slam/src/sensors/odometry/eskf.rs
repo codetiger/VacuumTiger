@@ -99,7 +99,7 @@ impl Default for EskfConfig {
             gyro_bias_z: 0.0,
             gyro_sign: 1.0, // SangamIO provides REP-103 compliant data (CCW positive)
             initial_position_variance: 0.01, // 10cm std dev
-            initial_heading_variance: 0.01,  // ~6° std dev
+            initial_heading_variance: 0.01, // ~6° std dev
         }
     }
 }

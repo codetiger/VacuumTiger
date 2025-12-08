@@ -24,18 +24,15 @@
 //! # Example
 //!
 //! ```ignore
-//! use dhruva_slam::sensors::odometry::{MahonyAhrs, MahonyConfig};
+//! use dhruva_slam::sensors::odometry::{MahonyAhrs, MahonyConfig, RawImuData};
 //!
 //! let config = MahonyConfig::default();
 //! let mut ahrs = MahonyAhrs::new(config);
 //!
-//! // Process IMU data at sensor rate (~500Hz)
+//! // Process IMU data at sensor rate (~110Hz)
 //! loop {
-//!     let (roll, pitch, yaw) = ahrs.update(
-//!         gyro_x, gyro_y, gyro_z,
-//!         tilt_x, tilt_y, tilt_z,
-//!         timestamp_us,
-//!     );
+//!     let imu = RawImuData::new(gyro_raw, tilt_raw);
+//!     let (roll, pitch, yaw) = ahrs.update(&imu, timestamp_us);
 //!
 //!     if ahrs.is_calibrated() {
 //!         // Use orientation for odometry fusion
@@ -75,7 +72,7 @@ pub struct MahonyConfig {
     pub gravity_scale: f32,
 
     /// Number of samples for initial bias calibration.
-    /// At 500Hz, 1500 samples = 3 seconds.
+    /// At 110Hz, 330 samples = 3 seconds.
     pub calibration_samples: u32,
 
     /// Sample rate in Hz (used for fixed dt if timestamps unavailable).
@@ -85,12 +82,12 @@ pub struct MahonyConfig {
 impl Default for MahonyConfig {
     fn default() -> Self {
         Self {
-            kp: 5.0,           // Proportional gain (responsive but stable)
-            ki: 0.1,           // Integral gain (slow bias adaptation)
+            kp: 5.0, // Proportional gain (responsive but stable)
+            ki: 0.1, // Integral gain (slow bias adaptation)
             gyro_scale: CRL200S_GYRO_SCALE,
             gravity_scale: GRAVITY_SCALE,
-            calibration_samples: 1500, // ~3 seconds at 500Hz
-            sample_rate_hz: 500.0,
+            calibration_samples: 330, // ~3 seconds at 110Hz
+            sample_rate_hz: 110.0,
         }
     }
 }
@@ -173,6 +170,68 @@ impl EulerAngles {
             self.pitch * 180.0 / PI,
             self.yaw * 180.0 / PI,
         )
+    }
+}
+
+/// Raw IMU data from sensor (before calibration/scaling).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RawImuData {
+    /// Raw gyroscope X (roll rate) in sensor units
+    pub gyro_x: i16,
+    /// Raw gyroscope Y (pitch rate) in sensor units
+    pub gyro_y: i16,
+    /// Raw gyroscope Z (yaw rate) in sensor units
+    pub gyro_z: i16,
+    /// LP-filtered gravity/tilt X
+    pub tilt_x: i16,
+    /// LP-filtered gravity/tilt Y
+    pub tilt_y: i16,
+    /// LP-filtered gravity/tilt Z
+    pub tilt_z: i16,
+}
+
+impl RawImuData {
+    /// Create new raw IMU data.
+    pub fn new(gyro: [i16; 3], tilt: [i16; 3]) -> Self {
+        Self {
+            gyro_x: gyro[0],
+            gyro_y: gyro[1],
+            gyro_z: gyro[2],
+            tilt_x: tilt[0],
+            tilt_y: tilt[1],
+            tilt_z: tilt[2],
+        }
+    }
+}
+
+/// Calibrated IMU data in physical units.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CalibratedImuData {
+    /// Gyroscope X (roll rate) in rad/s
+    pub gx: f32,
+    /// Gyroscope Y (pitch rate) in rad/s
+    pub gy: f32,
+    /// Gyroscope Z (yaw rate) in rad/s
+    pub gz: f32,
+    /// Accelerometer/gravity X (normalized or m/s²)
+    pub ax: f32,
+    /// Accelerometer/gravity Y (normalized or m/s²)
+    pub ay: f32,
+    /// Accelerometer/gravity Z (normalized or m/s²)
+    pub az: f32,
+}
+
+impl CalibratedImuData {
+    /// Create new calibrated IMU data.
+    pub fn new(gyro: [f32; 3], accel: [f32; 3]) -> Self {
+        Self {
+            gx: gyro[0],
+            gy: gyro[1],
+            gz: gyro[2],
+            ax: accel[0],
+            ay: accel[1],
+            az: accel[2],
+        }
     }
 }
 
@@ -326,34 +385,20 @@ impl MahonyAhrs {
         self.bias_cal.reset();
     }
 
-    /// Update the filter with new IMU data.
+    /// Update the filter with new raw IMU data.
     ///
     /// # Arguments
     ///
-    /// * `gyro_x` - Raw gyro X (roll rate, ROS REP-103 frame)
-    /// * `gyro_y` - Raw gyro Y (pitch rate, ROS REP-103 frame)
-    /// * `gyro_z` - Raw gyro Z (yaw rate, ROS REP-103 frame)
-    /// * `tilt_x` - LP-filtered gravity X
-    /// * `tilt_y` - LP-filtered gravity Y
-    /// * `tilt_z` - LP-filtered gravity Z
+    /// * `imu` - Raw IMU data (gyro and tilt in sensor units, ROS REP-103 frame)
     /// * `timestamp_us` - Timestamp in microseconds
     ///
     /// # Returns
     ///
     /// Euler angles (roll, pitch, yaw) in radians, or (0, 0, 0) during calibration.
-    pub fn update(
-        &mut self,
-        gyro_x: i16,
-        gyro_y: i16,
-        gyro_z: i16,
-        tilt_x: i16,
-        tilt_y: i16,
-        tilt_z: i16,
-        timestamp_us: u64,
-    ) -> (f32, f32, f32) {
+    pub fn update(&mut self, imu: &RawImuData, timestamp_us: u64) -> (f32, f32, f32) {
         // Calibration phase - collect bias samples
         if !self.bias_cal.is_calibrated() {
-            self.bias_cal.add_sample(gyro_x, gyro_y, gyro_z);
+            self.bias_cal.add_sample(imu.gyro_x, imu.gyro_y, imu.gyro_z);
             self.last_timestamp_us = Some(timestamp_us);
             return (0.0, 0.0, 0.0);
         }
@@ -382,9 +427,9 @@ impl MahonyAhrs {
         // gyro_x = Roll rate (X axis rotation)
         // gyro_y = Pitch rate (Y axis rotation)
         // gyro_z = Yaw rate (Z axis rotation)
-        let gx = (gyro_x as f32 - bias[0]) * self.config.gyro_scale; // Roll
-        let gy = (gyro_y as f32 - bias[1]) * self.config.gyro_scale; // Pitch
-        let gz = (gyro_z as f32 - bias[2]) * self.config.gyro_scale; // Yaw
+        let gx = (imu.gyro_x as f32 - bias[0]) * self.config.gyro_scale; // Roll
+        let gy = (imu.gyro_y as f32 - bias[1]) * self.config.gyro_scale; // Pitch
+        let gz = (imu.gyro_z as f32 - bias[2]) * self.config.gyro_scale; // Yaw
 
         // Get current quaternion
         let q0 = self.q.w;
@@ -393,9 +438,9 @@ impl MahonyAhrs {
         let q3 = self.q.z;
 
         // Normalize gravity vector
-        let mut ax = tilt_x as f32 * self.config.gravity_scale;
-        let mut ay = tilt_y as f32 * self.config.gravity_scale;
-        let mut az = tilt_z as f32 * self.config.gravity_scale;
+        let mut ax = imu.tilt_x as f32 * self.config.gravity_scale;
+        let mut ay = imu.tilt_y as f32 * self.config.gravity_scale;
+        let mut az = imu.tilt_z as f32 * self.config.gravity_scale;
 
         let accel_norm = (ax * ax + ay * ay + az * az).sqrt();
 
@@ -449,19 +494,15 @@ impl MahonyAhrs {
         self.q.to_euler()
     }
 
-    /// Update with pre-calibrated gyro values in rad/s.
+    /// Update with pre-calibrated IMU data in physical units.
     ///
     /// Use this if you've already applied bias correction and scaling.
-    pub fn update_calibrated(
-        &mut self,
-        gx_rad_s: f32,
-        gy_rad_s: f32,
-        gz_rad_s: f32,
-        ax: f32,
-        ay: f32,
-        az: f32,
-        dt: f32,
-    ) -> (f32, f32, f32) {
+    ///
+    /// # Arguments
+    ///
+    /// * `imu` - Calibrated IMU data (gyro in rad/s, accel normalized or in m/s²)
+    /// * `dt` - Time delta in seconds
+    pub fn update_calibrated(&mut self, imu: &CalibratedImuData, dt: f32) -> (f32, f32, f32) {
         if dt <= 0.0 || dt > 0.1 {
             return self.q.to_euler();
         }
@@ -471,14 +512,14 @@ impl MahonyAhrs {
         let q2 = self.q.y;
         let q3 = self.q.z;
 
-        let (mut gx, mut gy, mut gz) = (gx_rad_s, gy_rad_s, gz_rad_s);
+        let (mut gx, mut gy, mut gz) = (imu.gx, imu.gy, imu.gz);
 
         // Normalize accelerometer
-        let accel_norm = (ax * ax + ay * ay + az * az).sqrt();
+        let accel_norm = (imu.ax * imu.ax + imu.ay * imu.ay + imu.az * imu.az).sqrt();
         if accel_norm > 0.01 {
-            let ax_n = ax / accel_norm;
-            let ay_n = ay / accel_norm;
-            let az_n = az / accel_norm;
+            let ax_n = imu.ax / accel_norm;
+            let ay_n = imu.ay / accel_norm;
+            let az_n = imu.az / accel_norm;
 
             // Estimated gravity from quaternion
             let vx = 2.0 * (q1 * q3 - q0 * q2);
@@ -569,8 +610,9 @@ mod tests {
         let mut ahrs = MahonyAhrs::new(config);
 
         // During calibration, should return zeros
+        let imu = RawImuData::new([100, 50, -30], [0, 0, 1000]);
         for i in 0..10 {
-            let (r, p, y) = ahrs.update(100, 50, -30, 0, 0, 1000, i * 2000);
+            let (r, p, y) = ahrs.update(&imu, i * 2000);
             if i < 9 {
                 assert!(!ahrs.is_calibrated());
             }
@@ -594,13 +636,14 @@ mod tests {
         let mut ahrs = MahonyAhrs::new(config);
 
         // Calibration phase
+        let imu = RawImuData::new([0, 0, 0], [0, 0, 1000]);
         for i in 0..5 {
-            ahrs.update(0, 0, 0, 0, 0, 1000, i * 2000);
+            ahrs.update(&imu, i * 2000);
         }
 
         // Stationary updates (gyro at bias = 0)
         for i in 5..20 {
-            let (roll, pitch, yaw) = ahrs.update(0, 0, 0, 0, 0, 1000, i * 2000);
+            let (roll, pitch, yaw) = ahrs.update(&imu, i * 2000);
             // Should stay near zero when stationary
             assert!(roll.abs() < 0.1);
             assert!(pitch.abs() < 0.1);
@@ -644,8 +687,9 @@ mod tests {
         let mut ahrs = MahonyAhrs::new(config);
 
         // Complete calibration
+        let imu1 = RawImuData::new([100, 0, 0], [0, 0, 1000]);
         for i in 0..5 {
-            ahrs.update(100, 0, 0, 0, 0, 1000, i * 2000);
+            ahrs.update(&imu1, i * 2000);
         }
         assert!(ahrs.is_calibrated());
         assert_relative_eq!(ahrs.gyro_bias()[0], 100.0, epsilon = 0.1);
@@ -655,8 +699,9 @@ mod tests {
         assert!(!ahrs.is_calibrated());
 
         // New calibration with different bias
+        let imu2 = RawImuData::new([50, 0, 0], [0, 0, 1000]);
         for i in 0..5 {
-            ahrs.update(50, 0, 0, 0, 0, 1000, (i + 10) * 2000);
+            ahrs.update(&imu2, (i + 10) * 2000);
         }
         assert!(ahrs.is_calibrated());
         assert_relative_eq!(ahrs.gyro_bias()[0], 50.0, epsilon = 0.1);

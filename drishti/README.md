@@ -31,7 +31,7 @@ python drishti.py --robot 192.168.68.101
 ## Features
 
 - Full-screen robot diagram with sensor overlays
-- Real-time telemetry monitoring (500Hz)
+- Real-time telemetry monitoring (110Hz)
 - JSON protocol over TCP
 - Visual indicators for all 13 sensors
 - Drive control with arrow keys

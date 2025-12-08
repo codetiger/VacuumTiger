@@ -9,7 +9,7 @@ VacuumTiger is a modular, configuration-driven firmware stack that makes it easy
 - **Configurable**: Define sensors, actuators, and hardware in a single TOML file
 - **Extensible**: Add new robot platforms by implementing one trait
 - **Generic Protocol**: TCP streaming works with any SLAM application
-- **Real-time**: 500Hz sensor updates, <25ms command latency
+- **Real-time**: 110Hz sensor updates, <25ms command latency
 - **Hackable**: Small codebase (~4K lines Rust), no dependencies on proprietary SDKs
 
 ## How It Works

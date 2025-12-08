@@ -31,7 +31,8 @@
 //!
 //! // Use Mahony AHRS for orientation with automatic bias calibration
 //! let mut ahrs = MahonyAhrs::new(MahonyConfig::default());
-//! let (roll, pitch, yaw) = ahrs.update(gyro_x, gyro_y, gyro_z, tilt_x, tilt_y, tilt_z, timestamp_us);
+//! let imu = RawImuData::new(gyro_raw, tilt_raw);
+//! let (roll, pitch, yaw) = ahrs.update(&imu, timestamp_us);
 //! ```
 
 mod complementary;
@@ -43,5 +44,7 @@ mod wheel_odometry;
 pub use complementary::{CRL200S_GYRO_SCALE, ComplementaryConfig, ComplementaryFilter};
 pub use eskf::{Eskf, EskfConfig, MeasurementNoise, ProcessNoise};
 pub use evaluator::{EvaluationResult, OdometryEvaluator, ScenarioBounds, Stats, TestScenario};
-pub use mahony::{EulerAngles, MahonyAhrs, MahonyConfig, Quaternion};
+pub use mahony::{
+    CalibratedImuData, EulerAngles, MahonyAhrs, MahonyConfig, Quaternion, RawImuData,
+};
 pub use wheel_odometry::{WheelOdometry, WheelOdometryConfig};

@@ -341,7 +341,7 @@ fn run_main_loop(
         },
         output_rate_hz: config.output.odometry_rate_hz,
         // Skip gyro calibration for wheel-only mode
-        calibration_samples: if use_wheel_only { 0 } else { 1500 },
+        calibration_samples: if use_wheel_only { 0 } else { 330 },
     };
     let mut pipeline = OdometryPipeline::new(pipeline_config);
 

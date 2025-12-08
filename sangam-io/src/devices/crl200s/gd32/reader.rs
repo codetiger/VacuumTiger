@@ -35,7 +35,7 @@ use std::time::Duration;
 ///
 /// # Packet Handling
 ///
-/// - **Status packets (CMD=0x15)**: Arrive at ~500Hz, contain all sensor data (bumpers, encoders, etc.)
+/// - **Status packets (CMD=0x15)**: Arrive at ~110Hz, contain all sensor data (bumpers, encoders, etc.)
 /// - **Version response (CMD=0x07)**: Sent once after we request it following first packet
 ///
 /// # Version Request Flow
@@ -129,7 +129,7 @@ pub(super) fn reader_loop(
                         &gyro_transform,
                         &accel_transform,
                     ) {
-                        // Push to streaming channel if available (for 500Hz TCP streaming)
+                        // Push to streaming channel if available (for 110Hz TCP streaming)
                         if let Some(ref tx) = stream_tx {
                             // Use try_send to avoid blocking - drop message if channel full
                             if tx.try_send(cloned).is_err() {
@@ -150,7 +150,7 @@ pub(super) fn reader_loop(
             }
         }
         // Note: No sleep here! The serial port read is blocking with timeout.
-        // At 500Hz, we need to process every packet immediately.
+        // At 110Hz, we need to process every packet immediately.
     }
 
     log::info!("Reader thread exiting");

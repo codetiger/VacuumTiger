@@ -131,9 +131,10 @@ pub use core::types::{Point2D, Pose2D, Timestamped};
 
 // Sensors - Odometry
 pub use sensors::odometry::{
-    ComplementaryConfig, ComplementaryFilter, Eskf, EskfConfig, EulerAngles, EvaluationResult,
-    MahonyAhrs, MahonyConfig, MeasurementNoise, OdometryEvaluator, ProcessNoise, Quaternion,
-    ScenarioBounds, Stats, TestScenario, WheelOdometry, WheelOdometryConfig,
+    CalibratedImuData, ComplementaryConfig, ComplementaryFilter, Eskf, EskfConfig, EulerAngles,
+    EvaluationResult, MahonyAhrs, MahonyConfig, MeasurementNoise, OdometryEvaluator, ProcessNoise,
+    Quaternion, RawImuData, ScenarioBounds, Stats, TestScenario, WheelOdometry,
+    WheelOdometryConfig,
 };
 
 // Sensors - Preprocessing

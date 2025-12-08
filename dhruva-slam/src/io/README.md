@@ -280,7 +280,7 @@ let config = OdometryPipelineConfig {
 
 let mut pipeline = OdometryPipeline::new(config);
 
-// Process each sensor update (500Hz)
+// Process each sensor update (110Hz)
 if let Some(pose) = pipeline.process(left_ticks, right_ticks, gyro_z, timestamp_us) {
     // Decimated output at configured rate
     publish_pose(&pose, timestamp_us);
@@ -297,7 +297,7 @@ let current = pipeline.pose();
 
 **Features:**
 - Auto-calibrates gyro bias on startup (1500 samples)
-- Decimates 500Hz input to configurable output rate
+- Decimates 110Hz input to configurable output rate
 - Provides timing and quality diagnostics
 
 ## File Structure

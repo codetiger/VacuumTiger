@@ -12,7 +12,9 @@ use dhruva_slam::core::types::{LaserScan, Pose2D};
 use dhruva_slam::io::bag::{BagMessage, BagPlayer};
 use dhruva_slam::sensors::odometry::{WheelOdometry, WheelOdometryConfig};
 use dhruva_slam::sensors::preprocessing::{PreprocessorConfig, ScanPreprocessor};
-use dhruva_slam::utils::{GYRO_SCALE, GYRO_SIGN, I16Stats, WHEEL_BASE, WHEEL_TICKS_PER_METER, std_dev_i16};
+use dhruva_slam::utils::{
+    GYRO_SCALE, GYRO_SIGN, I16Stats, WHEEL_BASE, WHEEL_TICKS_PER_METER, std_dev_i16,
+};
 use std::env;
 
 fn main() {
@@ -59,8 +61,8 @@ fn show_pose_analysis(bag_path: &str) {
     let mut matcher = HybridP2LMatcher::new(HybridP2LMatcherConfig::default());
 
     // Track poses
-    let mut odom_only_pose = Pose2D::identity();   // Pure odometry
-    let mut slam_pose = Pose2D::identity();        // Scan-matched pose (like in benchmark)
+    let mut odom_only_pose = Pose2D::identity(); // Pure odometry
+    let mut slam_pose = Pose2D::identity(); // Scan-matched pose (like in benchmark)
     let mut prev_odom_at_scan = Pose2D::identity();
     let mut odom_pose = Pose2D::identity();
 
@@ -122,8 +124,9 @@ fn show_pose_analysis(bag_path: &str) {
                         // EXPERIMENT: Try using odom_delta directly without inversion
                         // The matcher should find the transform that aligns source→target
                         // which is the robot motion itself
-                        let initial_guess = odom_delta;  // Changed from odom_delta.inverse()
-                        let match_result = matcher.match_scans(&processed, prev_scan, &initial_guess);
+                        let initial_guess = odom_delta; // Changed from odom_delta.inverse()
+                        let match_result =
+                            matcher.match_scans(&processed, prev_scan, &initial_guess);
 
                         // The match result gives transform from current→previous
                         // Invert to get motion from previous→current
@@ -180,11 +183,15 @@ fn show_pose_analysis(bag_path: &str) {
                         if scan_count > 1 {
                             println!(
                                 "  SLAM pose: (x={:.4}m, y={:.4}m, θ={:.2}°)",
-                                slam_pose.x, slam_pose.y, slam_pose.theta.to_degrees()
+                                slam_pose.x,
+                                slam_pose.y,
+                                slam_pose.theta.to_degrees()
                             );
                             println!(
                                 "  Odom pose: (x={:.4}m, y={:.4}m, θ={:.2}°)",
-                                odom_only_pose.x, odom_only_pose.y, odom_only_pose.theta.to_degrees()
+                                odom_only_pose.x,
+                                odom_only_pose.y,
+                                odom_only_pose.theta.to_degrees()
                             );
                         }
                     }
@@ -225,15 +232,21 @@ fn show_pose_analysis(bag_path: &str) {
     println!("Final Poses:");
     println!(
         "  Raw odom_pose: (x={:.4}m, y={:.4}m, θ={:.2}°)",
-        odom_pose.x, odom_pose.y, odom_pose.theta.to_degrees()
+        odom_pose.x,
+        odom_pose.y,
+        odom_pose.theta.to_degrees()
     );
     println!(
         "  Odom-only accumulated: (x={:.4}m, y={:.4}m, θ={:.2}°)",
-        odom_only_pose.x, odom_only_pose.y, odom_only_pose.theta.to_degrees()
+        odom_only_pose.x,
+        odom_only_pose.y,
+        odom_only_pose.theta.to_degrees()
     );
     println!(
         "  SLAM pose (scan-matched): (x={:.4}m, y={:.4}m, θ={:.2}°)",
-        global_pose.x, global_pose.y, global_pose.theta.to_degrees()
+        global_pose.x,
+        global_pose.y,
+        global_pose.theta.to_degrees()
     );
 
     println!();
@@ -254,7 +267,10 @@ fn show_pose_analysis(bag_path: &str) {
         println!();
 
         if delta_left > 0 && delta_right > 0 {
-            println!("Motion detected: FORWARD ({} ticks)", (delta_left + delta_right) / 2);
+            println!(
+                "Motion detected: FORWARD ({} ticks)",
+                (delta_left + delta_right) / 2
+            );
             println!("Expected X position: {:.4}m", expected_x);
             println!("Actual X position:   {:.4}m", global_pose.x);
 

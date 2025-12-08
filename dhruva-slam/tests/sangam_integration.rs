@@ -91,7 +91,7 @@ fn test_sangam_connection() {
     println!("Encoder messages: {}", encoder_count);
     println!("Gyro messages: {}", gyro_count);
 
-    // We should receive some encoder data at least (500Hz from sensor_status)
+    // We should receive some encoder data at least (110Hz from sensor_status)
     assert!(encoder_count > 0, "Should receive encoder data");
 }
 
@@ -153,8 +153,8 @@ fn test_wheel_odometry_hardware() {
     println!("Collecting wheel odometry data for ~1 second...");
     println!("Keep the robot stationary for baseline test.");
 
-    // Collect ~500 samples (at 500Hz, this is ~1 second)
-    for _ in 0..500 {
+    // Collect ~110 samples (at 110Hz, this is ~1 second)
+    for _ in 0..110 {
         match client.recv() {
             Ok(msg) => {
                 if let Some((left, right)) = msg.encoder_ticks()
@@ -224,7 +224,7 @@ fn test_complementary_filter_hardware() {
         alpha: 0.98,
         gyro_scale: 0.001, // Estimated, needs calibration based on IMU datasheet
         gyro_bias_z: 0.0,  // Should be calibrated at startup when stationary
-        ..ComplementaryConfig::default() // Uses gyro_sign=-1.0 for CRL-200S
+        ..ComplementaryConfig::default()  // Uses gyro_sign=-1.0 for CRL-200S
     };
     let mut filter = ComplementaryFilter::new(filter_config);
 
@@ -234,8 +234,8 @@ fn test_complementary_filter_hardware() {
     println!("Running complementary filter for ~2 seconds...");
     println!("Move the robot to see pose changes, or keep stationary for baseline.");
 
-    // Collect ~1000 samples (at 500Hz, this is ~2 seconds)
-    for _ in 0..1000 {
+    // Collect ~220 samples (at 110Hz, this is ~2 seconds)
+    for _ in 0..220 {
         match client.recv() {
             Ok(msg) => {
                 // Get encoder data

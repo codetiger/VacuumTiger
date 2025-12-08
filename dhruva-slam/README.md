@@ -40,7 +40,7 @@ DhruvaSLAM computes odometry from wheel encoders and gyroscopes, then performs o
 |----------|-------|
 | Language | Rust 2021 edition |
 | Version | 0.1.0 |
-| Input Rate | 500Hz (sensors), 5Hz (lidar) |
+| Input Rate | 110Hz (sensors), 5Hz (lidar) |
 | Output Rate | Configurable (default 50Hz odometry) |
 
 ## Architecture
@@ -230,7 +230,7 @@ dhruva-slam/
 ## Data Flow
 
 ```
-SangamIO (500Hz sensors, 5Hz lidar)
+SangamIO (110Hz sensors, 5Hz lidar)
     │
     ▼
 ┌───────────────────────────────────────┐

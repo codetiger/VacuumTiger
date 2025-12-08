@@ -4,7 +4,7 @@ Hardware abstraction daemon for the CRL-200S robotic vacuum platform, providing 
 
 ## Overview
 
-SangamIO acts as a bridge between high-level clients (SLAM, visualization) and low-level hardware (GD32 motor controller, Delta-2D lidar). It runs as a standalone daemon on the robot, streaming sensor data at 500Hz and accepting commands over TCP.
+SangamIO acts as a bridge between high-level clients (SLAM, visualization) and low-level hardware (GD32 motor controller, Delta-2D lidar). It runs as a standalone daemon on the robot, streaming sensor data at 110Hz (limited by 115200 baud serial) and accepting commands over TCP.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -13,7 +13,7 @@ SangamIO acts as a bridge between high-level clients (SLAM, visualization) and l
               │ TCP 5555      │
 ┌─────────────▼───────────────▼───────────────────┐
 │            SangamIO Daemon (Robot)              │
-│  • Telemetry streaming @ 500Hz (sensors)        │
+│  • Telemetry streaming @ 110Hz (sensors)        │
 │  • Lidar streaming @ 5Hz (360° scans)           │
 │  • Command processing (motion/actuators)        │
 │  • Real-time control loop (20ms heartbeat)      │
@@ -167,7 +167,7 @@ See `proto/sangamio.proto` for the complete schema.
 
 | Direction | Topic | Rate | Description |
 |-----------|-------|------|-------------|
-| Out | `sensors/sensor_status` | 500Hz | All sensor data |
+| Out | `sensors/sensor_status` | 110Hz | All sensor data |
 | Out | `sensors/device_version` | Once | Version info |
 | Out | `sensors/lidar` | 5Hz | 360° point cloud |
 | In | `command` | On-demand | Robot commands |

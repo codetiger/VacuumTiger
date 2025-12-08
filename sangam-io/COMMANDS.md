@@ -94,7 +94,7 @@ fn checksum(data: &[u8]) -> u16 {
 | 0x07 | Version Response | Variable | 2x | HIGH | Response to version request |
 | 0x08 | Init Ack | None | 1x | HIGH | Echo acknowledgment |
 | 0x0C | Protocol Sync Ack | 1 byte | 1x | HIGH | Echo of 0x0C command (~270ms delay) |
-| 0x15 | Status Packet | 96 bytes | 12993x | HIGH | Continuous sensor data @ ~500Hz |
+| 0x15 | Status Packet | 96 bytes | 12993x | HIGH | Continuous sensor data @ ~110Hz |
 | 0x17 | Lidar Config Ack | 1 byte | 1x | LOW | Response `[0x01]` |
 | 0x18 | Lidar Query Response | 8 bytes | 1x | LOW | Lidar state data |
 | 0xA2 | IMU Cal Response | 1 byte | 3x | HIGH | Response `[0x01]` |

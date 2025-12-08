@@ -242,7 +242,7 @@ mod tests {
         for i in 0..100 {
             recorder
                 .record_sensor_status(&SensorStatusMsg {
-                    timestamp_us: i * 2000, // 500 Hz
+                    timestamp_us: i * 9091, // 110 Hz
                     encoder: EncoderTicks::new(i as u16, i as u16),
                     gyro_raw: [0, 0, 0],
                     accel_raw: [0, 0, 1638],
@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(info.message_count, 100);
         assert_eq!(info.sensor_count, 100);
         assert_eq!(info.lidar_count, 0);
-        assert_eq!(info.duration_us, 99 * 2000);
+        assert_eq!(info.duration_us, 99 * 9091);
     }
 
     #[test]

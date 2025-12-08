@@ -589,12 +589,14 @@ impl PointToLineIcp {
                 let final_transform = if score > 0.95 {
                     let init_trans = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt();
                     let init_rot = initial_guess.theta.abs();
-                    let curr_trans = (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt();
+                    let curr_trans =
+                        (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt();
                     let curr_rot = current_transform.theta.abs();
 
                     // If both initial guess and result are near-identity, snap to initial
                     // This prevents P2L aperture problem from causing rotation drift
-                    if init_trans < 0.03 && init_rot < 0.05 && curr_trans < 0.03 && curr_rot < 0.05 {
+                    if init_trans < 0.03 && init_rot < 0.05 && curr_trans < 0.03 && curr_rot < 0.05
+                    {
                         *initial_guess
                     } else {
                         current_transform
@@ -618,9 +620,11 @@ impl PointToLineIcp {
                 let final_transform = if score > 0.95 {
                     let init_trans = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt();
                     let init_rot = initial_guess.theta.abs();
-                    let curr_trans = (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt();
+                    let curr_trans =
+                        (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt();
                     let curr_rot = current_transform.theta.abs();
-                    if init_trans < 0.03 && init_rot < 0.05 && curr_trans < 0.03 && curr_rot < 0.05 {
+                    if init_trans < 0.03 && init_rot < 0.05 && curr_trans < 0.03 && curr_rot < 0.05
+                    {
                         *initial_guess
                     } else {
                         current_transform

@@ -1062,7 +1062,7 @@ class Robot3DView(QWidget):
         """
         Update orientation from IMU data.
 
-        Called at 500Hz from telemetry thread. Updates every call for
+        Called at 110Hz from telemetry thread. Updates every call for
         smooth real-time response (labels decimated separately).
 
         Args:

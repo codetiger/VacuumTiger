@@ -40,7 +40,7 @@ struct ImuBiasCalibrator {
 impl ImuBiasCalibrator {
     fn new() -> Self {
         Self {
-            samples: Vec::with_capacity(1500), // ~3 seconds at 500Hz
+            samples: Vec::with_capacity(330), // ~3 seconds at 110Hz
         }
     }
 
@@ -66,11 +66,7 @@ impl ImuBiasCalibrator {
             )
         });
 
-        [
-            (sum.0 / n) as f32,
-            (sum.1 / n) as f32,
-            (sum.2 / n) as f32,
-        ]
+        [(sum.0 / n) as f32, (sum.1 / n) as f32, (sum.2 / n) as f32]
     }
 }
 
@@ -263,7 +259,10 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             last_progress = Instant::now();
         }
     }
-    println!("\r  Sensors stabilized. (discarded {} msgs)    ", discarded_count);
+    println!(
+        "\r  Sensors stabilized. (discarded {} msgs)    ",
+        discarded_count
+    );
 
     // Flush any buffered messages before calibration
     let mut flushed = 0;
@@ -332,8 +331,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ===== MOTION SETUP (if requested) =====
-    let motion_enabled =
-        config.linear_velocity.is_some() || config.angular_velocity.is_some();
+    let motion_enabled = config.linear_velocity.is_some() || config.angular_velocity.is_some();
     if motion_enabled {
         let linear = config.linear_velocity.unwrap_or(0.0);
         let angular = config.angular_velocity.unwrap_or(0.0);

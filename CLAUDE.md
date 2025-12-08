@@ -25,7 +25,7 @@ VacuumTiger is an open-source robotic vacuum firmware project for the CRL-200S h
               │ TCP 5555/5556 │
 ┌─────────────▼───────────────▼───────────────────┐
 │            SangamIO Daemon (Robot)              │
-│  • Telemetry streaming @ 500Hz (sensors)        │
+│  • Telemetry streaming @ 110Hz (sensors)        │
 │  • Lidar streaming @ 5Hz (360° scans)           │
 │  • Command processing (motion/actuators)        │
 │  • Real-time control loop (50Hz)                │
@@ -123,7 +123,7 @@ See `sangam-io/proto/sangamio.proto` for SangamIO messages (sensors, commands) a
 ### Topics
 
 **Outbound (Daemon → Client)**:
-- `sensors/sensor_status`: Sensor data @ 500Hz (all 13 sensors)
+- `sensors/sensor_status`: Sensor data @ 110Hz (all 13 sensors)
 - `sensors/device_version`: Version info (one-time)
 - `sensors/lidar`: LidarScan @ 5Hz (point cloud)
 
@@ -248,7 +248,7 @@ VacuumTiger/
 ### GD32 Protocol
 - **Format**: `[0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC]`
 - **CRC**: 16-bit big-endian word sum checksum
-- **Status**: CMD=0x15, 96 bytes @ 500Hz
+- **Status**: CMD=0x15, 96 bytes @ 110Hz
 - **Location**: `src/devices/crl200s/gd32/protocol.rs`
 
 ### Delta-2D Protocol
@@ -264,7 +264,7 @@ VacuumTiger/
 - **CPU Usage**: <1% on Allwinner A33
 - **Latency**: <25ms command-to-action
 - **Streaming Rates**:
-  - Telemetry: 500Hz (every GD32 packet)
+  - Telemetry: 110Hz (every GD32 packet)
   - Lidar: 5Hz (native scan rate)
   - Commands: On-demand
 

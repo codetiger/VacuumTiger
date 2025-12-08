@@ -1,13 +1,13 @@
 # GD32 Sensor Status Packet (0x15)
 
-This document details the 96-byte sensor status packet sent by the GD32 motor controller at approximately 500Hz.
+This document details the 96-byte sensor status packet sent by the GD32 motor controller at approximately 110Hz (limited by 115200 baud serial).
 
 ## Packet Structure
 
 ```
 Packet Format: [0xFA 0xFB] [LEN] [0x15] [PAYLOAD (96 bytes)] [CRC_H] [CRC_L]
 Total Size: 102 bytes (6 header/CRC + 96 payload)
-Frequency: ~500 Hz (every 2ms)
+Frequency: ~110 Hz (every ~9ms, limited by 115200 baud)
 ```
 
 ## Payload Byte Map
@@ -272,7 +272,7 @@ All multi-byte fields use **little-endian** encoding:
 
 ### Sensor Update Frequency
 
-- **Status Packets:** ~500 Hz (every 2ms)
+- **Status Packets:** ~110 Hz (every ~9ms)
 - **All sensors updated:** Per packet (real-time)
 - **Encoder Resolution:** Incremental ticks (wrapping u16 counters)
 

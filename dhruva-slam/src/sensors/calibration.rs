@@ -47,7 +47,7 @@ impl GyroBiasEstimator {
     ///
     /// * `target_samples` - Number of samples to collect before computing bias.
     ///   More samples = more accurate but longer calibration time.
-    ///   Typical values: 50-200 samples at 500Hz = 100-400ms
+    ///   Typical values: 10-45 samples at 110Hz = 100-400ms
     pub fn new(target_samples: usize) -> Self {
         Self {
             target_samples: target_samples.max(2), // Minimum 2 samples for variance calculation

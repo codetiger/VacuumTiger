@@ -11,7 +11,7 @@
 //! let config = OdometryPipelineConfig::default();
 //! let mut pipeline = OdometryPipeline::new(config);
 //!
-//! // In sensor loop (500Hz from SangamIO)
+//! // In sensor loop (110Hz from SangamIO)
 //! if let Some(pose) = pipeline.process(left_ticks, right_ticks, gyro_z, timestamp_us) {
 //!     // New pose available at output rate (e.g., 50Hz)
 //!     publisher.publish_pose(&pose, timestamp_us);
@@ -35,13 +35,13 @@ pub struct OdometryPipelineConfig {
 
     /// Output rate in Hz (decimation from input rate)
     ///
-    /// Input is typically 500Hz from SangamIO, output should be
+    /// Input is typically 110Hz from SangamIO, output should be
     /// lower (e.g., 50Hz) for visualization.
     pub output_rate_hz: f32,
 
     /// Number of samples to collect for gyro bias calibration at startup.
     ///
-    /// At 500Hz, 1500 samples = 3 seconds of calibration.
+    /// At 110Hz, 330 samples = 3 seconds of calibration.
     /// Set to 0 to disable auto-calibration.
     pub calibration_samples: u32,
 }
@@ -52,7 +52,7 @@ impl Default for OdometryPipelineConfig {
             wheel_odom: WheelOdometryConfig::default(),
             filter: ComplementaryConfig::default(),
             output_rate_hz: 50.0,
-            calibration_samples: 1500, // ~3 seconds at 500Hz
+            calibration_samples: 330, // ~3 seconds at 110Hz
         }
     }
 }

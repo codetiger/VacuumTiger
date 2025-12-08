@@ -35,7 +35,7 @@ class IMUProcessor:
     # Gravity scale (LP filtered gravity vector)
     GRAVITY_SCALE = 1.0 / 1000.0
 
-    def __init__(self, sample_rate_hz: float = 500.0):
+    def __init__(self, sample_rate_hz: float = 110.0):
         self.dt = 1.0 / sample_rate_hz
 
         # Quaternion [w, x, y, z]
@@ -48,7 +48,7 @@ class IMUProcessor:
         self.gyro_bias = [0.0, 0.0, 0.0]
         self._calibration_samples = []
         self._calibration_count = 0
-        self._calibration_duration = 1500  # ~3 seconds at 500Hz
+        self._calibration_duration = 330  # ~3 seconds at 110Hz
 
         # UI decimation
         self._counter = 0

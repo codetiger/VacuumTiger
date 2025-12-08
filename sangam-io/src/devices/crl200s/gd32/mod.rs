@@ -17,7 +17,7 @@
 //!    - Uses blocking mutex locks to guarantee timing
 //!
 //! 2. **Reader Thread** (continuous):
-//!    - Parses incoming status packets (CMD=0x15 @ ~500Hz)
+//!    - Parses incoming status packets (CMD=0x15 @ ~110Hz)
 //!    - Updates shared sensor data in-place (no allocations)
 //!    - Requests version info after first packet
 //!    - Handles protocol synchronization and checksums
@@ -153,7 +153,7 @@ impl GD32Driver {
     /// # Arguments
     /// - `sensor_data`: Shared mutex for latest sensor values (for polling-based access)
     /// - `version_data`: Shared mutex for version info (one-time update)
-    /// - `stream_tx`: Optional channel sender for streaming sensor data at full 500Hz rate
+    /// - `stream_tx`: Optional channel sender for streaming sensor data at full 110Hz rate
     /// - `gyro_transform`: Axis transform for gyroscope data (identity = no change)
     /// - `accel_transform`: Axis transform for accelerometer data (identity = no change)
     pub fn start(

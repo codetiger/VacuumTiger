@@ -2,7 +2,7 @@
 //!
 //! Supports two modes for different data rates:
 //! - **Polling mode**: For low-rate sensors (lidar @ 5Hz), polls shared mutex
-//! - **Streaming mode**: For high-rate sensors (GD32 @ 500Hz), consumes from channel
+//! - **Streaming mode**: For high-rate sensors (GD32 @ 110Hz), consumes from channel
 
 use crate::core::types::{SensorGroupData, StreamReceiver};
 use crate::error::Result;
@@ -20,7 +20,7 @@ pub struct TcpPublisher {
     serializer: Serializer,
     /// Mutex-based sensor data for low-rate polling (lidar, version)
     sensor_data: HashMap<String, Arc<Mutex<SensorGroupData>>>,
-    /// Channel-based receivers for high-rate streaming (sensor_status @ 500Hz)
+    /// Channel-based receivers for high-rate streaming (sensor_status @ 110Hz)
     stream_receivers: HashMap<String, StreamReceiver>,
     running: Arc<AtomicBool>,
 }
@@ -67,7 +67,7 @@ impl TcpPublisher {
         while self.running.load(Ordering::Relaxed) {
             let mut sent_any = false;
 
-            // Phase 1: Drain all streaming channels (high-rate sensors like GD32 @ 500Hz)
+            // Phase 1: Drain all streaming channels (high-rate sensors like GD32 @ 110Hz)
             for (group_id, rx) in &self.stream_receivers {
                 loop {
                     match rx.try_recv() {

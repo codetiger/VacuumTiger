@@ -53,7 +53,7 @@ use dhruva_slam::metrics::{
 };
 use dhruva_slam::sensors::odometry::{
     ComplementaryConfig, ComplementaryFilter, Eskf, EskfConfig, MahonyAhrs, MahonyConfig,
-    WheelOdometry, WheelOdometryConfig,
+    RawImuData, WheelOdometry, WheelOdometryConfig,
 };
 use dhruva_slam::sensors::preprocessing::{PreprocessorConfig, ScanPreprocessor};
 use dhruva_slam::utils::{GYRO_SCALE, WHEEL_BASE, WHEEL_TICKS_PER_METER};
@@ -751,9 +751,9 @@ fn run_single_full_slam(
     let integrator = MapIntegrator::new(MapIntegratorConfig::default());
 
     // Separate tracking for raw odometry and scan-matched SLAM pose
-    let mut odom_pose = Pose2D::identity();           // Raw odometry (always accumulating)
-    let mut prev_odom_at_scan = Pose2D::identity();   // Odometry at previous scan
-    let mut slam_pose = Pose2D::identity();           // Scan-matched pose
+    let mut odom_pose = Pose2D::identity(); // Raw odometry (always accumulating)
+    let mut prev_odom_at_scan = Pose2D::identity(); // Odometry at previous scan
+    let mut slam_pose = Pose2D::identity(); // Scan-matched pose
     let mut previous_scan: Option<PointCloud2D> = None;
     let mut scans_processed = 0u64;
     let mut failed_matches = 0u64;
@@ -766,9 +766,9 @@ fn run_single_full_slam(
     let pid = sysinfo::get_current_pid().ok();
 
     // Thresholds for accepting scan match results
-    const MIN_MATCH_SCORE: f32 = 0.3;        // Minimum acceptable match score
-    const MAX_CORRECTION_DIST: f32 = 0.15;   // Max 15cm correction from odometry
-    const MAX_CORRECTION_ANGLE: f32 = 0.35;  // Max ~20 degrees correction
+    const MIN_MATCH_SCORE: f32 = 0.3; // Minimum acceptable match score
+    const MAX_CORRECTION_DIST: f32 = 0.15; // Max 15cm correction from odometry
+    const MAX_CORRECTION_ANGLE: f32 = 0.35; // Max ~20 degrees correction
 
     let start_time = Instant::now();
 
@@ -782,7 +782,7 @@ fn run_single_full_slam(
                     status.gyro_raw[2],
                     status.timestamp_us,
                 ) {
-                    odom_pose = pose;  // Always raw odometry
+                    odom_pose = pose; // Always raw odometry
                 }
             }
             BagMessage::Lidar(timestamped) => {
@@ -810,7 +810,8 @@ fn run_single_full_slam(
                         // FIX: Pass odom_delta directly (NOT inverted) as initial guess,
                         // and use match result directly (NOT inverted) as matched_delta.
                         let initial_guess = odom_delta;
-                        let match_result = matcher.match_scans(&processed, prev_scan, &initial_guess);
+                        let match_result =
+                            matcher.match_scans(&processed, prev_scan, &initial_guess);
 
                         // The match result transform is the robot motion from prev→current
                         let matched_delta = match_result.transform;
@@ -871,7 +872,9 @@ fn run_single_full_slam(
         0.0
     };
 
-    let successful_matches = scans_processed.saturating_sub(failed_matches).saturating_sub(1); // -1 for first scan
+    let successful_matches = scans_processed
+        .saturating_sub(failed_matches)
+        .saturating_sub(1); // -1 for first scan
     let avg_match_score = if successful_matches > 0 {
         total_score / successful_matches as f64
     } else {
@@ -1099,9 +1102,9 @@ impl MahonyOdometry {
             ticks_per_meter: WHEEL_TICKS_PER_METER,
             wheel_base: WHEEL_BASE,
         };
-        // Use shorter calibration for benchmark (500 samples = 1 second at 500Hz)
+        // Use shorter calibration for benchmark (110 samples = 1 second at 110Hz)
         let mahony_config = MahonyConfig {
-            calibration_samples: 500,
+            calibration_samples: 110,
             ..MahonyConfig::default()
         };
         Self {
@@ -1122,11 +1125,11 @@ impl MahonyOdometry {
         // Update Mahony AHRS (uses gyro_yaw as Z-axis rotation)
         // For 2D odometry, we only need yaw from the AHRS
         // Pass zeros for other axes and gravity (simplified 2D case)
-        let (_roll, _pitch, yaw) = self.ahrs.update(
-            gyro_yaw, 0, 0, // gyro: yaw on X input (Mahony remaps internally)
-            0, 0, 1000,     // tilt: assume level (gravity pointing down)
-            timestamp_us,
+        let imu = RawImuData::new(
+            [gyro_yaw, 0, 0], // gyro: yaw on X input (Mahony remaps internally)
+            [0, 0, 1000],     // tilt: assume level (gravity pointing down)
         );
+        let (_roll, _pitch, yaw) = self.ahrs.update(&imu, timestamp_us);
 
         // Get wheel odometry delta
         if let Some(encoder_delta) = self.wheel.update(left, right) {
