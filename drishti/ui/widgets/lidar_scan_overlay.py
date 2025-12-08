@@ -145,13 +145,25 @@ class LidarScanWidget(QWidget):
             px = center_x + int(x * scale)
             py = center_y + int(y * scale)
 
-            # Color based on quality (0-255)
-            if quality > 180:
-                color = QColor(50, 255, 100)  # High quality - green
-            elif quality > 100:
-                color = QColor(255, 220, 50)  # Medium quality - yellow
+            # Color gradient based on quality (0-255)
+            # Red (bad) -> Yellow (avg) -> Green (good)
+            # Normalize quality to 0-1 range
+            q = max(0, min(255, quality)) / 255.0
+
+            if q < 0.5:
+                # Red to Yellow: interpolate from (255, 80, 80) to (255, 220, 50)
+                t = q * 2  # 0 to 1 for first half
+                r = 255
+                g = int(80 + (220 - 80) * t)
+                b = int(80 + (50 - 80) * t)
             else:
-                color = QColor(255, 80, 80)   # Low quality - red
+                # Yellow to Green: interpolate from (255, 220, 50) to (50, 255, 100)
+                t = (q - 0.5) * 2  # 0 to 1 for second half
+                r = int(255 + (50 - 255) * t)
+                g = int(220 + (255 - 220) * t)
+                b = int(50 + (100 - 50) * t)
+
+            color = QColor(r, g, b)
 
             # Point size based on quality
             point_size = 2 + (quality // 100)
