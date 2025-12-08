@@ -94,9 +94,9 @@ impl Delta2DPacketReader {
         }
     }
 
-    /// Get diagnostic counters
-    pub fn diagnostics(&self) -> (u64, u64) {
-        (self.bytes_discarded, self.crc_failures)
+    /// Get diagnostic counters: (bytes_discarded, crc_failures, buffer_size)
+    pub fn diagnostics(&self) -> (u64, u64, usize) {
+        (self.bytes_discarded, self.crc_failures, self.buffer.len())
     }
 
     /// Clear the buffer (call on startup after serial flush)
@@ -108,23 +108,38 @@ impl Delta2DPacketReader {
     ///
     /// Returns the number of bytes read, or 0 if no data available (timeout/wouldblock).
     /// Call this once, then call `parse_next()` in a loop to drain all packets.
+    ///
+    /// This function reads in a loop to drain all available data from the serial port
+    /// in one call, preventing OS serial buffer overflow at high data rates.
     pub fn read_bytes<R: Read>(&mut self, port: &mut R) -> Result<usize> {
-        let mut temp_buf = [0u8; 512];
-        match port.read(&mut temp_buf) {
-            Ok(0) => Ok(0),
-            Ok(n) => {
-                log::trace!(
-                    "Lidar raw read: {} bytes: {:02X?}",
-                    n,
-                    &temp_buf[..n.min(32)]
-                );
-                self.buffer.extend_from_slice(&temp_buf[..n]);
-                Ok(n)
+        let mut temp_buf = [0u8; 2048]; // Larger buffer for efficient reads
+        let mut total_read = 0;
+
+        // Loop to drain all available data from serial port
+        loop {
+            match port.read(&mut temp_buf) {
+                Ok(0) => break, // EOF or no more data
+                Ok(n) => {
+                    log::trace!(
+                        "Lidar raw read: {} bytes: {:02X?}",
+                        n,
+                        &temp_buf[..n.min(32)]
+                    );
+                    self.buffer.extend_from_slice(&temp_buf[..n]);
+                    total_read += n;
+
+                    // If we read less than buffer size, no more data available
+                    if n < temp_buf.len() {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(Error::Io(e)),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(0),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(0),
-            Err(e) => Err(Error::Io(e)),
         }
+
+        Ok(total_read)
     }
 
     /// Parse and return the next complete packet from the buffer

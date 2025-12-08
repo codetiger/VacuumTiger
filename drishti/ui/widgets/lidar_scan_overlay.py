@@ -32,7 +32,7 @@ class LidarScanWidget(QWidget):
         super().__init__(parent)
         self.setMinimumSize(200, 200)
         self._points = []  # List of (angle_rad, distance_m, quality)
-        self._max_range = 8.0  # Max display range in meters
+        self._max_range = 3.2  # Max display range in meters (2.5x zoom vs 8m)
         self._robot_radius = 0.175  # Robot radius in meters (350mm diameter)
 
     def set_points(self, points: list):
@@ -81,8 +81,8 @@ class LidarScanWidget(QWidget):
         painter.setPen(ring_pen)
         painter.setBrush(Qt.NoBrush)
 
-        # Draw rings at 1m, 2m, 4m, 6m, 8m intervals
-        ring_distances = [1.0, 2.0, 4.0, 6.0, 8.0]
+        # Draw rings at 0.5m, 1m, 1.5m, 2m, 2.5m, 3m intervals
+        ring_distances = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
         for dist in ring_distances:
             if dist <= self._max_range:
                 radius = int(dist * scale)
@@ -135,10 +135,10 @@ class LidarScanWidget(QWidget):
             # Convert polar to cartesian for screen display
             # ROS REP-103: angle=0 is forward (robot +X), CCW positive
             # Standard polar: robot_x = r*cos(θ), robot_y = r*sin(θ)
-            # Screen mapping: forward=up, left=right
-            #   screen_x = robot_y = r*sin(θ)
+            # Screen mapping: forward=up, left=left (not mirrored)
+            #   screen_x = -robot_y = -r*sin(θ)  (negate to keep left on left side)
             #   screen_y = -robot_x = -r*cos(θ)  (negative because screen Y points down)
-            x = distance_m * math.sin(angle_rad)
+            x = -distance_m * math.sin(angle_rad)
             y = -distance_m * math.cos(angle_rad)
 
             # Scale to screen coordinates

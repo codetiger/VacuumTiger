@@ -32,11 +32,11 @@ ctrlc = "3.5"
 prost-build = "0.13"
 
 [profile.release]
-opt-level = "z"         # Optimize for size
+opt-level = 3          # Optimize for speed
 lto = true              # Link-time optimization
 codegen-units = 1       # Single codegen unit for better optimization
 panic = "abort"         # Abort on panic (smaller than unwinding)
 strip = true            # Strip symbols from binary
 
 [profile.release.build-override]
-opt-level = "z"
+opt-level = 3

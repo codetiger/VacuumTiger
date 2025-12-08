@@ -203,23 +203,30 @@ impl Delta2DDriver {
                                 let count = scan_count.fetch_add(1, Ordering::Relaxed) + 1;
 
                                 // Accumulate points for a complete 360° scan
-                                // Detect scan completion when angle wraps around (e.g., 350° → 10°)
+                                // Detect scan completion when angle wraps around
                                 // Only check the FIRST point of each packet against last_angle
                                 // to avoid false triggers from angle ordering within a packet
                                 if let Some(first_point) = scan.points.first() {
-                                    // Detect wrap: current angle is much smaller than last angle
-                                    // Use 90° (π/2 rad) threshold to catch wraps while avoiding noise
-                                    let wrap_threshold = std::f32::consts::FRAC_PI_2; // 90 degrees
-                                    if last_angle > wrap_threshold * 3.0  // last was > 270°
-                                        && first_point.angle < wrap_threshold  // current < 90°
-                                        && accumulated_points.len() > MIN_SCAN_POINTS
-                                    {
+                                    // Detect wrap: angle jumps by more than 180° (π radians)
+                                    // This handles both CW (increasing angles) and CCW (decreasing angles)
+                                    // after coordinate transform.
+                                    //
+                                    // CW (raw): 350° → 10° = jump of -340° (normalized: +20°) -- small
+                                    //           but we see it as wrap because 350 > 270 and 10 < 90
+                                    // CCW (transformed): angles decrease, so wrap is 10° → 350° = +340° jump
+                                    //
+                                    // Use absolute angle difference > 180° as universal wrap detector
+                                    let angle_diff = (first_point.angle - last_angle).abs();
+                                    let wrapped = angle_diff > std::f32::consts::PI; // > 180°
+
+                                    if wrapped && accumulated_points.len() > MIN_SCAN_POINTS {
                                         // Angle wrapped around 360° - publish complete scan
                                         log::debug!(
-                                            "Scan complete: {} points, wrap {:.1}° → {:.1}°",
+                                            "Scan complete: {} points, wrap {:.1}° → {:.1}° (diff={:.1}°)",
                                             accumulated_points.len(),
                                             last_angle.to_degrees(),
-                                            first_point.angle.to_degrees()
+                                            first_point.angle.to_degrees(),
+                                            angle_diff.to_degrees()
                                         );
                                         Self::publish_scan(
                                             &sensor_data,
@@ -273,13 +280,15 @@ impl Delta2DDriver {
                                 // Log diagnostics every 10 seconds
                                 if last_diagnostic_time.elapsed().as_secs() >= 10 {
                                     let errors = error_count.load(Ordering::Relaxed);
-                                    let (bytes_discarded, crc_failures) = reader.diagnostics();
+                                    let (bytes_discarded, crc_failures, buffer_size) =
+                                        reader.diagnostics();
                                     log::info!(
-                                        "Lidar stats: {} packets, {} errors, {} bytes discarded, {} CRC failures",
+                                        "Lidar stats: {} packets, {} errors, {} bytes discarded, {} CRC failures, {} bytes buffered",
                                         count,
                                         errors,
                                         bytes_discarded,
-                                        crc_failures
+                                        crc_failures,
+                                        buffer_size
                                     );
                                     last_diagnostic_time = Instant::now();
                                 }
