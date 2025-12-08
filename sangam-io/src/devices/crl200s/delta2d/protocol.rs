@@ -53,7 +53,7 @@ pub enum CommandType {
 pub enum ParseResult {
     /// Measurement scan data
     Scan(LidarScan),
-    /// Health packet (motor is spinning, RPM logged)
+    /// Health packet (0xAE) - motor is spinning
     Health,
     /// No complete packet available
     None,
@@ -149,7 +149,7 @@ impl Delta2DPacketReader {
     ///
     /// Returns:
     /// - `ParseResult::Scan(scan)` for measurement packets (0xAD)
-    /// - `ParseResult::Health { rpm }` for health packets (0xAE)
+    /// - `ParseResult::Health` for health packets (0xAE)
     /// - `ParseResult::None` when no complete packet is available
     pub fn parse_next(&mut self) -> Result<ParseResult> {
         // Safety check: if buffer is too large, something is wrong
@@ -263,11 +263,8 @@ impl Delta2DPacketReader {
             // Parse based on command type
             let result = if cmd_type == CommandType::Measurement && payload_len > 5 {
                 ParseResult::Scan(self.parse_measurement(payload)?)
-            } else if cmd_type == CommandType::Health && payload_len >= 1 {
-                let rps_raw = payload[0];
-                let rpm = rps_raw as u16 * 3;
-                let rps = rps_raw as f32 * 0.05;
-                log::info!("Lidar health: RPM={}, RPS={:.2}", rpm, rps);
+            } else if cmd_type == CommandType::Health {
+                // Health packet (0xAE) - motor is spinning, ignore RPM data
                 ParseResult::Health
             } else {
                 ParseResult::None
@@ -344,13 +341,14 @@ impl Delta2DPacketReader {
             return Ok(LidarScan { points });
         }
 
-        // Byte 0: Motor RPM * 3
-        // Bytes 1-2: Offset angle (BE) * 0.01 degrees
+        // Byte 0: Motor speed indicator (ignored)
+        // Bytes 1-2: Offset angle (angle increment between points) (BE) * 0.01 degrees
         // Bytes 3-4: Start angle (BE) * 0.01 degrees
-
-        let _motor_rpm = payload[0] as u16 * 3;
-        let _offset_angle = ((payload[1] as u16) << 8) | (payload[2] as u16);
+        let offset_angle_raw = ((payload[1] as u16) << 8) | (payload[2] as u16);
         let start_angle_raw = ((payload[3] as u16) << 8) | (payload[4] as u16);
+
+        // Convert offset angle to degrees (angle increment between consecutive points)
+        let angle_increment_deg = offset_angle_raw as f32 * 0.01;
 
         // Parse measurement points (3 bytes each)
         let mut i = 5;
@@ -363,7 +361,8 @@ impl Delta2DPacketReader {
             // Convert to physical units
             // Angle: start_angle + (point_index * angle_increment)
             // Distance: raw * 0.25mm = raw * 0.00025m
-            let angle_deg = (start_angle_raw as f32 * 0.01) + (point_index as f32 * 1.0);
+            let angle_deg =
+                (start_angle_raw as f32 * 0.01) + (point_index as f32 * angle_increment_deg);
             let raw_angle_rad = angle_deg.to_radians();
             let distance_m = distance_raw as f32 * 0.00025;
 

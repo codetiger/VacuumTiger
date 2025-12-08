@@ -133,81 +133,29 @@ Values 0-18 have distinct behaviors; values 19+ default to Orange Stable.
 
 ---
 
-## Lidar Auto-Tuning
+## Lidar Motor Control
 
-The lidar motor requires PWM control (0x71) to spin at the correct speed for scanning. SangamIO implements **automatic PWM discovery** that finds the maximum stable PWM value - no user configuration needed.
+The lidar motor requires PWM control (0x71) to spin at the correct speed for scanning. SangamIO uses a **static PWM value** configured in `sangamio.toml`.
 
-### How It Works
+### Configuration
 
-When lidar is enabled via `ComponentControl { id: "lidar", action: Enable }`:
+PWM is set via the `lidar_pwm` parameter in `sangamio.toml`:
 
-1. **Start at 100% PWM** - Motor begins at full speed
-2. **Adaptive step ramping** - PWM decreases with large steps (20%) initially
-3. **Direction reversal on state change** - When scans start/stop, direction reverses and step halves
-4. **Convergence** - Settles at maximum stable PWM when step size reaches 2%
-5. **Stop sending commands** - Once stable, no more PWM commands are sent
-
-### Settling Detection
-
-After each PWM change, the driver waits before evaluating success:
-- **250ms timeout** OR **3 consecutive health packets (0xAE)** - whichever comes first
-- This allows the motor to stabilize before checking if measurement scans (0xAD) arrive
-
-### State Machine
-
-```
-┌─────────────────┐
-│ RAMPING         │  PWM starts at 100%, step starts at 20%
-│ (finding range) │  Step halves on each direction reversal
-└────────┬────────┘
-         │ step_size <= 2% and scans stable
-         ▼
-┌─────────────────┐
-│ STABLE          │  Maximum stable PWM found
-│ (optimal found) │  Stop sending PWM commands (0x71)
-└────────┬────────┘
-         │ scans stop unexpectedly
-         ▼
-┌─────────────────┐
-│ RECOVERY        │  Increase PWM by 5% until scans resume
-└─────────────────┘  Return to STABLE when recovered
+```toml
+[device.hardware]
+lidar_pwm = 60  # 0-100%, default: 60
 ```
 
-### Example Tuning Sequence
-
-Starting at 100% with 20% step size:
-
-```
-100% → 80% (step=20, no scans yet, decrease)
- 80% → 60% (step=20, no scans, decrease)
- 60%       (scans start! reverse direction, step halves to 10%)
- 60% → 70% (step=10, scans working, increase)
- 70% → 80% (step=10, scans working, increase)
- 80%       (scans stop! reverse direction, step halves to 5%)
- 80% → 75% (step=5, no scans, decrease)
- 75%       (scans start! reverse direction, step halves to 2%)
- 75% → 73% (step=2, scans stable, step <= MIN_STEP)
-         → STABLE at 73% (stop sending PWM commands)
-```
-
-Total tuning time: ~400-800ms (depends on motor characteristics)
-
-### Constants
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `SCAN_TIMEOUT_MS` | 200 | No scan within this time = "not receiving" |
-| `SETTLING_TIMEOUT_MS` | 250 | Wait after PWM change before evaluating |
-| `SETTLING_HEALTH_COUNT` | 3 | OR wait for this many health packets |
-| `INITIAL_STEP` | 20% | Starting step size |
-| `MIN_STEP` | 2% | Convergence threshold |
-| `MIN_PWM` | 30% | Never go below this |
-| `MAX_PWM` | 100% | Never exceed this |
-| `RECOVERY_STEP` | 5% | Fixed step for recovery mode |
+| Value | Effect |
+|-------|--------|
+| 0 | Motor off (no scans) |
+| 30-50 | Low speed, slower scan rate |
+| 60 | Default, ~5Hz scan rate |
+| 80-100 | Higher speed, faster but may be unstable |
 
 ### TCP API
 
-**Enable lidar (starts auto-tuning):**
+**Enable lidar (starts motor at configured PWM):**
 ```protobuf
 RobotCommand {
   command: ComponentControl {
@@ -217,7 +165,7 @@ RobotCommand {
 }
 ```
 
-**Disable lidar (stops motor, resets tuning state):**
+**Disable lidar (stops motor):**
 ```protobuf
 RobotCommand {
   command: ComponentControl {
@@ -227,5 +175,5 @@ RobotCommand {
 }
 ```
 
-**Note:** Manual PWM configuration is no longer supported. The `Configure` action for lidar is ignored.
+**Note:** The `Configure` action for lidar is ignored. PWM is controlled exclusively by `sangamio.toml`, not by upstream clients.
 

@@ -29,6 +29,12 @@ lidar_port = "/dev/ttyS1"
 # See src/devices/crl200s/gd32/heartbeat.rs for details
 heartbeat_interval_ms = 20
 
+# Lidar motor PWM duty cycle (0-100%)
+# Controls the speed of the lidar motor
+# Higher values = faster rotation = higher scan rate
+# Default: 60 (provides ~330 RPM / 5.5 Hz scan rate)
+lidar_pwm = 60
+
 # Coordinate frame transforms (ROS REP-103)
 # Transforms raw sensor data to standard robot frame:
 #   X = forward (direction robot drives)

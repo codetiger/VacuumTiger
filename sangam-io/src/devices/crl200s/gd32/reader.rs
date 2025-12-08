@@ -36,12 +36,12 @@ use std::time::Duration;
 /// # Packet Handling
 ///
 /// - **Status packets (CMD=0x15)**: Arrive at ~500Hz, contain all sensor data (bumpers, encoders, etc.)
-/// - **Version response (CMD=0x42)**: Sent once after we request it following first packet
+/// - **Version response (CMD=0x07)**: Sent once after we request it following first packet
 ///
 /// # Version Request Flow
 ///
 /// 1. Wait for first packet of any type (indicates GD32 is awake and initialized)
-/// 2. Send version request (CMD=0x42) - sent exactly once, not retried on failure
+/// 2. Send version request (CMD=0x07) - sent exactly once, not retried on failure
 /// 3. Parse version response payload (string + i32 code)
 /// 4. Set `version_received` flag to prevent repeated requests
 ///

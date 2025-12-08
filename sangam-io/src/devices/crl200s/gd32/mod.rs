@@ -73,7 +73,7 @@ use crate::devices::crl200s::constants::{INIT_RETRY_DELAY_MS, SERIAL_READ_TIMEOU
 use crate::error::{Error, Result};
 use packet::{initialize_packet, TxPacket};
 use serialport::SerialPort;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -96,7 +96,12 @@ pub struct GD32Driver {
 
 impl GD32Driver {
     /// Create a new GD32 driver
-    pub fn new(port_path: &str, heartbeat_interval_ms: u64) -> Result<Self> {
+    ///
+    /// # Arguments
+    /// - `port_path`: Serial port path (e.g., "/dev/ttyS3")
+    /// - `heartbeat_interval_ms`: Interval for heartbeat commands (20-50ms)
+    /// - `lidar_pwm`: Initial PWM value for lidar motor (0-100%)
+    pub fn new(port_path: &str, heartbeat_interval_ms: u64, lidar_pwm: u8) -> Result<Self> {
         let port = serialport::new(port_path, 115200)
             .timeout(Duration::from_millis(SERIAL_READ_TIMEOUT_MS))
             .open()
@@ -107,35 +112,16 @@ impl GD32Driver {
             log::warn!("Failed to clear serial input buffer: {}", e);
         }
 
+        log::info!("GD32 driver: lidar PWM configured to {}%", lidar_pwm);
+
         Ok(Self {
             port: Arc::new(Mutex::new(port)),
             heartbeat_interval_ms,
             shutdown: Arc::new(AtomicBool::new(false)),
             heartbeat_handle: None,
             reader_handle: None,
-            component_state: Arc::new(ComponentState::default()),
+            component_state: Arc::new(ComponentState::new(lidar_pwm)),
         })
-    }
-
-    /// Set shared lidar scan timestamp reference (for PWM auto-tuning)
-    ///
-    /// This must be called before `start()` to share state with the Delta2D driver.
-    /// The timestamp is updated by Delta2D when measurement scans arrive.
-    pub fn set_lidar_scan_timestamp(&mut self, ts: Arc<AtomicU64>) {
-        // We need to modify the Arc-wrapped ComponentState's field
-        // Since ComponentState has public Arc fields, we can swap them
-        // But Arc<ComponentState> means we can't mutate directly...
-        // The solution is to use interior mutability - the Arc fields themselves are Arc<AtomicU64>
-        // which can be cloned into place by recreating the ComponentState.
-        //
-        // Actually, since ComponentState fields are public and we have &mut self,
-        // we need to recreate the Arc<ComponentState> with the new shared reference.
-        // This is only called before start(), so no threads are using it yet.
-        let new_state = ComponentState {
-            lidar_last_scan_ms: ts,
-            ..Default::default()
-        };
-        self.component_state = Arc::new(new_state);
     }
 
     /// Initialize the GD32 device by sending init commands

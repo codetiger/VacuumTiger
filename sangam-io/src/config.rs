@@ -230,6 +230,21 @@ pub struct HardwareConfig {
     /// **Optional**: Yes (defaults to identity transforms)
     #[serde(default)]
     pub frame_transforms: FrameTransforms,
+
+    /// Lidar motor PWM duty cycle
+    ///
+    /// **Units**: Percentage (0-100)
+    /// **Default**: 60 (provides ~330 RPM / 5.5 Hz scan rate)
+    /// **Recommended**: 60 for stable scanning
+    ///
+    /// Higher values = faster motor = higher scan rate
+    /// Lower values = slower motor = lower scan rate
+    #[serde(default = "default_lidar_pwm")]
+    pub lidar_pwm: u8,
+}
+
+fn default_lidar_pwm() -> u8 {
+    60
 }
 
 /// Device configuration

@@ -452,6 +452,10 @@ fn handle_led(
 }
 
 /// Handle lidar commands
+///
+/// PWM is controlled exclusively by sangamio.toml configuration.
+/// Upstream clients cannot change lidar speed - SangamIO determines
+/// optimal speed based on hardware characteristics.
 fn handle_lidar(
     port: &Arc<Mutex<Box<dyn SerialPort>>>,
     component_state: &Arc<ComponentState>,
@@ -459,31 +463,22 @@ fn handle_lidar(
     action: &ComponentAction,
 ) -> Result<()> {
     match action {
-        ComponentAction::Enable { ref config } => {
-            // Get PWM from config or use default (60%)
-            // Handle both U8 and U32 (protobuf sends U8 as U32)
-            let pwm = config
-                .as_ref()
-                .and_then(|c| c.get("pwm"))
-                .and_then(|v| match v {
-                    SensorValue::U8(p) => Some(*p),
-                    SensorValue::U32(p) => Some(*p as u8),
-                    _ => None,
-                })
-                .unwrap_or(100); // Default to 100% (auto-tuning will find optimal)
+        ComponentAction::Enable { .. } => {
+            // Use PWM from config (set during driver initialization)
+            // Upstream clients cannot override this value
+            let pwm = component_state.get_lidar_pwm();
 
-            log::info!("Lidar enable (auto-tuning from {}%)", pwm);
+            log::info!("Lidar enable (PWM={}% from config)", pwm);
 
             // Power on first
             pkt.set_lidar_power(true);
             send_packet(port, pkt)?;
 
-            // Initialize auto-tuning state and send initial PWM
+            // Enable lidar
             component_state.lidar_enabled.store(true, Ordering::Relaxed);
-            component_state.init_lidar_tuning();
 
             // Send initial PWM command
-            pkt.set_lidar_pwm(component_state.get_lidar_pwm());
+            pkt.set_lidar_pwm(pwm);
             send_packet(port, pkt)?;
 
             Ok(())
@@ -503,8 +498,8 @@ fn handle_lidar(
             send_packet(port, pkt)
         }
         ComponentAction::Configure { .. } => {
-            // PWM is now auto-tuned - Configure action is no longer supported
-            log::info!("Lidar PWM is auto-tuned, Configure action ignored");
+            // PWM is controlled by sangamio.toml, not by upstream clients
+            log::warn!("Lidar Configure ignored - PWM is set in sangamio.toml");
             Ok(())
         }
         _ => Err(Error::NotImplemented(format!(

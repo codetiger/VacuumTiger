@@ -16,7 +16,7 @@ SangamIO acts as a bridge between high-level clients (SLAM, visualization) and l
 │  • Telemetry streaming @ 500Hz (sensors)        │
 │  • Lidar streaming @ 5Hz (360° scans)           │
 │  • Command processing (motion/actuators)        │
-│  • Real-time control loop (50Hz heartbeat)      │
+│  • Real-time control loop (20ms heartbeat)      │
 └─────────────┬───────────────┬───────────────────┘
               │ /dev/ttyS3    │ /dev/ttyS1
        ┌──────▼─────────┐  ┌──▼────────────┐
@@ -222,7 +222,6 @@ sangam-io/
 │   │       │   ├── reader.rs    # Status parsing
 │   │       │   ├── packet.rs    # Packet encoding
 │   │       │   ├── protocol.rs  # Packet framing
-│   │       │   ├── ring_buffer.rs
 │   │       │   └── state.rs     # Atomic state
 │   │       └── delta2d/     # Lidar driver
 │   │           ├── mod.rs       # Driver core
@@ -261,17 +260,18 @@ The `sensor_status` group includes:
 | Sensor | Type | Description |
 |--------|------|-------------|
 | `bumper_left`, `bumper_right` | Bool | Bumper contact |
-| `cliff_front_left/right`, `cliff_left/right` | Bool | Cliff detection |
+| `cliff_left_side`, `cliff_left_front` | Bool | Left cliff sensors |
+| `cliff_right_front`, `cliff_right_side` | Bool | Right cliff sensors |
 | `is_charging` | Bool | Charging state |
 | `battery_voltage` | F32 | Battery voltage (V) |
-| `battery_percent` | F32 | Estimated charge % |
+| `battery_level` | U8 | Estimated charge (0-100%) |
 | `wheel_left`, `wheel_right` | U16 | Encoder ticks |
-| `gyro_x` | I16 | Roll rate (after transform) |
-| `gyro_y` | I16 | Pitch rate (after transform) |
-| `gyro_z` | I16 | Yaw rate (after transform, CCW positive) |
+| `gyro_x`, `gyro_y`, `gyro_z` | I16 | Angular velocity (Roll, Pitch, Yaw after transform) |
 | `accel_x`, `accel_y`, `accel_z` | I16 | Acceleration (raw units) |
-| `start_button`, `dock_button` | Bool | Button states |
-| `water_tank_level` | U8 | Mop water level |
+| `tilt_x`, `tilt_y`, `tilt_z` | I16 | LP-filtered gravity vector |
+| `start_button`, `dock_button` | U16 | Button press states |
+| `dustbox_attached` | Bool | Dustbox present |
+| `is_dock_connected` | Bool | On charging dock |
 
 > **Note**: IMU values are in ROS REP-103 frame after applying `frame_transforms`.
 

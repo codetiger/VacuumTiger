@@ -170,13 +170,13 @@ pub(super) fn heartbeat_loop(
                 let _ = pkt.send_to(&mut *port);
             }
 
-            // Send lidar PWM if enabled and auto-tuning needs it
+            // Send lidar PWM if enabled (static value)
             if lidar_enabled {
-                if let Some(pwm) = component_state.update_lidar_tuning() {
-                    pkt.set_lidar_pwm(pwm);
-                    let _ = pkt.send_to(&mut *port);
+                let pwm = component_state.get_lidar_pwm();
+                pkt.set_lidar_pwm(pwm);
+                if let Err(e) = pkt.send_to(&mut *port) {
+                    log::error!("Lidar PWM send failed: {}", e);
                 }
-                // None = stable or settling, don't send PWM command
             }
         } else {
             // No components active - send regular heartbeat

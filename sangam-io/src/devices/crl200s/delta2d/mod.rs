@@ -73,18 +73,10 @@ use serialport::SerialPort;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 const LIDAR_BAUD_RATE: u32 = 115200;
 const LIDAR_READ_TIMEOUT_MS: u64 = 100;
-
-/// Get current time in milliseconds since epoch
-fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 /// Minimum points required before accepting a scan as complete
 /// This prevents false scan boundaries from angle noise or single bad readings
@@ -101,8 +93,6 @@ pub struct Delta2DDriver {
     reader_handle: Option<JoinHandle<()>>,
     scan_count: Arc<AtomicU64>,
     error_count: Arc<AtomicU64>,
-    // Shared state with GD32 for lidar PWM auto-tuning
-    scan_timestamp: Arc<AtomicU64>,
     /// Angle transform for coordinate frame conversion
     angle_transform: AffineTransform1D,
 }
@@ -112,20 +102,14 @@ impl Delta2DDriver {
     ///
     /// # Arguments
     /// - `port_path`: Serial port path (e.g., "/dev/ttyS1")
-    /// - `scan_timestamp`: Shared timestamp updated when measurement scans arrive (for GD32 PWM tuning)
     /// - `angle_transform`: Transform applied to all lidar angles (use `AffineTransform1D::identity()` for no change)
-    pub fn new(
-        port_path: &str,
-        scan_timestamp: Arc<AtomicU64>,
-        angle_transform: AffineTransform1D,
-    ) -> Self {
+    pub fn new(port_path: &str, angle_transform: AffineTransform1D) -> Self {
         Self {
             port_path: port_path.to_string(),
             shutdown: Arc::new(AtomicBool::new(false)),
             reader_handle: None,
             scan_count: Arc::new(AtomicU64::new(0)),
             error_count: Arc::new(AtomicU64::new(0)),
-            scan_timestamp,
             angle_transform,
         }
     }
@@ -149,7 +133,6 @@ impl Delta2DDriver {
         let shutdown = Arc::clone(&self.shutdown);
         let scan_count = Arc::clone(&self.scan_count);
         let error_count = Arc::clone(&self.error_count);
-        let scan_timestamp = Arc::clone(&self.scan_timestamp);
         let angle_transform = self.angle_transform;
 
         self.reader_handle = Some(
@@ -162,7 +145,6 @@ impl Delta2DDriver {
                         sensor_data,
                         scan_count,
                         error_count,
-                        scan_timestamp,
                         angle_transform,
                     );
                 })
@@ -180,7 +162,6 @@ impl Delta2DDriver {
         sensor_data: Arc<Mutex<SensorGroupData>>,
         scan_count: Arc<AtomicU64>,
         error_count: Arc<AtomicU64>,
-        scan_timestamp: Arc<AtomicU64>,
         angle_transform: AffineTransform1D,
     ) {
         let mut reader = Delta2DPacketReader::with_transform(angle_transform);
@@ -203,43 +184,23 @@ impl Delta2DDriver {
                                 let count = scan_count.fetch_add(1, Ordering::Relaxed) + 1;
 
                                 // Accumulate points for a complete 360° scan
-                                // Detect scan completion when angle wraps around
-                                // Only check the FIRST point of each packet against last_angle
-                                // to avoid false triggers from angle ordering within a packet
-                                if let Some(first_point) = scan.points.first() {
-                                    // Detect wrap: angle jumps by more than 180° (π radians)
-                                    // This handles both CW (increasing angles) and CCW (decreasing angles)
-                                    // after coordinate transform.
-                                    //
-                                    // CW (raw): 350° → 10° = jump of -340° (normalized: +20°) -- small
-                                    //           but we see it as wrap because 350 > 270 and 10 < 90
-                                    // CCW (transformed): angles decrease, so wrap is 10° → 350° = +340° jump
-                                    //
-                                    // Use absolute angle difference > 180° as universal wrap detector
-                                    let angle_diff = (first_point.angle - last_angle).abs();
-                                    let wrapped = angle_diff > std::f32::consts::PI; // > 180°
+                                // Detect scan completion by checking each point for wrap
+                                // Wrap occurs when angle jumps significantly (crosses 0°/360° boundary)
+                                for point in &scan.points {
+                                    // Check for wrap: angle difference > 180° indicates crossing boundary
+                                    // After CCW transform: angles decrease, wrap is ~0° → ~360° (large positive jump)
+                                    let angle_diff = (point.angle - last_angle).abs();
+                                    let wrapped = angle_diff > std::f32::consts::PI
+                                        && accumulated_points.len() > MIN_SCAN_POINTS;
 
-                                    if wrapped && accumulated_points.len() > MIN_SCAN_POINTS {
+                                    if wrapped {
                                         // Angle wrapped around 360° - publish complete scan
-                                        log::debug!(
-                                            "Scan complete: {} points, wrap {:.1}° → {:.1}° (diff={:.1}°)",
-                                            accumulated_points.len(),
-                                            last_angle.to_degrees(),
-                                            first_point.angle.to_degrees(),
-                                            angle_diff.to_degrees()
-                                        );
-                                        Self::publish_scan(
-                                            &sensor_data,
-                                            &accumulated_points,
-                                            &scan_timestamp,
-                                        );
+                                        Self::publish_scan(&sensor_data, &accumulated_points);
                                         accumulated_points.clear();
                                         last_scan_time = Instant::now();
                                     }
-                                }
 
-                                // Add all points from this packet
-                                for point in &scan.points {
+                                    // Add this point to accumulator
                                     accumulated_points.push((
                                         point.angle,
                                         point.distance,
@@ -259,11 +220,7 @@ impl Delta2DDriver {
                                         elapsed,
                                         accumulated_points.len()
                                     );
-                                    Self::publish_scan(
-                                        &sensor_data,
-                                        &accumulated_points,
-                                        &scan_timestamp,
-                                    );
+                                    Self::publish_scan(&sensor_data, &accumulated_points);
                                     accumulated_points.clear();
                                     last_scan_time = Instant::now();
                                 }
@@ -277,8 +234,8 @@ impl Delta2DDriver {
                                     );
                                 }
 
-                                // Log diagnostics every 10 seconds
-                                if last_diagnostic_time.elapsed().as_secs() >= 10 {
+                                // Log diagnostics every 2 seconds
+                                if last_diagnostic_time.elapsed().as_secs() >= 60 {
                                     let errors = error_count.load(Ordering::Relaxed);
                                     let (bytes_discarded, crc_failures, buffer_size) =
                                         reader.diagnostics();
@@ -294,7 +251,7 @@ impl Delta2DDriver {
                                 }
                             }
                             Ok(ParseResult::Health) => {
-                                // Health packet received - no action needed
+                                // Health packet (0xAE) - motor is spinning
                             }
                             Ok(ParseResult::None) => {
                                 // No more complete packets in buffer - break inner loop
@@ -316,7 +273,7 @@ impl Delta2DDriver {
                             elapsed,
                             accumulated_points.len()
                         );
-                        Self::publish_scan(&sensor_data, &accumulated_points, &scan_timestamp);
+                        Self::publish_scan(&sensor_data, &accumulated_points);
                         accumulated_points.clear();
                         last_scan_time = Instant::now();
                     }
@@ -335,21 +292,14 @@ impl Delta2DDriver {
         log::info!("Delta-2D reader thread exiting");
     }
 
-    /// Publish accumulated scan to sensor data and update timestamp for PWM tuning
-    fn publish_scan(
-        sensor_data: &Arc<Mutex<SensorGroupData>>,
-        points: &[(f32, f32, u8)],
-        scan_timestamp: &Arc<AtomicU64>,
-    ) {
+    /// Publish accumulated scan to sensor data
+    fn publish_scan(sensor_data: &Arc<Mutex<SensorGroupData>>, points: &[(f32, f32, u8)]) {
         let Ok(mut data) = sensor_data.lock() else {
             log::error!("Failed to lock sensor data for lidar scan");
             return;
         };
         data.touch();
         data.set("scan", SensorValue::PointCloud2D(points.to_vec()));
-
-        // Update shared timestamp for GD32 PWM auto-tuning
-        scan_timestamp.store(current_time_ms(), Ordering::Relaxed);
 
         log::trace!("Published lidar scan with {} points", points.len());
     }
