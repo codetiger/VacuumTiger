@@ -231,7 +231,9 @@ impl Command {
                                 }
                             }
                             Err(_) => {
-                                return Err(Error::Serialization("Unknown action type".to_string()))
+                                return Err(Error::Serialization(
+                                    "Unknown action type".to_string(),
+                                ));
                             }
                         }
                     }

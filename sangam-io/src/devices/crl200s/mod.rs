@@ -31,7 +31,7 @@ pub mod gd32;
 
 use crate::config::DeviceConfig;
 use crate::core::driver::{DeviceDriver, DriverInitResult};
-use crate::core::types::{create_stream_channel, Command, SensorGroupData};
+use crate::core::types::{Command, SensorGroupData, create_stream_channel};
 use crate::error::Result;
 use delta2d::Delta2DDriver;
 use gd32::GD32Driver;

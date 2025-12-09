@@ -9,26 +9,6 @@ use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Sensor data types matching hardware precision
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SensorType {
-    Bool,
-    U8,
-    U16,
-    U32,
-    U64,
-    I8,
-    I16,
-    I32,
-    I64,
-    F32,
-    F64,
-    String,
-    Bytes,
-    Vector3,
-    PointCloud2D,
-}
-
 /// Runtime sensor values
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SensorValue {
@@ -47,21 +27,6 @@ pub enum SensorValue {
     Bytes(Vec<u8>),
     Vector3([f32; 3]),
     PointCloud2D(Vec<(f32, f32, u8)>), // (angle_rad, distance_m, quality)
-}
-
-/// Sensor specification from config
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SensorSpec {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub sensor_type: SensorType,
-}
-
-/// Sensor group specification from config
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SensorGroupSpec {
-    pub id: String,
-    pub sensors: Vec<SensorSpec>,
 }
 
 /// Runtime sensor group data (shared between threads)

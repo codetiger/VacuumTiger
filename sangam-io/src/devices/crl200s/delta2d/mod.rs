@@ -226,7 +226,7 @@ impl Delta2DDriver {
                                 }
 
                                 // Log statistics periodically
-                                if count % 100 == 0 {
+                                if count.is_multiple_of(100) {
                                     log::debug!(
                                         "Lidar: {} packets, {} points accumulated",
                                         count,

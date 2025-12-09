@@ -39,7 +39,7 @@
 //! **Workaround**: Enable lidar (even at low PWM) before enabling wheel motors
 //! for sustained operation.
 
-use super::packet::{heartbeat_packet, motor_mode_nav_packet, request_stm32_packet, TxPacket};
+use super::packet::{TxPacket, heartbeat_packet, motor_mode_nav_packet, request_stm32_packet};
 use super::state::ComponentState;
 use serialport::SerialPort;
 use std::sync::atomic::{AtomicBool, Ordering};

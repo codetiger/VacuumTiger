@@ -71,7 +71,7 @@ use crate::config::AxisTransform3D;
 use crate::core::types::{Command, SensorGroupData, StreamSender};
 use crate::devices::crl200s::constants::{INIT_RETRY_DELAY_MS, SERIAL_READ_TIMEOUT_MS};
 use crate::error::{Error, Result};
-use packet::{initialize_packet, TxPacket};
+use packet::{TxPacket, initialize_packet};
 use serialport::SerialPort;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

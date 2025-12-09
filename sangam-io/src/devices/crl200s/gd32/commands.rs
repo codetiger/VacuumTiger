@@ -37,7 +37,7 @@
 //! Valid component IDs are defined as constants below. See [`handle_component_control`]
 //! for the complete dispatch table.
 
-use super::packet::{protocol_sync_packet, TxPacket};
+use super::packet::{TxPacket, protocol_sync_packet};
 use super::state::ComponentState;
 use crate::core::types::{Command, ComponentAction, SensorValue};
 use crate::error::{Error, Result};
@@ -130,7 +130,7 @@ fn handle_speed_component(
             set_fn(pkt, 0);
             send_packet(port, pkt)
         }
-        ComponentAction::Configure { ref config } => {
+        ComponentAction::Configure { config } => {
             // Handle both U8 and U32 speed values (protobuf sends U8 as U32)
             let speed = match config.get("speed") {
                 Some(SensorValue::U8(s)) => Some(*s),
@@ -338,7 +338,7 @@ fn handle_drive(
     action: &ComponentAction,
 ) -> Result<()> {
     match action {
-        ComponentAction::Enable { ref config } => {
+        ComponentAction::Enable { config } => {
             // Enable motor with mode (default 0x02 nav mode)
             // Handle both U8 and U32 (protobuf sends U8 as U32)
             let mode = config
@@ -376,7 +376,7 @@ fn handle_drive(
             log::info!("Drive emergency stop");
             emergency_stop(port, component_state, pkt)
         }
-        ComponentAction::Configure { ref config } => {
+        ComponentAction::Configure { config } => {
             // Check for velocity mode (linear + angular) - continuous
             if let (Some(SensorValue::F32(linear)), Some(SensorValue::F32(angular))) =
                 (config.get("linear"), config.get("angular"))
@@ -430,7 +430,7 @@ fn handle_led(
     action: &ComponentAction,
 ) -> Result<()> {
     match action {
-        ComponentAction::Configure { ref config } => {
+        ComponentAction::Configure { config } => {
             // Handle both U8 and U32 (protobuf sends U8 as U32)
             let state = match config.get("state") {
                 Some(SensorValue::U8(s)) => Some(*s),
@@ -578,7 +578,7 @@ fn handle_cliff_ir(
             pkt.set_cliff_ir(false);
             send_packet(port, pkt)
         }
-        ComponentAction::Configure { ref config } => {
+        ComponentAction::Configure { config } => {
             // Handle both U8 and U32 (protobuf sends U8 as U32)
             let dir = match config.get("direction") {
                 Some(SensorValue::U8(d)) => Some(*d),

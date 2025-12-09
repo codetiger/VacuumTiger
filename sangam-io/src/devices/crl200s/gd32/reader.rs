@@ -122,19 +122,20 @@ pub(super) fn reader_loop(
                 }
 
                 // Handle sensor status data
-                if packet.cmd == CMD_STATUS && packet.payload_len() >= STATUS_PAYLOAD_MIN_SIZE {
-                    if let Some(cloned) = handle_status_packet(
+                if packet.cmd == CMD_STATUS
+                    && packet.payload_len() >= STATUS_PAYLOAD_MIN_SIZE
+                    && let Some(cloned) = handle_status_packet(
                         packet,
                         &sensor_data,
                         &gyro_transform,
                         &accel_transform,
-                    ) {
-                        // Push to streaming channel if available (for 110Hz TCP streaming)
-                        if let Some(ref tx) = stream_tx {
-                            // Use try_send to avoid blocking - drop message if channel full
-                            if tx.try_send(cloned).is_err() {
-                                log::trace!("Stream channel full, dropping message");
-                            }
+                    )
+                {
+                    // Push to streaming channel if available (for 110Hz TCP streaming)
+                    if let Some(ref tx) = stream_tx {
+                        // Use try_send to avoid blocking - drop message if channel full
+                        if tx.try_send(cloned).is_err() {
+                            log::trace!("Stream channel full, dropping message");
                         }
                     }
                 }
@@ -162,7 +163,7 @@ fn handle_version_packet(
     version_data: &Option<Arc<Mutex<SensorGroupData>>>,
     version_received: &mut bool,
 ) {
-    if let Some(ref vdata) = version_data {
+    if let Some(vdata) = version_data {
         let payload = packet.payload();
         if !payload.is_empty() {
             let Ok(mut data) = vdata.lock() else {

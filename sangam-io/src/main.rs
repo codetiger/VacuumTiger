@@ -9,7 +9,7 @@ mod streaming;
 use crate::config::Config;
 use crate::devices::create_device;
 use crate::error::Result;
-use crate::streaming::{create_serializer, TcpPublisher, TcpReceiver};
+use crate::streaming::{TcpPublisher, TcpReceiver, create_serializer};
 use std::env;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};

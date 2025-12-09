@@ -66,13 +66,12 @@ impl TcpReceiver {
                 }
                 Err(e) => {
                     // Check if it's a connection closed error
-                    if let Error::Io(ref io_err) = e {
-                        if io_err.kind() == std::io::ErrorKind::UnexpectedEof
-                            || io_err.kind() == std::io::ErrorKind::ConnectionReset
-                        {
-                            log::info!("Client disconnected");
-                            return Ok(());
-                        }
+                    if let Error::Io(ref io_err) = e
+                        && (io_err.kind() == std::io::ErrorKind::UnexpectedEof
+                            || io_err.kind() == std::io::ErrorKind::ConnectionReset)
+                    {
+                        log::info!("Client disconnected");
+                        return Ok(());
                     }
                     log::error!("Failed to read message: {}", e);
                     return Err(e);
