@@ -839,3 +839,108 @@ mod tests {
         assert_eq!(cloud.len(), 0);
     }
 }
+
+// ============================================================================
+// Phase 1: Enhanced Transform Round-Trip Tests
+// ============================================================================
+
+#[cfg(test)]
+mod transform_roundtrip_tests {
+    use super::*;
+    use crate::core::types::{Point2D, Pose2D};
+    use approx::assert_relative_eq;
+    use std::f32::consts::PI;
+
+    fn create_random_cloud(n: usize, seed: u64) -> PointCloud2D {
+        let mut cloud = PointCloud2D::new();
+        let mut x = seed as f32 * 0.1;
+        for i in 0..n {
+            let px = ((x * 1000.0) % 10.0) - 5.0;
+            let py = ((x * 1234.0) % 10.0) - 5.0;
+            cloud.push(Point2D::new(px, py));
+            x = (x * 1.1 + i as f32 * 0.01) % 100.0;
+        }
+        cloud
+    }
+
+    #[test]
+    fn test_transform_inverse_roundtrip_multiple_poses() {
+        let test_poses = vec![
+            Pose2D::new(0.0, 0.0, 0.0),
+            Pose2D::new(1.0, 2.0, 0.5),
+            Pose2D::new(-5.0, 3.0, -PI + 0.1),
+            Pose2D::new(0.0, 0.0, PI - 0.001),
+            Pose2D::new(100.0, -100.0, 3.0),
+        ];
+
+        for (i, pose) in test_poses.iter().enumerate() {
+            let cloud = create_random_cloud(20, i as u64);
+            let transformed = cloud.transform(pose);
+            let recovered = transformed.inverse_transform(pose);
+
+            for j in 0..cloud.len() {
+                assert_relative_eq!(cloud.xs[j], recovered.xs[j], epsilon = 1e-4,);
+                assert_relative_eq!(cloud.ys[j], recovered.ys[j], epsilon = 1e-4,);
+            }
+        }
+    }
+
+    #[test]
+    fn test_transform_large_translation() {
+        let mut cloud = PointCloud2D::new();
+        cloud.push(Point2D::new(0.0, 0.0));
+        cloud.push(Point2D::new(1.0, 1.0));
+
+        let pose = Pose2D::new(1000.0, 2000.0, 0.0);
+        let transformed = cloud.transform(&pose);
+        let recovered = transformed.inverse_transform(&pose);
+
+        assert_relative_eq!(recovered.xs[0], 0.0, epsilon = 1e-3);
+        assert_relative_eq!(recovered.ys[0], 0.0, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn test_transform_mut_equivalence() {
+        let cloud = create_random_cloud(50, 123);
+        let pose = Pose2D::new(1.5, -2.0, 0.8);
+
+        let transformed = cloud.transform(&pose);
+
+        let mut cloud_mut = cloud.clone();
+        cloud_mut.transform_mut(&pose);
+
+        for i in 0..cloud.len() {
+            assert_relative_eq!(transformed.xs[i], cloud_mut.xs[i], epsilon = 1e-6);
+            assert_relative_eq!(transformed.ys[i], cloud_mut.ys[i], epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_transform_at_pi_boundary() {
+        let mut cloud = PointCloud2D::new();
+        cloud.push(Point2D::new(1.0, 0.0));
+
+        let pose = Pose2D::new(0.0, 0.0, PI);
+        let transformed = cloud.transform(&pose);
+        let recovered = transformed.inverse_transform(&pose);
+
+        assert_relative_eq!(recovered.xs[0], 1.0, epsilon = 1e-5);
+        assert_relative_eq!(recovered.ys[0], 0.0, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn test_transform_negative_pi_boundary() {
+        let mut cloud = PointCloud2D::new();
+        cloud.push(Point2D::new(1.0, 0.0));
+        cloud.push(Point2D::new(0.0, 1.0));
+
+        let pose = Pose2D::new(0.0, 0.0, -PI + 0.01);
+        let transformed = cloud.transform(&pose);
+        let recovered = transformed.inverse_transform(&pose);
+
+        assert_relative_eq!(recovered.xs[0], 1.0, epsilon = 1e-5);
+        assert_relative_eq!(recovered.ys[0], 0.0, epsilon = 1e-5);
+        assert_relative_eq!(recovered.xs[1], 0.0, epsilon = 1e-5);
+        assert_relative_eq!(recovered.ys[1], 1.0, epsilon = 1e-5);
+    }
+}

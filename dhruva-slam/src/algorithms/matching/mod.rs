@@ -434,3 +434,190 @@ mod tests {
         assert_relative_eq!(result.transform.theta, 0.35, epsilon = 0.08);
     }
 }
+
+// ============================================================================
+// Phase 2: ICP Transform Recovery Tests
+// ============================================================================
+
+#[cfg(test)]
+mod icp_recovery_tests {
+    use super::*;
+    use crate::algorithms::matching::test_utils::{create_line, create_room};
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_icp_identity_transform() {
+        let cloud = create_room(100, 4.0, 3.0);
+
+        let mut matcher = PointToPointIcp::new(IcpConfig::default());
+        let result = matcher.match_scans(&cloud, &cloud, &Pose2D::identity());
+
+        assert!(result.converged, "ICP should converge for identical clouds");
+        assert_relative_eq!(result.transform.x, 0.0, epsilon = 0.02);
+        assert_relative_eq!(result.transform.y, 0.0, epsilon = 0.02);
+        assert_relative_eq!(result.transform.theta, 0.0, epsilon = 0.02);
+    }
+
+    #[test]
+    fn test_hybrid_p2l_known_translation() {
+        // Use HybridP2LMatcher which is the recommended production matcher
+        let source = create_room(100, 4.0, 3.0);
+        let known_transform = Pose2D::new(0.15, 0.10, 0.0);
+        let target = source.transform(&known_transform);
+
+        let mut matcher = HybridP2LMatcher::from_config(HybridP2LMatcherConfig::default());
+        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+        assert!(
+            result.converged,
+            "HybridP2L should converge for translation"
+        );
+        assert_relative_eq!(result.transform.x, 0.15, epsilon = 0.06);
+        assert_relative_eq!(result.transform.y, 0.10, epsilon = 0.06);
+    }
+
+    #[test]
+    fn test_hybrid_p2l_known_rotation() {
+        let source = create_room(100, 4.0, 3.0);
+        let known_transform = Pose2D::new(0.0, 0.0, 0.2);
+        let target = source.transform(&known_transform);
+
+        let mut matcher = HybridP2LMatcher::from_config(HybridP2LMatcherConfig::default());
+        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+        assert!(result.converged, "HybridP2L should converge for rotation");
+        assert_relative_eq!(result.transform.theta, 0.2, epsilon = 0.06);
+    }
+
+    #[test]
+    fn test_hybrid_p2l_known_combined_transform() {
+        let source = create_room(100, 4.0, 3.0);
+        let known_transform = Pose2D::new(0.1, 0.08, 0.15);
+        let target = source.transform(&known_transform);
+
+        let mut matcher = HybridP2LMatcher::from_config(HybridP2LMatcherConfig::default());
+        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+        assert!(
+            result.converged,
+            "HybridP2L should converge for combined transform"
+        );
+        assert_relative_eq!(result.transform.x, 0.1, epsilon = 0.06);
+        assert_relative_eq!(result.transform.y, 0.08, epsilon = 0.06);
+        assert_relative_eq!(result.transform.theta, 0.15, epsilon = 0.06);
+    }
+
+    #[test]
+    fn test_hybrid_p2l_with_odometry_initial_guess() {
+        let source = create_room(100, 4.0, 3.0);
+        let known_transform = Pose2D::new(0.25, 0.20, 0.3);
+        let target = source.transform(&known_transform);
+
+        // Simulate odometry providing a good initial guess
+        let initial_guess = Pose2D::new(0.22, 0.18, 0.27);
+
+        let mut matcher = HybridP2LMatcher::from_config(HybridP2LMatcherConfig::default());
+        let result = matcher.match_scans(&source, &target, &initial_guess);
+
+        assert!(
+            result.converged,
+            "HybridP2L should converge with odometry guess"
+        );
+        assert_relative_eq!(result.transform.x, 0.25, epsilon = 0.06);
+        assert_relative_eq!(result.transform.y, 0.20, epsilon = 0.06);
+        assert_relative_eq!(result.transform.theta, 0.3, epsilon = 0.06);
+    }
+
+    #[test]
+    fn test_p2l_icp_known_rotation() {
+        let source = create_room(100, 4.0, 3.0);
+        let known_transform = Pose2D::new(0.0, 0.0, 0.15);
+        let target = source.transform(&known_transform);
+
+        let mut matcher = PointToLineIcp::new(PointToLineIcpConfig::default());
+        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+        assert!(result.converged, "P2L ICP should converge for rotation");
+        assert_relative_eq!(result.transform.theta, 0.15, epsilon = 0.04);
+    }
+
+    #[test]
+    fn test_multi_resolution_known_transform() {
+        let source = create_room(100, 4.0, 3.0);
+        let known_transform = Pose2D::new(0.12, 0.08, 0.1);
+        let target = source.transform(&known_transform);
+
+        let mut matcher = MultiResolutionMatcher::new(MultiResolutionConfig::default());
+        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+        assert!(result.converged, "Multi-res should converge");
+        assert_relative_eq!(result.transform.x, 0.12, epsilon = 0.05);
+        assert_relative_eq!(result.transform.y, 0.08, epsilon = 0.05);
+        assert_relative_eq!(result.transform.theta, 0.1, epsilon = 0.05);
+    }
+
+    #[test]
+    fn test_correlative_large_initial_error() {
+        let source = create_room(100, 4.0, 3.0);
+        let known_transform = Pose2D::new(0.2, 0.15, 0.3);
+        let target = source.transform(&known_transform);
+
+        let mut matcher = CorrelativeMatcher::new(CorrelativeConfig::default());
+        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+        assert!(
+            result.converged,
+            "Correlative should handle large initial error"
+        );
+        assert_relative_eq!(result.transform.x, 0.2, epsilon = 0.06);
+        assert_relative_eq!(result.transform.y, 0.15, epsilon = 0.06);
+        assert_relative_eq!(result.transform.theta, 0.3, epsilon = 0.06);
+    }
+
+    // ========================================================================
+    // Phase 4.2: Empty/Sparse Cloud Handling
+    // ========================================================================
+
+    #[test]
+    fn test_icp_empty_source() {
+        let source = PointCloud2D::new();
+        let target = create_room(100, 4.0, 3.0);
+
+        let mut matcher = PointToPointIcp::new(IcpConfig::default());
+        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+        assert!(!result.converged, "ICP should fail on empty source");
+    }
+
+    #[test]
+    fn test_icp_empty_target() {
+        let source = create_room(100, 4.0, 3.0);
+        let target = PointCloud2D::new();
+
+        let mut matcher = PointToPointIcp::new(IcpConfig::default());
+        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+        assert!(!result.converged, "ICP should fail on empty target");
+    }
+
+    #[test]
+    fn test_icp_sparse_clouds() {
+        // Very sparse: just 5 points on a line
+        let source = create_line(5, 1.0);
+        let target = create_line(5, 1.0);
+
+        let mut matcher = PointToPointIcp::new(IcpConfig {
+            min_correspondences: 3,
+            ..Default::default()
+        });
+        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
+        // May converge but with poor score due to insufficient constraints
+        if result.converged {
+            assert!(
+                result.score < 0.9,
+                "Sparse clouds should have lower confidence"
+            );
+        }
+    }
+}

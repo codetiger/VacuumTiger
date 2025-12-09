@@ -324,3 +324,110 @@ mod tests {
         assert!(Pose2D::interpolate(&start, &end, 2500).is_none());
     }
 }
+
+// ============================================================================
+// Phase 1: Enhanced Pose Composition Tests
+// ============================================================================
+
+#[cfg(test)]
+mod pose_composition_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use std::f32::consts::PI;
+
+    #[test]
+    fn test_pose_compose_multiple_rotations() {
+        let rotate_45 = Pose2D::new(0.0, 0.0, PI / 4.0);
+        let rotate_90 = Pose2D::new(0.0, 0.0, PI / 2.0);
+
+        let combined = rotate_45.compose(&rotate_45);
+        assert_relative_eq!(combined.theta, PI / 2.0, epsilon = 1e-6);
+
+        let triple = rotate_45.compose(&rotate_45).compose(&rotate_90);
+        assert_relative_eq!(triple.theta, PI, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_pose_inverse_compose_identity_multiple() {
+        let poses = vec![
+            Pose2D::new(0.0, 0.0, 0.0),
+            Pose2D::new(1.0, 2.0, 0.5),
+            Pose2D::new(-5.0, 3.0, -PI + 0.01),
+            Pose2D::new(0.0, 0.0, PI - 0.001),
+        ];
+
+        for p in poses {
+            let result = p.compose(&p.inverse());
+            assert_relative_eq!(result.x, 0.0, epsilon = 1e-5);
+            assert_relative_eq!(result.y, 0.0, epsilon = 1e-5);
+            assert!(
+                result.theta.abs() < 1e-5 || (result.theta.abs() - 2.0 * PI).abs() < 1e-5,
+                "Theta not near zero: {} for pose {:?}",
+                result.theta,
+                p
+            );
+        }
+    }
+
+    #[test]
+    fn test_pose_transform_point_roundtrip() {
+        let pose = Pose2D::new(2.0, 3.0, 1.1);
+        let point = Point2D::new(5.0, -2.0);
+
+        let global = pose.transform_point(&point);
+        let recovered = pose.inverse_transform_point(&global);
+
+        assert_relative_eq!(point.x, recovered.x, epsilon = 1e-5);
+        assert_relative_eq!(point.y, recovered.y, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn test_pose_angle_wraparound_at_pi() {
+        let near_pi = Pose2D::new(0.0, 0.0, PI - 0.01);
+        let small_rotation = Pose2D::new(0.0, 0.0, 0.05);
+
+        let result = near_pi.compose(&small_rotation);
+
+        assert!(
+            result.theta.abs() <= PI + 1e-5,
+            "Theta should be normalized: {}",
+            result.theta
+        );
+    }
+
+    #[test]
+    fn test_pose_angle_wraparound_negative_pi() {
+        let near_neg_pi = Pose2D::new(0.0, 0.0, -PI + 0.01);
+        let small_rotation = Pose2D::new(0.0, 0.0, -0.05);
+
+        let result = near_neg_pi.compose(&small_rotation);
+
+        assert!(
+            result.theta.abs() <= PI + 1e-5,
+            "Theta should be normalized: {}",
+            result.theta
+        );
+    }
+
+    #[test]
+    fn test_pose_near_pi_boundary_positive() {
+        let pose = Pose2D::new(0.0, 0.0, PI - 0.01);
+        let delta = Pose2D::new(0.0, 0.0, 0.05);
+        let result = pose.compose(&delta);
+
+        // Should wrap to negative side
+        assert!(result.theta < 0.0 || result.theta > PI - 0.1);
+        assert!(result.theta.abs() <= PI + 1e-5);
+    }
+
+    #[test]
+    fn test_pose_near_pi_boundary_negative() {
+        let pose = Pose2D::new(0.0, 0.0, -PI + 0.01);
+        let delta = Pose2D::new(0.0, 0.0, -0.05);
+        let result = pose.compose(&delta);
+
+        // Should wrap to positive side
+        assert!(result.theta > 0.0 || result.theta < -PI + 0.1);
+        assert!(result.theta.abs() <= PI + 1e-5);
+    }
+}
