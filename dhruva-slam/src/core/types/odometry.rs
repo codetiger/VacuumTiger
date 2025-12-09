@@ -47,9 +47,23 @@ impl Twist2D {
         }
     }
 
-    /// Check if this twist represents no motion.
+    /// Epsilon for floating point near-zero comparisons.
+    const EPSILON: f32 = 1e-9;
+
+    /// Check if this twist represents no motion (within epsilon tolerance).
     #[inline]
     pub fn is_zero(&self) -> bool {
+        self.linear_x.abs() < Self::EPSILON
+            && self.linear_y.abs() < Self::EPSILON
+            && self.angular_z.abs() < Self::EPSILON
+    }
+
+    /// Check if this twist is exactly zero (no epsilon tolerance).
+    ///
+    /// Use `is_zero()` for numerical comparisons. This method is only
+    /// useful when you need to check for exact zero values.
+    #[inline]
+    pub fn is_exactly_zero(&self) -> bool {
         self.linear_x == 0.0 && self.linear_y == 0.0 && self.angular_z == 0.0
     }
 }
@@ -275,8 +289,21 @@ mod tests {
     fn test_twist2d_is_zero() {
         assert!(Twist2D::default().is_zero());
         assert!(Twist2D::new(0.0, 0.0, 0.0).is_zero());
+        // Values above epsilon should not be zero
         assert!(!Twist2D::new(0.001, 0.0, 0.0).is_zero());
         assert!(!Twist2D::rotation(0.001).is_zero());
+        // Very small values below epsilon should be considered zero
+        assert!(Twist2D::new(1e-10, 0.0, 0.0).is_zero());
+        assert!(Twist2D::new(0.0, 1e-10, 1e-10).is_zero());
+    }
+
+    #[test]
+    fn test_twist2d_is_exactly_zero() {
+        assert!(Twist2D::default().is_exactly_zero());
+        assert!(Twist2D::new(0.0, 0.0, 0.0).is_exactly_zero());
+        // Even tiny values are not exactly zero
+        assert!(!Twist2D::new(1e-10, 0.0, 0.0).is_exactly_zero());
+        assert!(!Twist2D::new(0.0, 1e-10, 0.0).is_exactly_zero());
     }
 
     #[test]

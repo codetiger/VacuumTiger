@@ -18,8 +18,8 @@
 use dhruva_slam::{
     AngularDownsamplerConfig, ComplementaryConfig, LaserScan, OdometryPipeline,
     OdometryPipelineConfig, OdometryPublisher, OnlineSlam, OnlineSlamConfig, OutlierFilterConfig,
-    Pose2D, PreprocessorConfig, RangeFilterConfig, SangamClient, ScanPreprocessor, SlamEngine,
-    SlamMode, WheelOdometryConfig,
+    Pose2D, PoseTracker, PreprocessorConfig, RangeFilterConfig, SangamClient, ScanPreprocessor,
+    SlamEngine, SlamMode, WheelOdometryConfig,
 };
 use serde::Deserialize;
 use std::fs;
@@ -428,13 +428,13 @@ fn run_main_loop(
     let mut msg_count = 0u64;
     let mut lidar_count = 0u64;
 
-    // Track previous pose for computing odometry delta
-    let mut prev_pose = Pose2D::identity();
+    // Use PoseTracker for odometry delta computation
+    let mut odom_tracker = PoseTracker::new();
 
     // Track SLAM-corrected pose for consistent visualization
     // When SLAM is active, we publish SLAM pose + odometry delta for high-frequency updates
     let mut slam_base_pose = Pose2D::identity();
-    let mut odom_at_slam_update = Pose2D::identity();
+    let mut slam_odom_snapshot = PoseTracker::new(); // Tracks odometry at SLAM updates
 
     // Rate limiting intervals
     let status_interval = Duration::from_secs_f32(1.0 / config.output.slam_status_rate_hz);
@@ -458,11 +458,17 @@ fn run_main_loop(
 
             // Process through pipeline
             if let Some(odom_pose) = pipeline.process(left, right, gyro_yaw, timestamp_us) {
+                // Update odometry tracker with current pose
+                odom_tracker.set(odom_pose);
+
                 // When SLAM is active, publish SLAM pose + odometry delta for consistent visualization
                 // This ensures the robot marker stays aligned with the SLAM-built map
                 let published_pose = if slam.is_some() {
-                    // Compute odometry delta since last SLAM update
-                    let odom_delta = odom_at_slam_update.inverse().compose(&odom_pose);
+                    // Compute odometry delta since last SLAM update using PoseTracker
+                    let odom_delta = slam_odom_snapshot
+                        .snapshot_pose()
+                        .inverse()
+                        .compose(&odom_pose);
                     // Apply delta to SLAM-corrected base pose
                     slam_base_pose.compose(&odom_delta)
                 } else {
@@ -493,10 +499,8 @@ fn run_main_loop(
                 continue;
             }
 
-            // Compute odometry delta since last SLAM update
-            let current_pose = pipeline.pose();
-            let odom_delta = prev_pose.inverse().compose(&current_pose);
-            prev_pose = current_pose;
+            // Compute odometry delta since last SLAM update using PoseTracker
+            let odom_delta = odom_tracker.delta_since_snapshot();
 
             // Process scan through SLAM
             let result = slam_engine.process_scan(&scan_cloud, &odom_delta, timestamp_us);
@@ -504,7 +508,11 @@ fn run_main_loop(
             // Update SLAM base pose for consistent odometry publishing
             // Store both the SLAM-corrected pose and the current odometry state
             slam_base_pose = result.pose;
-            odom_at_slam_update = current_pose;
+            slam_odom_snapshot.set(odom_tracker.pose());
+            slam_odom_snapshot.take_snapshot();
+
+            // Take snapshot for next delta computation
+            odom_tracker.take_snapshot();
 
             // Publish scan with SLAM-corrected pose
             publisher.publish_slam_scan(&scan_cloud, &result.pose, timestamp_us);

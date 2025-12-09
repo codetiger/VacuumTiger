@@ -19,14 +19,8 @@
 //! θ_fused = α × θ_gyro + (1 - α) × θ_encoder
 //! ```
 
+use super::calibration::CRL200S_GYRO_SCALE;
 use crate::core::types::Pose2D;
-
-/// Gyroscope scale factor for CRL-200S IMU.
-///
-/// Calibrated using encoder ground truth from rotation bags.
-/// Raw gyro value of ~3740 at 38.33°/s encoder-measured rotation gives:
-/// 38.33 / 3740 = 0.01025 deg/s per LSB = 0.000179 rad/s per LSB
-pub const CRL200S_GYRO_SCALE: f32 = 0.01025 * (std::f32::consts::PI / 180.0);
 
 /// Configuration for the complementary filter.
 #[derive(Debug, Clone, Copy)]

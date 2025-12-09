@@ -248,12 +248,12 @@ impl OnlineSlam {
         // - Same as slam_benchmark for consistent results
         // - Correlative handles large initial errors (especially rotation)
         // - Point-to-Line ICP provides sub-cm accuracy for structured environments
-        let matcher = HybridP2LMatcher::new(config.matcher.clone());
+        let matcher = HybridP2LMatcher::from_config(config.matcher.clone());
 
         // Use Correlative + Point-to-Line ICP for submap matching:
         // - Correlative handles large initial errors (especially rotation)
         // - Point-to-Line ICP provides sub-cm accuracy for structured environments
-        let submap_matcher = HybridP2LMatcher::new(config.submap_matcher.clone());
+        let submap_matcher = HybridP2LMatcher::from_config(config.submap_matcher.clone());
 
         // Pre-allocate scan buffers to avoid reallocation during hot path
         Self {

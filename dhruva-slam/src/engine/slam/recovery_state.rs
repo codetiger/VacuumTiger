@@ -76,9 +76,10 @@ pub enum RecoveryStrategy {
 }
 
 /// Current state of the recovery state machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RecoveryState {
     /// Normal tracking operation.
+    #[default]
     Tracking,
     /// Lost localization, preparing recovery.
     Lost,
@@ -86,12 +87,6 @@ pub enum RecoveryState {
     Recovering(RecoveryStrategy),
     /// Recovery failed, requires intervention.
     Failed,
-}
-
-impl Default for RecoveryState {
-    fn default() -> Self {
-        Self::Tracking
-    }
 }
 
 /// Action to take based on recovery state.

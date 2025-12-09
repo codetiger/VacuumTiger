@@ -30,7 +30,7 @@ use std::io::Write as IoWrite;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use image::{GrayImage, Luma};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -41,19 +41,20 @@ use dhruva_slam::algorithms::mapping::{
     MapIntegrator, MapIntegratorConfig, OccupancyGrid, OccupancyGridConfig,
 };
 use dhruva_slam::algorithms::matching::{
-    CorrelativeConfig, CorrelativeMatcher, HybridMatcher, HybridMatcherConfig, HybridP2LMatcher,
-    HybridP2LMatcherConfig, IcpConfig, MultiResolutionConfig, MultiResolutionMatcher,
-    PointToLineIcp, PointToLineIcpConfig, PointToPointIcp, ScanMatchResult, ScanMatcher,
+    CorrelativeConfig, CorrelativeMatcher, DynMatcher, HybridIcpMatcher, HybridIcpMatcherConfig,
+    HybridP2LMatcher, HybridP2LMatcherConfig, IcpConfig, MatcherType, MultiResolutionConfig,
+    MultiResolutionMatcher, PointToLineIcp, PointToLineIcpConfig, PointToPointIcp,
+    ScanMatchValidator, ScanMatchValidatorConfig, ScanMatcher,
 };
-use dhruva_slam::core::types::{LaserScan, PointCloud2D, Pose2D};
+use dhruva_slam::core::types::{LaserScan, PointCloud2D, Pose2D, PoseTracker};
 use dhruva_slam::io::bag::{BagMessage, BagPlayer};
 use dhruva_slam::metrics::{
     MapNoiseMetrics, TransformError, TransformErrorStats, analyze_map_noise,
     compute_transform_error,
 };
 use dhruva_slam::sensors::odometry::{
-    ComplementaryConfig, ComplementaryFilter, Eskf, EskfConfig, MahonyAhrs, MahonyConfig,
-    RawImuData, WheelOdometry, WheelOdometryConfig,
+    ComplementaryConfig, ComplementaryFilter, DynOdometry, DynOdometryConfig, OdometryType,
+    WheelOdometry, WheelOdometryConfig,
 };
 use dhruva_slam::sensors::preprocessing::{PreprocessorConfig, ScanPreprocessor};
 use dhruva_slam::utils::{GYRO_SCALE, WHEEL_BASE, WHEEL_TICKS_PER_METER};
@@ -152,58 +153,6 @@ enum Commands {
         #[arg(short, long, default_value = "BENCHMARK_RESULTS.md")]
         output: String,
     },
-}
-
-#[derive(Clone, Copy, ValueEnum, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum MatcherType {
-    /// Point-to-Point ICP only
-    Icp,
-    /// Point-to-Line ICP only
-    P2l,
-    /// Correlative matcher only
-    Correlative,
-    /// Multi-resolution correlative matcher
-    MultiRes,
-    /// Hybrid: Correlative + Point-to-Point ICP
-    HybridIcp,
-    /// Hybrid: Correlative + Point-to-Line ICP (recommended)
-    HybridP2l,
-}
-
-#[derive(Clone, Copy, ValueEnum, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum OdometryType {
-    /// Wheel odometry only (encoder ticks)
-    Wheel,
-    /// Complementary filter (encoder + gyro fusion)
-    Complementary,
-    /// Error-State Kalman Filter (full IMU fusion)
-    Eskf,
-    /// Mahony AHRS filter (gyro + gravity fusion)
-    Mahony,
-}
-
-impl std::fmt::Display for MatcherType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MatcherType::Icp => write!(f, "P2P ICP"),
-            MatcherType::P2l => write!(f, "P2L ICP"),
-            MatcherType::Correlative => write!(f, "Correlative"),
-            MatcherType::MultiRes => write!(f, "Multi-Res"),
-            MatcherType::HybridIcp => write!(f, "Hybrid ICP"),
-            MatcherType::HybridP2l => write!(f, "Hybrid P2L"),
-        }
-    }
-}
-
-impl std::fmt::Display for OdometryType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OdometryType::Wheel => write!(f, "Wheel"),
-            OdometryType::Complementary => write!(f, "Complementary"),
-            OdometryType::Eskf => write!(f, "ESKF"),
-            OdometryType::Mahony => write!(f, "Mahony"),
-        }
-    }
 }
 
 // ============================================================================
@@ -438,8 +387,8 @@ fn run_scan_accuracy_benchmark(
     let mut p2l = PointToLineIcp::new(PointToLineIcpConfig::default());
     let mut correlative = CorrelativeMatcher::new(CorrelativeConfig::default());
     let mut multi_res = MultiResolutionMatcher::new(MultiResolutionConfig::default());
-    let mut hybrid_icp = HybridMatcher::new(HybridMatcherConfig::default());
-    let mut hybrid_p2l = HybridP2LMatcher::new(HybridP2LMatcherConfig::default());
+    let mut hybrid_icp = HybridIcpMatcher::from_config(HybridIcpMatcherConfig::default());
+    let mut hybrid_p2l = HybridP2LMatcher::from_config(HybridP2LMatcherConfig::default());
 
     // Initialize trackers
     let mut icp_tracker = AlgorithmAccuracyTracker::new("P2P ICP");
@@ -744,15 +693,28 @@ fn run_single_full_slam(
     let mut player = BagPlayer::open(bag_path)?;
     player.set_speed(0.0);
 
-    let mut odometry = create_odometry(odometry_type);
-    let mut matcher = create_matcher(matcher_type);
+    // Create dynamic odometry with robot-specific wheel configuration
+    let odom_config = DynOdometryConfig {
+        wheel: WheelOdometryConfig {
+            ticks_per_meter: WHEEL_TICKS_PER_METER,
+            wheel_base: WHEEL_BASE,
+        },
+        complementary: ComplementaryConfig {
+            alpha: 0.8,
+            gyro_scale: GYRO_SCALE,
+            gyro_bias_z: 0.0,
+            ..ComplementaryConfig::default()
+        },
+        ..DynOdometryConfig::default()
+    };
+    let mut odometry = DynOdometry::new(odometry_type, odom_config);
+    let mut matcher = DynMatcher::new(matcher_type);
     let preprocessor = ScanPreprocessor::new(PreprocessorConfig::default());
     let mut map = OccupancyGrid::new(OccupancyGridConfig::default());
     let integrator = MapIntegrator::new(MapIntegratorConfig::default());
 
-    // Separate tracking for raw odometry and scan-matched SLAM pose
-    let mut odom_pose = Pose2D::identity(); // Raw odometry (always accumulating)
-    let mut prev_odom_at_scan = Pose2D::identity(); // Odometry at previous scan
+    // Use PoseTracker for odometry and SLAM pose management
+    let mut odom_tracker = PoseTracker::new(); // Raw odometry
     let mut slam_pose = Pose2D::identity(); // Scan-matched pose
     let mut previous_scan: Option<PointCloud2D> = None;
     let mut scans_processed = 0u64;
@@ -765,10 +727,8 @@ fn run_single_full_slam(
     let mut peak_memory_mb = 0.0f64;
     let pid = sysinfo::get_current_pid().ok();
 
-    // Thresholds for accepting scan match results
-    const MIN_MATCH_SCORE: f32 = 0.3; // Minimum acceptable match score
-    const MAX_CORRECTION_DIST: f32 = 0.15; // Max 15cm correction from odometry
-    const MAX_CORRECTION_ANGLE: f32 = 0.35; // Max ~20 degrees correction
+    // Use ScanMatchValidator for accepting/rejecting scan match results
+    let validator = ScanMatchValidator::new(ScanMatchValidatorConfig::default());
 
     let start_time = Instant::now();
 
@@ -782,7 +742,7 @@ fn run_single_full_slam(
                     status.gyro_raw[2],
                     status.timestamp_us,
                 ) {
-                    odom_pose = pose; // Always raw odometry
+                    odom_tracker.set(pose); // Always raw odometry
                 }
             }
             BagMessage::Lidar(timestamped) => {
@@ -792,8 +752,8 @@ fn run_single_full_slam(
 
                 if processed.len() >= 50 {
                     if let Some(ref prev_scan) = previous_scan {
-                        // Compute robot motion from RAW odometry (prev→current)
-                        let odom_delta = prev_odom_at_scan.inverse().compose(&odom_pose);
+                        // Compute robot motion from RAW odometry using PoseTracker
+                        let odom_delta = odom_tracker.delta_since_snapshot();
 
                         // Predicted pose from odometry
                         let predicted_pose = slam_pose.compose(&odom_delta);
@@ -816,17 +776,10 @@ fn run_single_full_slam(
                         // The match result transform is the robot motion from prev→current
                         let matched_delta = match_result.transform;
 
-                        // Validate the match result
-                        let correction_dist = ((matched_delta.x - odom_delta.x).powi(2)
-                            + (matched_delta.y - odom_delta.y).powi(2))
-                        .sqrt();
-                        let correction_angle = (matched_delta.theta - odom_delta.theta).abs();
+                        // Validate the match result using ScanMatchValidator
+                        let validation = validator.validate(&match_result, &odom_delta);
 
-                        let match_valid = match_result.score >= MIN_MATCH_SCORE
-                            && correction_dist <= MAX_CORRECTION_DIST
-                            && correction_angle <= MAX_CORRECTION_ANGLE;
-
-                        if match_valid {
+                        if validation.is_valid {
                             // Use scan-matched pose
                             slam_pose = slam_pose.compose(&matched_delta);
                             total_score += match_result.score as f64;
@@ -841,8 +794,8 @@ fn run_single_full_slam(
                     let global_scan = processed.transform(&slam_pose);
                     integrator.integrate_cloud(&mut map, &global_scan, &slam_pose);
 
-                    // Store raw odometry for next iteration
-                    prev_odom_at_scan = odom_pose;
+                    // Take snapshot for next delta computation
+                    odom_tracker.take_snapshot();
                     previous_scan = Some(processed);
                     scans_processed += 1;
                 }
@@ -904,261 +857,6 @@ fn run_single_full_slam(
     };
 
     Ok((result, map))
-}
-
-// ============================================================================
-// Dynamic Matcher/Odometry Creation
-// ============================================================================
-
-enum DynMatcher {
-    Icp(PointToPointIcp),
-    P2l(PointToLineIcp),
-    Correlative(CorrelativeMatcher),
-    MultiRes(MultiResolutionMatcher),
-    HybridIcp(HybridMatcher),
-    HybridP2l(HybridP2LMatcher),
-}
-
-impl DynMatcher {
-    fn match_scans(
-        &mut self,
-        source: &PointCloud2D,
-        target: &PointCloud2D,
-        initial_guess: &Pose2D,
-    ) -> ScanMatchResult {
-        match self {
-            DynMatcher::Icp(m) => m.match_scans(source, target, initial_guess),
-            DynMatcher::P2l(m) => m.match_scans(source, target, initial_guess),
-            DynMatcher::Correlative(m) => m.match_scans(source, target, initial_guess),
-            DynMatcher::MultiRes(m) => m.match_scans(source, target, initial_guess),
-            DynMatcher::HybridIcp(m) => m.match_scans(source, target, initial_guess),
-            DynMatcher::HybridP2l(m) => m.match_scans(source, target, initial_guess),
-        }
-    }
-}
-
-fn create_matcher(matcher_type: MatcherType) -> DynMatcher {
-    match matcher_type {
-        MatcherType::Icp => DynMatcher::Icp(PointToPointIcp::new(IcpConfig::default())),
-        MatcherType::P2l => DynMatcher::P2l(PointToLineIcp::new(PointToLineIcpConfig::default())),
-        MatcherType::Correlative => {
-            DynMatcher::Correlative(CorrelativeMatcher::new(CorrelativeConfig::default()))
-        }
-        MatcherType::MultiRes => {
-            DynMatcher::MultiRes(MultiResolutionMatcher::new(MultiResolutionConfig::default()))
-        }
-        MatcherType::HybridIcp => {
-            DynMatcher::HybridIcp(HybridMatcher::new(HybridMatcherConfig::default()))
-        }
-        MatcherType::HybridP2l => {
-            DynMatcher::HybridP2l(HybridP2LMatcher::new(HybridP2LMatcherConfig::default()))
-        }
-    }
-}
-
-enum DynOdometry {
-    Wheel(WheelOdometryWrapper),
-    Complementary(ComplementaryOdometry),
-    Eskf(EskfOdometry),
-    Mahony(MahonyOdometry),
-}
-
-impl DynOdometry {
-    fn update(
-        &mut self,
-        left: u16,
-        right: u16,
-        gyro_yaw: i16,
-        timestamp_us: u64,
-    ) -> Option<Pose2D> {
-        match self {
-            DynOdometry::Wheel(o) => o.update(left, right),
-            DynOdometry::Complementary(o) => o.update(left, right, gyro_yaw, timestamp_us),
-            DynOdometry::Eskf(o) => o.update(left, right, gyro_yaw, timestamp_us),
-            DynOdometry::Mahony(o) => o.update(left, right, gyro_yaw, timestamp_us),
-        }
-    }
-}
-
-struct WheelOdometryWrapper {
-    wheel: WheelOdometry,
-    pose: Pose2D,
-}
-
-impl WheelOdometryWrapper {
-    fn new() -> Self {
-        let config = WheelOdometryConfig {
-            ticks_per_meter: WHEEL_TICKS_PER_METER,
-            wheel_base: WHEEL_BASE,
-        };
-        Self {
-            wheel: WheelOdometry::new(config),
-            pose: Pose2D::identity(),
-        }
-    }
-
-    fn update(&mut self, left: u16, right: u16) -> Option<Pose2D> {
-        if let Some(delta) = self.wheel.update(left, right) {
-            self.pose = self.pose.compose(&delta);
-            Some(self.pose)
-        } else {
-            None
-        }
-    }
-}
-
-struct ComplementaryOdometry {
-    wheel: WheelOdometry,
-    filter: ComplementaryFilter,
-}
-
-impl ComplementaryOdometry {
-    fn new() -> Self {
-        let wheel_config = WheelOdometryConfig {
-            ticks_per_meter: WHEEL_TICKS_PER_METER,
-            wheel_base: WHEEL_BASE,
-        };
-        let comp_config = ComplementaryConfig {
-            alpha: 0.8,
-            gyro_scale: GYRO_SCALE,
-            gyro_bias_z: 0.0,
-            ..ComplementaryConfig::default() // Uses gyro_sign=-1.0
-        };
-        Self {
-            wheel: WheelOdometry::new(wheel_config),
-            filter: ComplementaryFilter::new(comp_config),
-        }
-    }
-
-    fn update(
-        &mut self,
-        left: u16,
-        right: u16,
-        gyro_yaw: i16,
-        timestamp_us: u64,
-    ) -> Option<Pose2D> {
-        if let Some(encoder_delta) = self.wheel.update(left, right) {
-            let global_pose = self.filter.update(encoder_delta, gyro_yaw, timestamp_us);
-            Some(global_pose)
-        } else {
-            None
-        }
-    }
-}
-
-struct EskfOdometry {
-    wheel: WheelOdometry,
-    eskf: Eskf,
-}
-
-impl EskfOdometry {
-    fn new() -> Self {
-        let wheel_config = WheelOdometryConfig {
-            ticks_per_meter: WHEEL_TICKS_PER_METER,
-            wheel_base: WHEEL_BASE,
-        };
-        let eskf_config = EskfConfig {
-            gyro_scale: GYRO_SCALE,
-            gyro_bias_z: 0.0,
-            ..EskfConfig::default() // Uses gyro_sign=-1.0
-        };
-        Self {
-            wheel: WheelOdometry::new(wheel_config),
-            eskf: Eskf::new(eskf_config),
-        }
-    }
-
-    fn update(
-        &mut self,
-        left: u16,
-        right: u16,
-        gyro_yaw: i16,
-        timestamp_us: u64,
-    ) -> Option<Pose2D> {
-        if let Some(encoder_delta) = self.wheel.update(left, right) {
-            let global_pose = self.eskf.update(encoder_delta, gyro_yaw, timestamp_us);
-            Some(global_pose)
-        } else {
-            None
-        }
-    }
-}
-
-/// Mahony AHRS-based odometry.
-///
-/// Uses the Mahony filter for yaw estimation with automatic gyro bias calibration
-/// and gravity vector correction. The wheel odometry provides translation while
-/// Mahony provides the heading angle.
-struct MahonyOdometry {
-    wheel: WheelOdometry,
-    ahrs: MahonyAhrs,
-    pose: Pose2D,
-    last_yaw: f32,
-}
-
-impl MahonyOdometry {
-    fn new() -> Self {
-        let wheel_config = WheelOdometryConfig {
-            ticks_per_meter: WHEEL_TICKS_PER_METER,
-            wheel_base: WHEEL_BASE,
-        };
-        // Use shorter calibration for benchmark (110 samples = 1 second at 110Hz)
-        let mahony_config = MahonyConfig {
-            calibration_samples: 110,
-            ..MahonyConfig::default()
-        };
-        Self {
-            wheel: WheelOdometry::new(wheel_config),
-            ahrs: MahonyAhrs::new(mahony_config),
-            pose: Pose2D::identity(),
-            last_yaw: 0.0,
-        }
-    }
-
-    fn update(
-        &mut self,
-        left: u16,
-        right: u16,
-        gyro_yaw: i16,
-        timestamp_us: u64,
-    ) -> Option<Pose2D> {
-        // Update Mahony AHRS (uses gyro_yaw as Z-axis rotation)
-        // For 2D odometry, we only need yaw from the AHRS
-        // Pass zeros for other axes and gravity (simplified 2D case)
-        let imu = RawImuData::new(
-            [gyro_yaw, 0, 0], // gyro: yaw on X input (Mahony remaps internally)
-            [0, 0, 1000],     // tilt: assume level (gravity pointing down)
-        );
-        let (_roll, _pitch, yaw) = self.ahrs.update(&imu, timestamp_us);
-
-        // Get wheel odometry delta
-        if let Some(encoder_delta) = self.wheel.update(left, right) {
-            if self.ahrs.is_calibrated() {
-                // Use Mahony yaw for heading
-                let yaw_delta = yaw - self.last_yaw;
-                self.last_yaw = yaw;
-
-                // Create delta with encoder translation but Mahony rotation
-                let delta = Pose2D::new(encoder_delta.x, encoder_delta.y, yaw_delta);
-                self.pose = self.pose.compose(&delta);
-            } else {
-                // During calibration, use encoder-only odometry
-                self.pose = self.pose.compose(&encoder_delta);
-            }
-            Some(self.pose)
-        } else {
-            None
-        }
-    }
-}
-
-fn create_odometry(odometry_type: OdometryType) -> DynOdometry {
-    match odometry_type {
-        OdometryType::Wheel => DynOdometry::Wheel(WheelOdometryWrapper::new()),
-        OdometryType::Complementary => DynOdometry::Complementary(ComplementaryOdometry::new()),
-        OdometryType::Eskf => DynOdometry::Eskf(EskfOdometry::new()),
-        OdometryType::Mahony => DynOdometry::Mahony(MahonyOdometry::new()),
-    }
 }
 
 // ============================================================================

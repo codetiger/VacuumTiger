@@ -67,7 +67,7 @@ impl CachedKdTree {
 }
 
 /// Robust kernel type for M-estimator weighting.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum RobustKernel {
     /// No robust weighting (standard least squares)
     None,
@@ -79,13 +79,8 @@ pub enum RobustKernel {
     Cauchy,
     /// Welsch kernel: smooth, strong outlier rejection
     /// ρ(r) = (c²/2) * (1 - exp(-(r/c)²))
+    #[default]
     Welsch,
-}
-
-impl Default for RobustKernel {
-    fn default() -> Self {
-        Self::Welsch
-    }
 }
 
 /// Configuration for Point-to-Point ICP.

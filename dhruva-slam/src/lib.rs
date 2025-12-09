@@ -125,16 +125,17 @@ pub mod utils;
 
 // Core types
 pub use core::math;
-pub use core::types::{Covariance2D, ImuReading, Twist2D};
+pub use core::types::{Covariance2D, ImuReading, PoseTracker, Twist2D};
 pub use core::types::{LaserScan, PointCloud2D};
 pub use core::types::{Point2D, Pose2D, Timestamped};
 
 // Sensors - Odometry
 pub use sensors::odometry::{
-    CalibratedImuData, ComplementaryConfig, ComplementaryFilter, Eskf, EskfConfig, EulerAngles,
-    EvaluationResult, MahonyAhrs, MahonyConfig, MeasurementNoise, OdometryEvaluator, ProcessNoise,
-    Quaternion, RawImuData, ScenarioBounds, Stats, TestScenario, WheelOdometry,
-    WheelOdometryConfig,
+    CalibratedImuData, ComplementaryConfig, ComplementaryFilter, DynOdometry, DynOdometryConfig,
+    Eskf, EskfConfig, EulerAngles, EvaluationResult, FusedPoseTracker, GyroBiasEstimator,
+    GyroRotationResult, ImuAnalysisResult, ImuAnalyzer, ImuQuality, MahonyAhrs, MahonyConfig,
+    MeasurementNoise, OdometryEvaluator, OdometryType, ProcessNoise, Quaternion, RawImuData,
+    ScenarioBounds, Stats, TestScenario, WheelOdometry, WheelOdometryConfig,
 };
 
 // Sensors - Preprocessing
@@ -146,9 +147,11 @@ pub use sensors::preprocessing::{
 
 // Algorithms - Matching
 pub use algorithms::matching::{
-    CorrelativeConfig, CorrelativeMatcher, HybridMultiResConfig, HybridMultiResMatcher,
-    HybridP2LMatcherConfig, IcpConfig, MultiResolutionConfig, MultiResolutionMatcher,
-    PointToLineIcp, PointToLineIcpConfig, PointToPointIcp, ScanMatchResult, ScanMatcher,
+    ConvergenceTracker, CorrelativeConfig, CorrelativeMatcher, DynMatcher, DynMatcherConfig,
+    HybridMultiResConfig, HybridMultiResMatcher, HybridP2LMatcherConfig, IcpConfig,
+    IcpConvergenceConfig, MIN_POINTS_FOR_RELIABLE_MATCH, MatcherType, MultiResolutionConfig,
+    MultiResolutionMatcher, PointToLineIcp, PointToLineIcpConfig, PointToPointIcp, RejectionReason,
+    ScanMatchResult, ScanMatchValidator, ScanMatchValidatorConfig, ScanMatcher, ValidationResult,
 };
 
 // Algorithms - Mapping

@@ -42,12 +42,7 @@
 
 use std::f32::consts::PI;
 
-/// Gyroscope scale factor for CRL-200S IMU.
-///
-/// Calibrated using encoder ground truth from rotation bags.
-/// Raw gyro value of ~3740 at 38.33°/s encoder-measured rotation gives:
-/// 38.33 / 3740 = 0.01025 deg/s per LSB = 0.000179 rad/s per LSB
-pub const CRL200S_GYRO_SCALE: f32 = 0.01025 * (PI / 180.0);
+use super::calibration::CRL200S_GYRO_SCALE;
 
 /// Gravity vector scale for LP-filtered tilt data.
 pub const GRAVITY_SCALE: f32 = 1.0 / 1000.0;

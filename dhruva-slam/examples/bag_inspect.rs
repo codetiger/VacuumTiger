@@ -8,7 +8,7 @@
 //!   cargo run --example bag_inspect -- <bag_file> --pose    - Pose estimation debug
 //!   cargo run --example bag_inspect -- <bag_file> --verbose - Verbose info
 
-use dhruva_slam::core::types::{LaserScan, Pose2D};
+use dhruva_slam::core::types::{LaserScan, Pose2D, PoseTracker};
 use dhruva_slam::io::bag::{BagMessage, BagPlayer};
 use dhruva_slam::sensors::odometry::{WheelOdometry, WheelOdometryConfig};
 use dhruva_slam::sensors::preprocessing::{PreprocessorConfig, ScanPreprocessor};
@@ -58,13 +58,12 @@ fn show_pose_analysis(bag_path: &str) {
     };
     let mut wheel_odom = WheelOdometry::new(odom_config);
     let preprocessor = ScanPreprocessor::new(PreprocessorConfig::default());
-    let mut matcher = HybridP2LMatcher::new(HybridP2LMatcherConfig::default());
+    let mut matcher = HybridP2LMatcher::from_config(HybridP2LMatcherConfig::default());
 
-    // Track poses
-    let mut odom_only_pose = Pose2D::identity(); // Pure odometry
+    // Track poses using PoseTracker
+    let mut odom_tracker = PoseTracker::new(); // Tracks raw odometry with snapshot support
+    let mut odom_only_tracker = PoseTracker::new(); // Pure odometry accumulator
     let mut slam_pose = Pose2D::identity(); // Scan-matched pose (like in benchmark)
-    let mut prev_odom_at_scan = Pose2D::identity();
-    let mut odom_pose = Pose2D::identity();
 
     // Previous scan for matching
     use dhruva_slam::core::types::PointCloud2D;
@@ -90,8 +89,8 @@ fn show_pose_analysis(bag_path: &str) {
                 last_encoder = Some((status.encoder.left, status.encoder.right));
 
                 if let Some(delta) = wheel_odom.update(status.encoder.left, status.encoder.right) {
-                    // Compose delta into global pose
-                    odom_pose = odom_pose.compose(&delta);
+                    // Update pose trackers with delta
+                    odom_tracker.update(&delta);
 
                     // Show first few deltas
                     if sensor_count <= 5 {
@@ -113,11 +112,11 @@ fn show_pose_analysis(bag_path: &str) {
                 let processed = preprocessor.process(&laser_scan);
 
                 if processed.len() >= 50 {
-                    // Compute odom delta since last scan
-                    let odom_delta = prev_odom_at_scan.inverse().compose(&odom_pose);
+                    // Compute odom delta since last scan using PoseTracker
+                    let odom_delta = odom_tracker.delta_since_snapshot();
 
-                    // Update pure odometry pose
-                    odom_only_pose = odom_only_pose.compose(&odom_delta);
+                    // Update pure odometry pose tracker
+                    odom_only_tracker.update(&odom_delta);
 
                     // Now do scan matching (exactly like in slam_benchmark.rs)
                     if let Some(ref prev_scan) = previous_scan {
@@ -179,6 +178,7 @@ fn show_pose_analysis(bag_path: &str) {
                         slam_pose = slam_pose.compose(&matched_delta_fixed);
                     }
 
+                    let odom_only_pose = odom_only_tracker.pose();
                     if scan_count <= 10 || scan_count % 50 == 0 {
                         if scan_count > 1 {
                             println!(
@@ -196,7 +196,8 @@ fn show_pose_analysis(bag_path: &str) {
                         }
                     }
 
-                    prev_odom_at_scan = odom_pose;
+                    // Take snapshot for next delta computation
+                    odom_tracker.take_snapshot();
                     previous_scan = Some(processed);
                 }
             }
@@ -204,7 +205,9 @@ fn show_pose_analysis(bag_path: &str) {
         }
     }
 
-    // Replace global_pose with slam_pose for validation
+    // Get final poses from trackers
+    let odom_pose = odom_tracker.pose();
+    let odom_only_pose = odom_only_tracker.pose();
     let global_pose = slam_pose;
 
     // Summary

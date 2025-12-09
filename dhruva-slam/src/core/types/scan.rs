@@ -180,6 +180,40 @@ impl LaserScan {
             .filter(|&&r| self.is_valid_range(r))
             .count()
     }
+
+    /// Get angle at index, returning None if out of bounds.
+    ///
+    /// This is the checked version of `get_angle()`.
+    #[inline]
+    pub fn try_get_angle(&self, index: usize) -> Option<f32> {
+        if index >= self.ranges.len() {
+            return None;
+        }
+        Some(self.get_angle(index))
+    }
+
+    /// Validate internal consistency of the scan data.
+    ///
+    /// Returns Ok(()) if valid, or an error message describing the inconsistency.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(ref angles) = self.angles
+            && angles.len() != self.ranges.len()
+        {
+            return Err("angles and ranges length mismatch");
+        }
+        if let Some(ref intensities) = self.intensities
+            && intensities.len() != self.ranges.len()
+        {
+            return Err("intensities and ranges length mismatch");
+        }
+        if self.range_min < 0.0 {
+            return Err("range_min must be non-negative");
+        }
+        if self.range_max <= self.range_min {
+            return Err("range_max must be greater than range_min");
+        }
+        Ok(())
+    }
 }
 
 impl Default for LaserScan {
@@ -273,16 +307,28 @@ impl PointCloud2D {
     }
 
     /// Add a point with intensity.
+    ///
+    /// If this is the first point with an intensity and previous points were added
+    /// without intensity, the intensity vector is initialized with zeros for all
+    /// previous points.
     #[inline]
     pub fn push_with_intensity(&mut self, point: Point2D, intensity: u8) {
+        // Get current length BEFORE pushing coordinates
+        let current_len = self.xs.len();
+
         self.xs.push(point.x);
         self.ys.push(point.y);
-        if self.intensities.is_none() {
-            // Initialize intensities vector if this is first intensity
-            self.intensities = Some(vec![0; self.xs.len() - 1]);
-        }
-        if let Some(ref mut intensities) = self.intensities {
-            intensities.push(intensity);
+
+        match &mut self.intensities {
+            Some(intensities) => {
+                intensities.push(intensity);
+            }
+            None => {
+                // Initialize with zeros for ALL previous points, then add new intensity
+                let mut vec = vec![0u8; current_len];
+                vec.push(intensity);
+                self.intensities = Some(vec);
+            }
         }
     }
 
@@ -308,9 +354,24 @@ impl PointCloud2D {
     }
 
     /// Get point at index (compatibility layer for code expecting Point2D).
+    ///
+    /// # Panics
+    /// Panics if index is out of bounds.
     #[inline]
     pub fn point_at(&self, i: usize) -> Point2D {
         Point2D::new(self.xs[i], self.ys[i])
+    }
+
+    /// Get point at index, returning None if out of bounds.
+    ///
+    /// This is the checked version of `point_at()`.
+    #[inline]
+    pub fn try_point_at(&self, i: usize) -> Option<Point2D> {
+        if i < self.len() {
+            Some(Point2D::new(self.xs[i], self.ys[i]))
+        } else {
+            None
+        }
     }
 
     /// Iterate over points (creates Point2D on the fly for compatibility).
