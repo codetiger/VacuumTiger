@@ -771,14 +771,16 @@ class Robot3DView(QWidget):
             delta = wheel_left - self.last_wheel_left
             # Handle wrap-around
             if abs(delta) < 30000:
-                self.wheel_left_angle += delta * 0.5  # Degrees per tick
+                # Negate to match visual: increasing encoder = forward roll
+                self.wheel_left_angle -= delta * 0.5  # Degrees per tick
                 wheel_moving = True
             self.last_wheel_left = wheel_left
 
         if wheel_right != self.last_wheel_right:
             delta = wheel_right - self.last_wheel_right
             if abs(delta) < 30000:
-                self.wheel_right_angle += delta * 0.5
+                # Negate to match visual: increasing encoder = forward roll
+                self.wheel_right_angle -= delta * 0.5
                 wheel_moving = True
             self.last_wheel_right = wheel_right
 
