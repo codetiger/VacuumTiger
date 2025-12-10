@@ -187,9 +187,11 @@ impl Delta2DDriver {
                                 // Detect scan completion by checking each point for wrap
                                 // Wrap occurs when angle jumps significantly (crosses 0°/360° boundary)
                                 for point in &scan.points {
-                                    // Check for wrap: angle difference > 180° indicates crossing boundary
-                                    // After CCW transform: angles decrease, wrap is ~0° → ~360° (large positive jump)
-                                    let angle_diff = (point.angle - last_angle).abs();
+                                    // After CCW transform, angles DECREASE (359° → 358° → ... → 0°)
+                                    // Real wrap: small → large (e.g., 0.5° → 359.5°) = POSITIVE jump
+                                    // False wrap: 0° → 359° = NEGATIVE jump (just crossing forward direction)
+                                    // Only detect POSITIVE jumps > π as real wraps
+                                    let angle_diff = point.angle - last_angle;
                                     let wrapped = angle_diff > std::f32::consts::PI
                                         && accumulated_points.len() > MIN_SCAN_POINTS;
 

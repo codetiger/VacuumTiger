@@ -25,9 +25,9 @@ Frequency: ~110 Hz (every ~9ms, limited by 115200 baud)
 | 0x07 | 7 | 1 | Charging Flags | u8 | Bit-field for charging/dock status |
 | 0x08 | 8 | 1 | Battery Voltage | u8 | Raw voltage (value / 10 = volts) |
 | 0x09-0x0F | 9-15 | 7 | Reserved | - | Unknown purpose |
-| 0x10-0x11 | 16-17 | 2 | Right Wheel Encoder | u16 LE | Encoder tick count (lower 16 bits) |
+| 0x10-0x11 | 16-17 | 2 | Left Wheel Encoder | u16 LE | Encoder tick count (lower 16 bits) |
 | 0x12-0x17 | 18-23 | 6 | Reserved | - | May be upper bytes of encoder or unused |
-| 0x18-0x19 | 24-25 | 2 | Left Wheel Encoder | u16 LE | Encoder tick count (lower 16 bits) |
+| 0x18-0x19 | 24-25 | 2 | Right Wheel Encoder | u16 LE | Encoder tick count (lower 16 bits) |
 | 0x1A-0x1F | 26-31 | 6 | Reserved | - | May be upper bytes of encoder or unused |
 | 0x20-0x27 | 32-39 | 8 | Reserved | - | Unknown purpose |
 | 0x28-0x29 | 40-41 | 2 | Gyro X (Yaw) | i16 LE | Raw gyroscope yaw rate |
@@ -111,23 +111,23 @@ percentage = (voltage - 13.5) / (15.5 - 13.5) * 100
 
 **Code Reference:** `constants.rs:91-92`
 
-### Bytes 0x10-0x11: Right Wheel Encoder
-
-- **Type:** u16 little-endian
-- **Description:** Encoder tick count for right wheel
-- **Implementation:** Only lower 2 bytes are read by `reader.rs`
-- **Note:** Bytes 0x12-0x17 may contain upper bytes of a larger counter, but are currently unused
-
-**Code Reference:** `constants.rs:68`, `reader.rs:256-261`
-
-### Bytes 0x18-0x19: Left Wheel Encoder
+### Bytes 0x10-0x11: Left Wheel Encoder
 
 - **Type:** u16 little-endian
 - **Description:** Encoder tick count for left wheel
 - **Implementation:** Only lower 2 bytes are read by `reader.rs`
+- **Note:** Bytes 0x12-0x17 may contain upper bytes of a larger counter, but are currently unused
+
+**Code Reference:** `constants.rs:67`, `reader.rs`
+
+### Bytes 0x18-0x19: Right Wheel Encoder
+
+- **Type:** u16 little-endian
+- **Description:** Encoder tick count for right wheel
+- **Implementation:** Only lower 2 bytes are read by `reader.rs`
 - **Note:** Bytes 0x1A-0x1F may contain upper bytes of a larger counter, but are currently unused
 
-**Code Reference:** `constants.rs:69`, `reader.rs:249-254`
+**Code Reference:** `constants.rs:68`, `reader.rs`
 
 ### IMU Data (0x28-0x33)
 
@@ -211,7 +211,7 @@ Low-pass filtered gravity vector for tilt correction. Useful for determining rob
 Offset:  00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F
          ── ── ── ── ── ── ── ── ── ── ── ── ── ── ── ──
     0x00  ?? BP ?? CF DB ?? ?? CH BV ?? ?? ?? ?? ?? ?? ??
-    0x10  WR WR ?? ?? ?? ?? ?? ?? WL WL ?? ?? ?? ?? ?? ??
+    0x10  WL WL ?? ?? ?? ?? ?? ?? WR WR ?? ?? ?? ?? ?? ??
     0x20  ?? ?? ?? ?? ?? ?? ?? ?? GX GX AX AX GY GY AY AY
     0x30  GZ GZ AZ AZ TX TX TY TY TZ TZ SB SB ?? ?? HB HB
     0x40  ?? ?? ?? ?? ?? ?? WT ?? ?? ?? ?? ?? ?? ?? ?? ??
@@ -221,8 +221,8 @@ Legend:
   BP = Bumper Flags (1 byte)     CF = Cliff Flags (1 byte)
   DB = Dustbox Flags (1 byte)    CH = Charging Flags (1 byte)
   BV = Battery Voltage (1 byte)  WT = Water Tank Level (1 byte)
-  WR = Right Wheel Encoder (2 bytes, u16 LE)
   WL = Left Wheel Encoder (2 bytes, u16 LE)
+  WR = Right Wheel Encoder (2 bytes, u16 LE)
   GX/GY/GZ = Gyroscope (2 bytes each, i16 LE)
   AX/AY/AZ = Accelerometer (2 bytes each, i16 LE)
   TX/TY/TZ = Tilt Vector (2 bytes each, i16 LE)
@@ -256,8 +256,8 @@ All multi-byte fields use **little-endian** encoding:
 | Bumper Flags | 0x01 | 1 | u8 (bit-field) |
 | Cliff Flags | 0x03 | 1 | u8 (bit-field) |
 | Dustbox Flags | 0x04 | 1 | u8 (bit-field) |
-| Right Wheel Encoder | 0x10-0x11 | 2 | u16 LE |
-| Left Wheel Encoder | 0x18-0x19 | 2 | u16 LE |
+| Left Wheel Encoder | 0x10-0x11 | 2 | u16 LE |
+| Right Wheel Encoder | 0x18-0x19 | 2 | u16 LE |
 | Gyro X | 0x28-0x29 | 2 | i16 LE |
 | Accel X | 0x2A-0x2B | 2 | i16 LE |
 | Gyro Y | 0x2C-0x2D | 2 | i16 LE |

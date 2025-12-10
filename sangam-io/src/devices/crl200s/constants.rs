@@ -64,8 +64,8 @@ pub const OFFSET_BATTERY_VOLTAGE_RAW: usize = 0x08; // Raw voltage byte (divide 
 pub const OFFSET_BUMPER_FLAGS: usize = 0x01;
 pub const OFFSET_CLIFF_FLAGS: usize = 0x03;
 pub const OFFSET_DUSTBOX_FLAGS: usize = 0x04;
-pub const OFFSET_WHEEL_RIGHT_ENCODER: usize = 0x10;
-pub const OFFSET_WHEEL_LEFT_ENCODER: usize = 0x18;
+pub const OFFSET_WHEEL_LEFT_ENCODER: usize = 0x10;
+pub const OFFSET_WHEEL_RIGHT_ENCODER: usize = 0x18;
 pub const OFFSET_START_BUTTON: usize = 0x3A;
 pub const OFFSET_DOCK_BUTTON: usize = 0x3E;
 
