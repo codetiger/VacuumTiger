@@ -7,6 +7,7 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
+use crate::core::simd::Float4;
 use crate::core::types::Point2D;
 
 use super::{MapRegion, OccupancyGrid};
@@ -326,18 +327,52 @@ impl FeatureExtractor {
             return None;
         }
 
-        let n = points.len() as f32;
+        let n = points.len();
+        // Use reciprocal multiplication (faster than division on ARM)
+        let inv_n = 1.0 / (n as f32);
 
         // Compute centroid
-        let cx: f32 = points.iter().map(|p| p.x).sum::<f32>() / n;
-        let cy: f32 = points.iter().map(|p| p.y).sum::<f32>() / n;
+        let cx: f32 = points.iter().map(|p| p.x).sum::<f32>() * inv_n;
+        let cy: f32 = points.iter().map(|p| p.y).sum::<f32>() * inv_n;
 
-        // Compute covariance matrix
-        let mut sxx = 0.0f32;
-        let mut syy = 0.0f32;
-        let mut sxy = 0.0f32;
+        // Compute covariance matrix using SIMD for chunks of 4 points
+        let cx_v = Float4::splat(cx);
+        let cy_v = Float4::splat(cy);
+        let mut sxx_v = Float4::splat(0.0);
+        let mut syy_v = Float4::splat(0.0);
+        let mut sxy_v = Float4::splat(0.0);
 
-        for p in points {
+        let chunks = points.len() / 4;
+        for i in 0..chunks {
+            let base = i * 4;
+            let xs = Float4::new([
+                points[base].x,
+                points[base + 1].x,
+                points[base + 2].x,
+                points[base + 3].x,
+            ]);
+            let ys = Float4::new([
+                points[base].y,
+                points[base + 1].y,
+                points[base + 2].y,
+                points[base + 3].y,
+            ]);
+
+            let dxs = xs - cx_v;
+            let dys = ys - cy_v;
+
+            sxx_v += dxs * dxs;
+            syy_v += dys * dys;
+            sxy_v += dxs * dys;
+        }
+
+        // Reduce SIMD accumulators
+        let mut sxx = sxx_v.reduce_add();
+        let mut syy = syy_v.reduce_add();
+        let mut sxy = sxy_v.reduce_add();
+
+        // Handle remainder with scalar
+        for p in points.iter().skip(chunks * 4) {
             let dx = p.x - cx;
             let dy = p.y - cy;
             sxx += dx * dx;

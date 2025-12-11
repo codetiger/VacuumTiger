@@ -23,6 +23,7 @@
 use kiddo::{KdTree, SquaredEuclidean};
 
 use super::icp_common;
+use super::robust_kernels::RobustKernel;
 use super::{ScanMatchResult, ScanMatcher};
 use crate::core::types::{Point2D, PointCloud2D, Pose2D};
 
@@ -64,23 +65,6 @@ impl CachedKdTree {
     pub fn is_empty(&self) -> bool {
         self.point_count == 0
     }
-}
-
-/// Robust kernel type for M-estimator weighting.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub enum RobustKernel {
-    /// No robust weighting (standard least squares)
-    None,
-    /// Huber kernel: linear for large errors, quadratic for small
-    /// Good balance between robustness and efficiency
-    Huber,
-    /// Cauchy kernel: heavy-tailed, very robust to outliers
-    /// ρ(r) = (c²/2) * log(1 + (r/c)²)
-    Cauchy,
-    /// Welsch kernel: smooth, strong outlier rejection
-    /// ρ(r) = (c²/2) * (1 - exp(-(r/c)²))
-    #[default]
-    Welsch,
 }
 
 /// Configuration for Point-to-Point ICP.
@@ -193,29 +177,14 @@ impl PointToPointIcp {
     /// Compute robust kernel weight for a given residual.
     ///
     /// Returns a weight in [0, 1] that down-weights outliers.
-    /// The weight is the derivative of the robust loss function.
-    #[inline]
+    /// Delegates to the shared `RobustKernel::weight()` implementation.
+    ///
+    /// Uses `#[inline(always)]` since this is called in tight correspondence loops.
+    #[inline(always)]
     fn compute_weight(&self, residual_sq: f32) -> f32 {
-        let c = self.config.kernel_scale;
-        let c_sq = c * c;
-        let r_sq = residual_sq;
-
-        match self.config.robust_kernel {
-            RobustKernel::None => 1.0,
-            RobustKernel::Huber => {
-                // Huber weight: 1 for |r| < c, c/|r| for |r| >= c
-                let r = r_sq.sqrt();
-                if r < c { 1.0 } else { c / r }
-            }
-            RobustKernel::Cauchy => {
-                // Cauchy weight: 1 / (1 + (r/c)²)
-                1.0 / (1.0 + r_sq / c_sq)
-            }
-            RobustKernel::Welsch => {
-                // Welsch weight: exp(-(r/c)²)
-                (-r_sq / c_sq).exp()
-            }
-        }
+        self.config
+            .robust_kernel
+            .weight(residual_sq, self.config.kernel_scale)
     }
 
     /// Build a k-d tree from a point cloud.

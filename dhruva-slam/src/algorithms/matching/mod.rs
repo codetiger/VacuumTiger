@@ -77,6 +77,7 @@ mod icp;
 mod icp_common;
 mod multi_resolution;
 mod point_to_line_icp;
+mod robust_kernels;
 #[cfg(test)]
 pub mod test_utils;
 mod validation;
@@ -84,13 +85,14 @@ mod validation;
 pub use correlative::{CorrelativeConfig, CorrelativeMatcher};
 pub use dynamic::{DynMatcher, DynMatcherConfig, MatcherType};
 pub use hybrid::{HybridConfig, HybridMatcher, weighted_initial_guess};
-pub use icp::{CachedKdTree, IcpConfig, PointToPointIcp, RobustKernel};
+pub use icp::{CachedKdTree, IcpConfig, PointToPointIcp};
 pub use icp_common::{
-    ConvergenceTracker, IcpConvergenceConfig, MIN_POINTS_FOR_RELIABLE_MATCH, build_kdtree,
-    mse_to_score, thresholds, validate_scan_sizes,
+    ConvergenceTracker, IcpConvergenceConfig, IdentitySnapConfig, MIN_POINTS_FOR_RELIABLE_MATCH,
+    build_kdtree, maybe_snap_to_identity, mse_to_score, thresholds, validate_scan_sizes,
 };
 pub use multi_resolution::{MultiResolutionConfig, MultiResolutionMatcher};
 pub use point_to_line_icp::{PointToLineIcp, PointToLineIcpConfig};
+pub use robust_kernels::RobustKernel;
 pub use validation::{
     RejectionReason, ScanMatchValidator, ScanMatchValidatorConfig, ValidationResult,
 };

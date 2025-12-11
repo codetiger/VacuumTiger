@@ -493,7 +493,9 @@ impl PointCloud2D {
             total_y += self.ys[i];
         }
 
-        Some(Point2D::new(total_x / n as f32, total_y / n as f32))
+        // Use reciprocal multiplication (faster than division on ARM)
+        let inv_n = 1.0 / (n as f32);
+        Some(Point2D::new(total_x * inv_n, total_y * inv_n))
     }
 
     /// SIMD-accelerated transform of all points by a pose.
@@ -514,25 +516,26 @@ impl PointCloud2D {
 
         let chunks = n / 4;
 
-        // Process 4 points at a time with SIMD
+        // Process 4 points at a time with SIMD using FMA
         for i in 0..chunks {
             let base = i * 4;
             let xs = Float4::new(self.xs[base..base + 4].try_into().unwrap());
             let ys = Float4::new(self.ys[base..base + 4].try_into().unwrap());
 
-            // x' = tx + x*cos - y*sin
-            // y' = ty + x*sin + y*cos
-            let new_xs = tx_v + xs * cos_v - ys * sin_v;
-            let new_ys = ty_v + xs * sin_v + ys * cos_v;
+            // x' = tx + x*cos - y*sin → x*cos + (tx - y*sin)
+            // y' = ty + x*sin + y*cos → x*sin + (ty + y*cos)
+            // Using FMA: mul_add(a,b) = self*a + b, neg_mul_add(a,b) = -self*a + b = b - self*a
+            let new_xs = xs.mul_add(cos_v, ys.neg_mul_add(sin_v, tx_v));
+            let new_ys = xs.mul_add(sin_v, ys.mul_add(cos_v, ty_v));
 
             result.xs[base..base + 4].copy_from_slice(&new_xs.to_array());
             result.ys[base..base + 4].copy_from_slice(&new_ys.to_array());
         }
 
-        // Handle remainder with scalar
+        // Handle remainder with scalar FMA
         for i in (chunks * 4)..n {
-            result.xs[i] = pose.x + self.xs[i] * cos_t - self.ys[i] * sin_t;
-            result.ys[i] = pose.y + self.xs[i] * sin_t + self.ys[i] * cos_t;
+            result.xs[i] = self.xs[i].mul_add(cos_t, (-self.ys[i]).mul_add(sin_t, pose.x));
+            result.ys[i] = self.xs[i].mul_add(sin_t, self.ys[i].mul_add(cos_t, pose.y));
         }
 
         result.intensities = self.intensities.clone();
@@ -551,25 +554,27 @@ impl PointCloud2D {
 
         let chunks = n / 4;
 
-        // Process 4 points at a time with SIMD
+        // Process 4 points at a time with SIMD using FMA
         for i in 0..chunks {
             let base = i * 4;
             let xs = Float4::new(self.xs[base..base + 4].try_into().unwrap());
             let ys = Float4::new(self.ys[base..base + 4].try_into().unwrap());
 
-            let new_xs = tx_v + xs * cos_v - ys * sin_v;
-            let new_ys = ty_v + xs * sin_v + ys * cos_v;
+            // x' = tx + x*cos - y*sin → x*cos + (tx - y*sin)
+            // y' = ty + x*sin + y*cos → x*sin + (ty + y*cos)
+            let new_xs = xs.mul_add(cos_v, ys.neg_mul_add(sin_v, tx_v));
+            let new_ys = xs.mul_add(sin_v, ys.mul_add(cos_v, ty_v));
 
             self.xs[base..base + 4].copy_from_slice(&new_xs.to_array());
             self.ys[base..base + 4].copy_from_slice(&new_ys.to_array());
         }
 
-        // Handle remainder with scalar
+        // Handle remainder with scalar FMA
         for i in (chunks * 4)..n {
-            let new_x = pose.x + self.xs[i] * cos_t - self.ys[i] * sin_t;
-            let new_y = pose.y + self.xs[i] * sin_t + self.ys[i] * cos_t;
-            self.xs[i] = new_x;
-            self.ys[i] = new_y;
+            let old_x = self.xs[i];
+            let old_y = self.ys[i];
+            self.xs[i] = old_x.mul_add(cos_t, (-old_y).mul_add(sin_t, pose.x));
+            self.ys[i] = old_x.mul_add(sin_t, old_y.mul_add(cos_t, pose.y));
         }
     }
 
@@ -589,7 +594,7 @@ impl PointCloud2D {
 
         let chunks = n / 4;
 
-        // Process 4 points at a time with SIMD
+        // Process 4 points at a time with SIMD using FMA
         for i in 0..chunks {
             let base = i * 4;
             let xs = Float4::new(self.xs[base..base + 4].try_into().unwrap());
@@ -598,21 +603,21 @@ impl PointCloud2D {
             let dx = xs - px_v;
             let dy = ys - py_v;
 
-            // x' = dx*cos + dy*sin
-            // y' = -dx*sin + dy*cos
-            let new_xs = dx * cos_v + dy * sin_v;
-            let new_ys = dy * cos_v - dx * sin_v;
+            // x' = dx*cos + dy*sin → dx.mul_add(cos, dy*sin)
+            // y' = dy*cos - dx*sin → dy.mul_add(cos, dx.neg_mul_add(sin, 0)) = dx.neg_mul_add(sin, dy*cos)
+            let new_xs = dx.mul_add(cos_v, dy * sin_v);
+            let new_ys = dx.neg_mul_add(sin_v, dy * cos_v);
 
             result.xs[base..base + 4].copy_from_slice(&new_xs.to_array());
             result.ys[base..base + 4].copy_from_slice(&new_ys.to_array());
         }
 
-        // Handle remainder with scalar
+        // Handle remainder with scalar FMA
         for i in (chunks * 4)..n {
             let dx = self.xs[i] - pose.x;
             let dy = self.ys[i] - pose.y;
-            result.xs[i] = dx * cos_t + dy * sin_t;
-            result.ys[i] = -dx * sin_t + dy * cos_t;
+            result.xs[i] = dx.mul_add(cos_t, dy * sin_t);
+            result.ys[i] = (-dx).mul_add(sin_t, dy * cos_t);
         }
 
         result.intensities = self.intensities.clone();

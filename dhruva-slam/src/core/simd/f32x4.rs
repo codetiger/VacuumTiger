@@ -135,6 +135,81 @@ impl Float4 {
         let sum23 = self.0[2] + self.0[3];
         sum01 + sum23
     }
+
+    /// Fused multiply-add: `(self * a) + b`.
+    ///
+    /// Computes `self * a + b` with better precision and performance than
+    /// separate multiply and add operations. On ARM NEON, this maps to
+    /// `vfmaq_f32` (VFPv4) or equivalent.
+    ///
+    /// # Example
+    /// ```
+    /// use dhruva_slam::core::simd::Float4;
+    /// let a = Float4::new([1.0, 2.0, 3.0, 4.0]);
+    /// let b = Float4::new([2.0, 2.0, 2.0, 2.0]);
+    /// let c = Float4::new([10.0, 10.0, 10.0, 10.0]);
+    /// let result = a.mul_add(b, c);
+    /// // (1*2+10, 2*2+10, 3*2+10, 4*2+10) = (12, 14, 16, 18)
+    /// assert_eq!(result.to_array(), [12.0, 14.0, 16.0, 18.0]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_add(self, a: Self, b: Self) -> Self {
+        Self([
+            self.0[0].mul_add(a.0[0], b.0[0]),
+            self.0[1].mul_add(a.0[1], b.0[1]),
+            self.0[2].mul_add(a.0[2], b.0[2]),
+            self.0[3].mul_add(a.0[3], b.0[3]),
+        ])
+    }
+
+    /// Fused multiply-subtract: `(self * a) - b`.
+    ///
+    /// Computes `self * a - b` with better precision and performance than
+    /// separate multiply and subtract operations.
+    ///
+    /// # Example
+    /// ```
+    /// use dhruva_slam::core::simd::Float4;
+    /// let a = Float4::new([1.0, 2.0, 3.0, 4.0]);
+    /// let b = Float4::new([2.0, 2.0, 2.0, 2.0]);
+    /// let c = Float4::new([1.0, 1.0, 1.0, 1.0]);
+    /// let result = a.mul_sub(b, c);
+    /// // (1*2-1, 2*2-1, 3*2-1, 4*2-1) = (1, 3, 5, 7)
+    /// assert_eq!(result.to_array(), [1.0, 3.0, 5.0, 7.0]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_sub(self, a: Self, b: Self) -> Self {
+        Self([
+            self.0[0].mul_add(a.0[0], -b.0[0]),
+            self.0[1].mul_add(a.0[1], -b.0[1]),
+            self.0[2].mul_add(a.0[2], -b.0[2]),
+            self.0[3].mul_add(a.0[3], -b.0[3]),
+        ])
+    }
+
+    /// Fused negative multiply-add: `-(self * a) + b` = `b - (self * a)`.
+    ///
+    /// Useful for computing expressions like `tx - xs * sin_theta`.
+    ///
+    /// # Example
+    /// ```
+    /// use dhruva_slam::core::simd::Float4;
+    /// let a = Float4::new([1.0, 2.0, 3.0, 4.0]);
+    /// let b = Float4::new([2.0, 2.0, 2.0, 2.0]);
+    /// let c = Float4::new([10.0, 10.0, 10.0, 10.0]);
+    /// let result = a.neg_mul_add(b, c);
+    /// // (10-1*2, 10-2*2, 10-3*2, 10-4*2) = (8, 6, 4, 2)
+    /// assert_eq!(result.to_array(), [8.0, 6.0, 4.0, 2.0]);
+    /// ```
+    #[inline(always)]
+    pub fn neg_mul_add(self, a: Self, b: Self) -> Self {
+        Self([
+            (-self.0[0]).mul_add(a.0[0], b.0[0]),
+            (-self.0[1]).mul_add(a.0[1], b.0[1]),
+            (-self.0[2]).mul_add(a.0[2], b.0[2]),
+            (-self.0[3]).mul_add(a.0[3], b.0[3]),
+        ])
+    }
 }
 
 impl Add for Float4 {
@@ -288,5 +363,52 @@ mod tests {
 
         let zero = Float4::splat(0.0);
         assert_eq!(zero.to_array(), [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_mul_add() {
+        let a = Float4::new([1.0, 2.0, 3.0, 4.0]);
+        let b = Float4::new([2.0, 2.0, 2.0, 2.0]);
+        let c = Float4::new([10.0, 10.0, 10.0, 10.0]);
+        let result = a.mul_add(b, c);
+        // (1*2+10, 2*2+10, 3*2+10, 4*2+10) = (12, 14, 16, 18)
+        assert_eq!(result.to_array(), [12.0, 14.0, 16.0, 18.0]);
+    }
+
+    #[test]
+    fn test_mul_sub() {
+        let a = Float4::new([1.0, 2.0, 3.0, 4.0]);
+        let b = Float4::new([2.0, 2.0, 2.0, 2.0]);
+        let c = Float4::new([1.0, 1.0, 1.0, 1.0]);
+        let result = a.mul_sub(b, c);
+        // (1*2-1, 2*2-1, 3*2-1, 4*2-1) = (1, 3, 5, 7)
+        assert_eq!(result.to_array(), [1.0, 3.0, 5.0, 7.0]);
+    }
+
+    #[test]
+    fn test_neg_mul_add() {
+        let a = Float4::new([1.0, 2.0, 3.0, 4.0]);
+        let b = Float4::new([2.0, 2.0, 2.0, 2.0]);
+        let c = Float4::new([10.0, 10.0, 10.0, 10.0]);
+        let result = a.neg_mul_add(b, c);
+        // (10-1*2, 10-2*2, 10-3*2, 10-4*2) = (8, 6, 4, 2)
+        assert_eq!(result.to_array(), [8.0, 6.0, 4.0, 2.0]);
+    }
+
+    #[test]
+    fn test_fma_rotation_transform() {
+        // Test FMA for 2D rotation: x' = x*cos - y*sin, y' = x*sin + y*cos
+        let xs = Float4::new([1.0, 2.0, 3.0, 4.0]);
+        let ys = Float4::new([0.0, 0.0, 0.0, 0.0]);
+        let cos_t = Float4::splat(0.0); // cos(90°) = 0
+        let sin_t = Float4::splat(1.0); // sin(90°) = 1
+
+        // x' = x*cos - y*sin = x*0 - y*1 = -y
+        let new_xs = xs.mul_sub(cos_t, ys * sin_t);
+        // y' = x*sin + y*cos = x*1 + y*0 = x
+        let new_ys = xs.mul_add(sin_t, ys * cos_t);
+
+        assert_eq!(new_xs.to_array(), [0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(new_ys.to_array(), [1.0, 2.0, 3.0, 4.0]);
     }
 }

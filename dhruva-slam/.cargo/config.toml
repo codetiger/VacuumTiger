@@ -1,4 +1,6 @@
 [target.armv7-unknown-linux-musleabihf]
 linker = "armv7-unknown-linux-musleabihf-gcc"
-# Enable NEON SIMD for auto-vectorization on Cortex-A8 (Allwinner A33)
-rustflags = ["-C", "target-feature=+neon", "-C", "target-cpu=cortex-a7"]
+# Enable NEON SIMD and VFPv3 for auto-vectorization on Cortex-A7 (Allwinner A33)
+# +neon: 128-bit SIMD operations
+# +vfp3: VFP3 floating-point (hardware float)
+rustflags = ["-C", "target-feature=+neon,+vfp3", "-C", "target-cpu=cortex-a7"]

@@ -133,6 +133,14 @@ pub struct OnlineSlamConfig {
     pub lost_threshold: f32,
 
     /// Whether to use scan-to-submap matching (vs scan-to-scan).
+    ///
+    /// **WARNING**: Currently disabled by default due to a semantic mismatch:
+    /// `match_to_submap()` returns an absolute pose in the global frame, but
+    /// `apply_scan_match()` expects a relative transform (delta). This needs
+    /// to be fixed before enabling submap matching.
+    ///
+    /// TODO: Fix `match_to_submap()` to return delta transform instead of
+    /// absolute pose, or modify `apply_scan_match()` to handle both cases.
     pub use_submap_matching: bool,
 
     /// Minimum points in scan to process.

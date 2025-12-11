@@ -8,6 +8,16 @@
 //! 1. **Distance-based trigger**: Only check for loops near previous poses
 //! 2. **Scan context matching**: Use global descriptor for place recognition
 //! 3. **Geometric verification**: Validate matches with scan matching
+//!
+//! # TODO: Future Integration
+//!
+//! This module detects loop closures but does not yet trigger pose graph
+//! optimization. Future work needed:
+//!
+//! - Wire detected closures into `GraphOptimizer` to add edges
+//! - Call optimization when sufficient closures are detected
+//! - Update map after optimization converges
+//! - Add loop closure visualization/diagnostics
 
 use crate::algorithms::matching::{IcpConfig, PointToPointIcp, ScanMatcher};
 use crate::core::types::{PointCloud2D, Pose2D};

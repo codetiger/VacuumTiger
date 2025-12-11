@@ -162,8 +162,7 @@ pub use algorithms::mapping::{
 
 // Algorithms - Localization
 pub use algorithms::localization::{
-    LikelihoodFieldModel, MotionModel, MotionModelConfig, Particle, ParticleFilter,
-    ParticleFilterConfig, ParticleFilterState, SensorModel, SensorModelConfig,
+    LikelihoodFieldModel, MotionModel, MotionModelConfig, SensorModel, SensorModelConfig,
 };
 
 // Engine - SLAM

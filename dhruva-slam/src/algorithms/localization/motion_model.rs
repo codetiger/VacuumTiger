@@ -245,44 +245,43 @@ fn log_gaussian_probability(x: f32, variance: f32) -> f32 {
     -0.5 * (x * x / variance + (2.0 * std::f32::consts::PI * variance).ln())
 }
 
-/// Simple LCG-based RNG for deterministic testing.
-#[derive(Debug, Clone)]
-pub struct SimpleRng {
-    state: u64,
-}
-
-impl SimpleRng {
-    /// Create a new RNG with the given seed.
-    pub fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        // LCG parameters from Numerical Recipes
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        self.state
-    }
-}
-
-impl Rng for SimpleRng {
-    fn gen_f32(&mut self) -> f32 {
-        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
-    }
-
-    fn gen_standard_normal(&mut self) -> f32 {
-        // Box-Muller transform
-        let u1 = self.gen_f32().max(1e-10);
-        let u2 = self.gen_f32();
-        let r = (-2.0 * u1.ln()).sqrt();
-        let theta = 2.0 * std::f32::consts::PI * u2;
-        r * theta.cos()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    /// Simple LCG-based RNG for deterministic testing.
+    #[derive(Debug, Clone)]
+    struct SimpleRng {
+        state: u64,
+    }
+
+    impl SimpleRng {
+        fn new(seed: u64) -> Self {
+            Self { state: seed }
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            // LCG parameters from Numerical Recipes
+            self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            self.state
+        }
+    }
+
+    impl Rng for SimpleRng {
+        fn gen_f32(&mut self) -> f32 {
+            (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+        }
+
+        fn gen_standard_normal(&mut self) -> f32 {
+            // Box-Muller transform
+            let u1 = self.gen_f32().max(1e-10);
+            let u2 = self.gen_f32();
+            let r = (-2.0 * u1.ln()).sqrt();
+            let theta = 2.0 * std::f32::consts::PI * u2;
+            r * theta.cos()
+        }
+    }
 
     #[test]
     fn test_motion_model_no_motion() {

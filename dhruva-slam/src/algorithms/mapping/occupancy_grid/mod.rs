@@ -17,84 +17,15 @@
 //! - Avoids numerical issues at probability extremes
 //! - Easy to clamp values
 
-use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+mod config;
+mod export;
+mod serialization;
+
+pub use config::{CellState, OccupancyGridConfig};
+
 use std::path::Path;
 
 use super::{MapMetadata, MapRegion};
-
-/// Cell state for visualization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CellState {
-    /// Unknown (never observed)
-    Unknown,
-    /// Free space (definitely empty)
-    Free,
-    /// Occupied (definitely contains obstacle)
-    Occupied,
-}
-
-/// Configuration for occupancy grid.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OccupancyGridConfig {
-    /// Cell size in meters.
-    pub resolution: f32,
-
-    /// Initial map width in meters.
-    ///
-    /// Map will grow automatically if needed.
-    pub initial_width: f32,
-
-    /// Initial map height in meters.
-    pub initial_height: f32,
-
-    /// Log-odds value for occupied observation.
-    ///
-    /// Higher = more confident. Typical: 0.9
-    pub log_odds_occupied: f32,
-
-    /// Log-odds value for free observation.
-    ///
-    /// Negative value. Typical: -0.7
-    pub log_odds_free: f32,
-
-    /// Maximum log-odds value (clamp).
-    ///
-    /// Prevents overconfidence. Typical: 50.0
-    pub log_odds_max: f32,
-
-    /// Minimum log-odds value (clamp).
-    ///
-    /// Prevents overconfidence. Typical: -50.0
-    pub log_odds_min: f32,
-
-    /// Log-odds threshold for considering a cell occupied.
-    ///
-    /// Cells above this are drawn as occupied.
-    pub occupied_threshold: f32,
-
-    /// Log-odds threshold for considering a cell free.
-    ///
-    /// Cells below this are drawn as free.
-    pub free_threshold: f32,
-}
-
-impl Default for OccupancyGridConfig {
-    fn default() -> Self {
-        Self {
-            resolution: 0.02,     // 5cm cells
-            initial_width: 20.0,  // 20m
-            initial_height: 20.0, // 20m
-            log_odds_occupied: 0.9,
-            log_odds_free: -0.7,
-            log_odds_max: 50.0,
-            log_odds_min: -50.0,
-            occupied_threshold: 0.5,
-            free_threshold: -0.5,
-        }
-    }
-}
 
 /// 2D occupancy grid map.
 ///
@@ -146,9 +77,44 @@ impl OccupancyGrid {
         }
     }
 
+    /// Create from raw data (used by serialization).
+    pub(crate) fn from_raw(
+        config: OccupancyGridConfig,
+        cells: Vec<f32>,
+        width: usize,
+        height: usize,
+        origin_x: f32,
+        origin_y: f32,
+    ) -> Self {
+        Self {
+            config,
+            cells,
+            width,
+            height,
+            origin_x,
+            origin_y,
+            updated_region: None,
+        }
+    }
+
     /// Get the configuration.
     pub fn config(&self) -> &OccupancyGridConfig {
         &self.config
+    }
+
+    /// Get the raw cells (for serialization).
+    pub(crate) fn cells(&self) -> &[f32] {
+        &self.cells
+    }
+
+    /// Get grid width in cells.
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Get grid height in cells.
+    pub fn height(&self) -> usize {
+        self.height
     }
 
     /// Get grid dimensions.
@@ -400,199 +366,13 @@ impl OccupancyGrid {
 
     /// Save map to a binary file.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
-        let file = File::create(path)?;
-        let mut writer = BufWriter::new(file);
-
-        // Write header
-        let header = MapHeader {
-            magic: MAP_MAGIC,
-            version: MAP_VERSION,
-            width: self.width as u32,
-            height: self.height as u32,
-            resolution: self.config.resolution,
-            origin_x: self.origin_x,
-            origin_y: self.origin_y,
-        };
-
-        // Write header as bytes
-        let header_bytes = unsafe {
-            std::slice::from_raw_parts(
-                &header as *const MapHeader as *const u8,
-                std::mem::size_of::<MapHeader>(),
-            )
-        };
-        writer.write_all(header_bytes)?;
-
-        // Write cell data
-        let cell_bytes = unsafe {
-            std::slice::from_raw_parts(
-                self.cells.as_ptr() as *const u8,
-                self.cells.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        writer.write_all(cell_bytes)?;
-
-        writer.flush()?;
-        Ok(())
+        serialization::save(self, path)
     }
 
     /// Load map from a binary file.
     pub fn load<P: AsRef<Path>>(path: P, config: OccupancyGridConfig) -> std::io::Result<Self> {
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
-
-        // Read header
-        let mut header = MapHeader::default();
-        let header_bytes = unsafe {
-            std::slice::from_raw_parts_mut(
-                &mut header as *mut MapHeader as *mut u8,
-                std::mem::size_of::<MapHeader>(),
-            )
-        };
-        reader.read_exact(header_bytes)?;
-
-        // Validate header
-        if header.magic != MAP_MAGIC {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid map file magic number",
-            ));
-        }
-
-        if header.version != MAP_VERSION {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Unsupported map version: {}", header.version),
-            ));
-        }
-
-        // Read cell data
-        let width = header.width as usize;
-        let height = header.height as usize;
-        let mut cells = vec![0.0f32; width * height];
-
-        let cell_bytes = unsafe {
-            std::slice::from_raw_parts_mut(
-                cells.as_mut_ptr() as *mut u8,
-                cells.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        reader.read_exact(cell_bytes)?;
-
-        Ok(Self {
-            config,
-            cells,
-            width,
-            height,
-            origin_x: header.origin_x,
-            origin_y: header.origin_y,
-            updated_region: None,
-        })
+        serialization::load(path, config)
     }
-
-    /// Export map as grayscale image data.
-    ///
-    /// Returns (width, height, pixels) where pixels are 0-255 grayscale values.
-    /// 0 = free, 128 = unknown, 255 = occupied
-    pub fn to_grayscale(&self) -> (usize, usize, Vec<u8>) {
-        let mut pixels = Vec::with_capacity(self.width * self.height);
-
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let state = self.get_state(x, y);
-                let value = match state {
-                    CellState::Free => 255u8,
-                    CellState::Unknown => 128u8,
-                    CellState::Occupied => 0u8,
-                };
-                pixels.push(value);
-            }
-        }
-
-        (self.width, self.height, pixels)
-    }
-
-    /// Count cells by state.
-    pub fn count_cells(&self) -> (usize, usize, usize) {
-        let mut free = 0;
-        let mut unknown = 0;
-        let mut occupied = 0;
-
-        for &log_odds in &self.cells {
-            if log_odds >= self.config.occupied_threshold {
-                occupied += 1;
-            } else if log_odds <= self.config.free_threshold {
-                free += 1;
-            } else {
-                unknown += 1;
-            }
-        }
-
-        (free, unknown, occupied)
-    }
-
-    /// Get memory usage in bytes.
-    pub fn memory_usage(&self) -> usize {
-        self.cells.len() * std::mem::size_of::<f32>()
-    }
-
-    /// Get all occupied cell centers as world-coordinate points.
-    ///
-    /// Useful for feature extraction algorithms.
-    pub fn occupied_points(&self) -> Vec<crate::core::types::Point2D> {
-        let mut points = Vec::new();
-
-        for cy in 0..self.height {
-            for cx in 0..self.width {
-                if self.get_state(cx, cy) == CellState::Occupied {
-                    let (x, y) = self.cell_to_world(cx, cy);
-                    points.push(crate::core::types::Point2D::new(x, y));
-                }
-            }
-        }
-
-        points
-    }
-
-    /// Get occupied cell centers within a specific region.
-    pub fn occupied_points_in_region(
-        &self,
-        region: &MapRegion,
-    ) -> Vec<crate::core::types::Point2D> {
-        let mut points = Vec::new();
-
-        let min_x = region.min_x.max(0) as usize;
-        let max_x = (region.max_x as usize).min(self.width.saturating_sub(1));
-        let min_y = region.min_y.max(0) as usize;
-        let max_y = (region.max_y as usize).min(self.height.saturating_sub(1));
-
-        for cy in min_y..=max_y {
-            for cx in min_x..=max_x {
-                if self.get_state(cx, cy) == CellState::Occupied {
-                    let (x, y) = self.cell_to_world(cx, cy);
-                    points.push(crate::core::types::Point2D::new(x, y));
-                }
-            }
-        }
-
-        points
-    }
-}
-
-// Map file format constants
-const MAP_MAGIC: u32 = 0x44534D50; // "DSMP" for Dhruva SLAM Map
-const MAP_VERSION: u32 = 1;
-
-#[repr(C)]
-#[derive(Default)]
-struct MapHeader {
-    magic: u32,
-    version: u32,
-    width: u32,
-    height: u32,
-    resolution: f32,
-    origin_x: f32,
-    origin_y: f32,
 }
 
 #[cfg(test)]
@@ -860,14 +640,8 @@ mod tests {
         std::fs::remove_file(temp_path).ok();
     }
 
-    // ========================================================================
-    // Map Quality / Accuracy Tests
-    // ========================================================================
-
     #[test]
     fn test_known_wall_at_correct_position() {
-        // Test that when we mark a wall at a known position,
-        // the occupied cell is at the correct world coordinate
         let config = OccupancyGridConfig {
             resolution: 0.05, // 5cm cells
             initial_width: 10.0,
@@ -876,102 +650,59 @@ mod tests {
         };
         let mut grid = OccupancyGrid::new(config);
 
-        // Mark a wall at position (2.0, 1.5)
         let wall_x = 2.0;
         let wall_y = 1.5;
 
-        // Convert to cell and mark as occupied
         if let Some((cx, cy)) = grid.world_to_cell(wall_x, wall_y) {
             for _ in 0..5 {
                 grid.update_cell(cx, cy, true);
             }
 
-            // Convert cell center back to world
             let (recovered_x, recovered_y) = grid.cell_to_world(cx, cy);
 
-            // Error should be < resolution/2 = 2.5cm
             let error_x = (recovered_x - wall_x).abs();
             let error_y = (recovered_y - wall_y).abs();
 
-            assert!(
-                error_x < grid.resolution(),
-                "X error {:.4}m exceeds resolution {:.4}m",
-                error_x,
-                grid.resolution()
-            );
-            assert!(
-                error_y < grid.resolution(),
-                "Y error {:.4}m exceeds resolution {:.4}m",
-                error_y,
-                grid.resolution()
-            );
-
-            // Cell should be marked occupied
-            assert_eq!(
-                grid.get_state(cx, cy),
-                CellState::Occupied,
-                "Wall cell should be occupied"
-            );
-        } else {
-            panic!("Wall position should be inside grid");
+            assert!(error_x < grid.resolution());
+            assert!(error_y < grid.resolution());
+            assert_eq!(grid.get_state(cx, cy), CellState::Occupied);
         }
     }
 
     #[test]
     fn test_probability_always_bounded() {
-        // Verify probability is always in [0, 1] even after many updates
         let config = OccupancyGridConfig {
-            log_odds_max: 100.0,  // Very high clamp
-            log_odds_min: -100.0, // Very low clamp
+            log_odds_max: 100.0,
+            log_odds_min: -100.0,
             ..Default::default()
         };
         let mut grid = OccupancyGrid::new(config);
 
         let (cx, cy) = grid.world_to_cell(0.0, 0.0).unwrap();
 
-        // Many occupied updates
         for _ in 0..1000 {
             grid.update_cell(cx, cy, true);
         }
         let prob_occupied = grid.get_probability(cx, cy);
-        assert!(
-            prob_occupied >= 0.0 && prob_occupied <= 1.0,
-            "Probability {} out of bounds after many occupied updates",
-            prob_occupied
-        );
-        assert!(
-            prob_occupied > 0.99,
-            "Probability {} should be very high after many occupied updates",
-            prob_occupied
-        );
+        assert!(prob_occupied >= 0.0 && prob_occupied <= 1.0);
+        assert!(prob_occupied > 0.99);
 
-        // Reset and do many free updates
         grid.clear();
         for _ in 0..1000 {
             grid.update_cell(cx, cy, false);
         }
         let prob_free = grid.get_probability(cx, cy);
-        assert!(
-            prob_free >= 0.0 && prob_free <= 1.0,
-            "Probability {} out of bounds after many free updates",
-            prob_free
-        );
-        assert!(
-            prob_free < 0.01,
-            "Probability {} should be very low after many free updates",
-            prob_free
-        );
+        assert!(prob_free >= 0.0 && prob_free <= 1.0);
+        assert!(prob_free < 0.01);
     }
 
     #[test]
     fn test_log_odds_numerical_stability() {
-        // Verify no NaN, Inf, or numerical overflow
         let config = OccupancyGridConfig::default();
         let mut grid = OccupancyGrid::new(config);
 
         let (cx, cy) = grid.world_to_cell(0.0, 0.0).unwrap();
 
-        // Alternate occupied/free to stress test
         for i in 0..10000 {
             grid.update_cell(cx, cy, i % 2 == 0);
         }
@@ -979,22 +710,14 @@ mod tests {
         let log_odds = grid.get_log_odds(cx, cy);
         let prob = grid.get_probability(cx, cy);
 
-        assert!(
-            log_odds.is_finite(),
-            "Log-odds {} should be finite",
-            log_odds
-        );
-        assert!(prob.is_finite(), "Probability {} should be finite", prob);
-        assert!(
-            !log_odds.is_nan(),
-            "Log-odds should not be NaN after stress test"
-        );
-        assert!(!prob.is_nan(), "Probability should not be NaN");
+        assert!(log_odds.is_finite());
+        assert!(prob.is_finite());
+        assert!(!log_odds.is_nan());
+        assert!(!prob.is_nan());
     }
 
     #[test]
     fn test_grid_resize_preserves_accuracy() {
-        // Verify that resize operations preserve data within the original bounds
         let config = OccupancyGridConfig {
             resolution: 0.05,
             initial_width: 2.0,
@@ -1003,7 +726,6 @@ mod tests {
         };
         let mut grid = OccupancyGrid::new(config);
 
-        // Mark a specific position near the center (less likely to be affected by resize)
         let reference_x = 0.5;
         let reference_y = 0.5;
         let (orig_cx, orig_cy) = grid.world_to_cell(reference_x, reference_y).unwrap();
@@ -1012,42 +734,25 @@ mod tests {
             grid.update_cell(orig_cx, orig_cy, true);
         }
         let original_log_odds = grid.get_log_odds(orig_cx, orig_cy);
-        assert!(
-            original_log_odds > 1.0,
-            "Should have high log-odds after 10 occupied updates"
-        );
+        assert!(original_log_odds > 1.0);
 
-        // Expand grid in positive direction only (simpler case)
         grid.ensure_contains(3.0, 3.0);
 
-        // Find the same world position after resize
         let (new_cx, new_cy) = grid.world_to_cell(reference_x, reference_y).unwrap();
         let new_log_odds = grid.get_log_odds(new_cx, new_cy);
 
-        // Log-odds should be preserved (data should be copied correctly)
         assert_relative_eq!(new_log_odds, original_log_odds, epsilon = 0.001);
 
-        // World coordinate of cell should be accurate
         let (recovered_x, recovered_y) = grid.cell_to_world(new_cx, new_cy);
         let error_x = (recovered_x - reference_x).abs();
         let error_y = (recovered_y - reference_y).abs();
 
-        // Allow 1 cell of error from coordinate quantization
-        assert!(
-            error_x < grid.resolution(),
-            "X position error {:.4}m after resize exceeds tolerance",
-            error_x
-        );
-        assert!(
-            error_y < grid.resolution(),
-            "Y position error {:.4}m after resize exceeds tolerance",
-            error_y
-        );
+        assert!(error_x < grid.resolution());
+        assert!(error_y < grid.resolution());
     }
 
     #[test]
     fn test_cell_state_thresholds() {
-        // Verify cell state transitions at correct thresholds
         let config = OccupancyGridConfig {
             occupied_threshold: 0.5,
             free_threshold: -0.5,
@@ -1059,38 +764,24 @@ mod tests {
 
         let (cx, cy) = grid.world_to_cell(0.0, 0.0).unwrap();
 
-        // Initially unknown (log_odds = 0)
         assert_eq!(grid.get_state(cx, cy), CellState::Unknown);
 
-        // 3 occupied updates = 0.6 log_odds > 0.5 threshold
         grid.update_cell(cx, cy, true);
         grid.update_cell(cx, cy, true);
         grid.update_cell(cx, cy, true);
-        assert_eq!(
-            grid.get_state(cx, cy),
-            CellState::Occupied,
-            "Should be occupied at log_odds = {}",
-            grid.get_log_odds(cx, cy)
-        );
+        assert_eq!(grid.get_state(cx, cy), CellState::Occupied);
 
-        // Clear and do free updates
         grid.clear();
         grid.update_cell(cx, cy, false);
         grid.update_cell(cx, cy, false);
         grid.update_cell(cx, cy, false);
-        assert_eq!(
-            grid.get_state(cx, cy),
-            CellState::Free,
-            "Should be free at log_odds = {}",
-            grid.get_log_odds(cx, cy)
-        );
+        assert_eq!(grid.get_state(cx, cy), CellState::Free);
     }
 
     #[test]
     fn test_coordinate_conversion_round_trip() {
-        // Test that world -> cell -> world is accurate
         let config = OccupancyGridConfig {
-            resolution: 0.05, // 5cm
+            resolution: 0.05,
             initial_width: 20.0,
             initial_height: 20.0,
             ..Default::default()
@@ -1109,26 +800,11 @@ mod tests {
             if let Some((cx, cy)) = grid.world_to_cell(wx, wy) {
                 let (rx, ry) = grid.cell_to_world(cx, cy);
 
-                // Error should be < resolution (cell centers)
                 let error_x = (rx - wx).abs();
                 let error_y = (ry - wy).abs();
 
-                assert!(
-                    error_x < grid.resolution(),
-                    "X round-trip error {:.4}m for ({:.3}, {:.3})",
-                    error_x,
-                    wx,
-                    wy
-                );
-                assert!(
-                    error_y < grid.resolution(),
-                    "Y round-trip error {:.4}m for ({:.3}, {:.3})",
-                    error_y,
-                    wx,
-                    wy
-                );
-            } else {
-                panic!("Point ({}, {}) should be inside grid", wx, wy);
+                assert!(error_x < grid.resolution());
+                assert!(error_y < grid.resolution());
             }
         }
     }

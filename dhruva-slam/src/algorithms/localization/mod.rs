@@ -1,37 +1,20 @@
 //! Localization module (Phase 6).
 //!
-//! Provides Monte Carlo Localization (MCL) for robot pose estimation
-//! within a known map.
+//! Provides motion and sensor models for robot localization.
 //!
 //! # Components
 //!
 //! - [`MotionModel`]: Odometry-based motion model with configurable noise
 //! - [`SensorModel`]: Likelihood field sensor model for laser scans
-//! - [`ParticleFilter`]: Full MCL implementation with adaptive resampling
 //!
-//! # Example
+//! # Future Work
 //!
-//! ```ignore
-//! use dhruva_slam::localization::{ParticleFilter, ParticleFilterConfig};
-//! use dhruva_slam::mapping::OccupancyGrid;
-//!
-//! let config = ParticleFilterConfig::default();
-//! let mut filter = ParticleFilter::new(config, initial_pose, &map);
-//!
-//! // Predict step with odometry
-//! filter.predict(&odom_delta);
-//!
-//! // Update step with laser scan
-//! filter.update(&scan, &map);
-//!
-//! // Get best estimate
-//! let pose = filter.estimate();
-//! ```
+//! Monte Carlo Localization (particle filter) was removed as it was not
+//! integrated into the SLAM pipeline. It can be re-added when needed for
+//! global localization or kidnapped robot recovery.
 
 mod motion_model;
-mod particle_filter;
 mod sensor_model;
 
 pub use motion_model::{MotionModel, MotionModelConfig};
-pub use particle_filter::{Particle, ParticleFilter, ParticleFilterConfig, ParticleFilterState};
 pub use sensor_model::{LikelihoodFieldModel, SensorModel, SensorModelConfig};

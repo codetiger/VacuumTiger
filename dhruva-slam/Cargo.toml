@@ -31,14 +31,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.23"
 
 [profile.release]
-opt-level = "z"         # Optimize for size
+opt-level = 3           # Optimize for speed (enables auto-vectorization)
 lto = true              # Link-time optimization
 codegen-units = 1       # Single codegen unit for better optimization
 panic = "abort"         # Abort on panic (smaller than unwinding)
 strip = true            # Strip symbols from binary
-
-[profile.release.build-override]
-opt-level = "z"
 
 [[example]]
 name = "dhruva_slam_node"

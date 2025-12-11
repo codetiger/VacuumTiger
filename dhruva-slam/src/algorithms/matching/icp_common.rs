@@ -195,6 +195,71 @@ impl IcpConvergenceConfig {
     }
 }
 
+/// Configuration for identity snapping in ICP.
+///
+/// Identity snapping prevents drift in static/slow-motion scenarios where the
+/// scan matcher might introduce small errors even when the robot hasn't moved.
+#[derive(Debug, Clone, Copy)]
+pub struct IdentitySnapConfig {
+    /// Minimum match score to consider snapping (0.0-1.0).
+    pub min_score: f32,
+    /// Maximum translation to consider "near identity" (meters).
+    pub max_translation: f32,
+    /// Maximum rotation to consider "near identity" (radians).
+    pub max_rotation: f32,
+}
+
+impl Default for IdentitySnapConfig {
+    fn default() -> Self {
+        Self {
+            min_score: 0.95,
+            max_translation: 0.03, // 3cm - typical encoder noise
+            max_rotation: 0.05,    // ~3° - typical gyro/P2L drift
+        }
+    }
+}
+
+/// Potentially snap a transform to the initial guess if both are near identity.
+///
+/// This prevents quantization drift in static/slow-motion scenarios where
+/// the scan matcher might introduce small rotation errors (aperture problem).
+///
+/// # Arguments
+/// * `score` - Match quality score (0.0-1.0)
+/// * `initial_guess` - The initial transform estimate (e.g., from odometry)
+/// * `result_transform` - The computed transform from scan matching
+/// * `config` - Identity snap configuration
+///
+/// # Returns
+/// Either the original `result_transform` or `initial_guess` if snapping is triggered.
+#[inline]
+pub fn maybe_snap_to_identity(
+    score: f32,
+    initial_guess: &Pose2D,
+    result_transform: &Pose2D,
+    config: &IdentitySnapConfig,
+) -> Pose2D {
+    if score < config.min_score {
+        return *result_transform;
+    }
+
+    let init_trans = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt();
+    let init_rot = initial_guess.theta.abs();
+    let result_trans = (result_transform.x.powi(2) + result_transform.y.powi(2)).sqrt();
+    let result_rot = result_transform.theta.abs();
+
+    // Snap to initial guess if both transforms are near-identity
+    if init_trans < config.max_translation
+        && init_rot < config.max_rotation
+        && result_trans < config.max_translation
+        && result_rot < config.max_rotation
+    {
+        *initial_guess
+    } else {
+        *result_transform
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -21,172 +21,19 @@
 //!
 //! - Censi, A. "An ICP variant using a point-to-line metric"
 
+mod config;
+mod correspondence;
+mod gauss_newton;
+mod line2d;
+
+pub use config::PointToLineIcpConfig;
+
 use kiddo::{KdTree, SquaredEuclidean};
 
-use super::icp_common;
+use super::icp_common::{self, IdentitySnapConfig, maybe_snap_to_identity};
 use super::{ScanMatchResult, ScanMatcher};
-use crate::core::types::{Covariance2D, Point2D, PointCloud2D, Pose2D};
-
-/// Configuration for Point-to-Line ICP.
-#[derive(Debug, Clone)]
-pub struct PointToLineIcpConfig {
-    /// Maximum number of iterations.
-    pub max_iterations: u32,
-
-    /// Convergence threshold for translation (meters).
-    pub translation_epsilon: f32,
-
-    /// Convergence threshold for rotation (radians).
-    pub rotation_epsilon: f32,
-
-    /// Maximum correspondence distance (meters).
-    pub max_correspondence_distance: f32,
-
-    /// Minimum number of valid correspondences required.
-    pub min_correspondences: usize,
-
-    /// Outlier rejection ratio (0.0 to 1.0).
-    pub outlier_ratio: f32,
-
-    /// Number of neighbors to use for line fitting.
-    ///
-    /// More neighbors = smoother lines but less local detail.
-    /// Typically 5-10.
-    pub line_neighbors: usize,
-
-    /// Minimum line fit quality (R² value).
-    ///
-    /// Correspondences with poor line fits are rejected.
-    pub min_line_quality: f32,
-}
-
-impl Default for PointToLineIcpConfig {
-    fn default() -> Self {
-        Self {
-            max_iterations: 50,
-            translation_epsilon: 0.001,
-            rotation_epsilon: 0.001,
-            max_correspondence_distance: 0.5,
-            min_correspondences: 10,
-            outlier_ratio: 0.1,
-            line_neighbors: 5,
-            min_line_quality: 0.8,
-        }
-    }
-}
-
-/// A line in 2D space represented as ax + by + c = 0.
-///
-/// Normalized so that a² + b² = 1.
-#[derive(Debug, Clone, Copy)]
-struct Line2D {
-    /// Normal vector x component
-    a: f32,
-    /// Normal vector y component
-    b: f32,
-    /// Distance from origin
-    c: f32,
-    /// Fit quality (R² value, 0-1)
-    quality: f32,
-}
-
-impl Line2D {
-    /// Fit a line through a set of points using least squares.
-    ///
-    /// Returns None if fewer than 2 points or points are collinear.
-    fn fit(points: &[Point2D]) -> Option<Self> {
-        if points.len() < 2 {
-            return None;
-        }
-
-        let n = points.len() as f32;
-
-        // Compute centroid
-        let cx: f32 = points.iter().map(|p| p.x).sum::<f32>() / n;
-        let cy: f32 = points.iter().map(|p| p.y).sum::<f32>() / n;
-
-        // Compute covariance matrix elements
-        let mut sxx = 0.0f32;
-        let mut syy = 0.0f32;
-        let mut sxy = 0.0f32;
-
-        for p in points {
-            let dx = p.x - cx;
-            let dy = p.y - cy;
-            sxx += dx * dx;
-            syy += dy * dy;
-            sxy += dx * dy;
-        }
-
-        // Eigenvalue decomposition for 2x2 symmetric matrix
-        // The line direction is the eigenvector with larger eigenvalue
-        let trace = sxx + syy;
-        let det = sxx * syy - sxy * sxy;
-        let discriminant = (trace * trace / 4.0 - det).max(0.0);
-        let sqrt_disc = discriminant.sqrt();
-
-        let lambda1 = trace / 2.0 + sqrt_disc; // Larger eigenvalue
-        let lambda2 = trace / 2.0 - sqrt_disc; // Smaller eigenvalue
-
-        // Quality is ratio of eigenvalues (1.0 = perfect line)
-        let quality = if lambda1 > 1e-10 {
-            1.0 - (lambda2 / lambda1)
-        } else {
-            0.0
-        };
-
-        // Normal vector is eigenvector of smaller eigenvalue
-        // For [sxx, sxy; sxy, syy], eigenvector of lambda2 is [sxy, lambda2 - sxx]
-        // or [-lambda2 + syy, sxy] (perpendicular to line direction)
-        let (a, b) = if sxy.abs() > 1e-10 {
-            (sxy, lambda2 - sxx)
-        } else if sxx > syy {
-            // Line is horizontal (y = const)
-            (0.0, 1.0)
-        } else {
-            // Line is vertical (x = const)
-            (1.0, 0.0)
-        };
-
-        // Normalize
-        let norm = (a * a + b * b).sqrt();
-        if norm < 1e-10 {
-            return None;
-        }
-
-        let a = a / norm;
-        let b = b / norm;
-
-        // c = -(ax + by) for a point on the line (use centroid)
-        let c = -(a * cx + b * cy);
-
-        Some(Self { a, b, c, quality })
-    }
-
-    /// Compute signed distance from a point to the line.
-    #[inline]
-    fn distance(&self, p: &Point2D) -> f32 {
-        self.a * p.x + self.b * p.y + self.c
-    }
-
-    /// Project a point onto the line (used in tests).
-    #[cfg(test)]
-    fn project(&self, p: &Point2D) -> Point2D {
-        let d = self.distance(p);
-        Point2D::new(p.x - self.a * d, p.y - self.b * d)
-    }
-}
-
-/// Correspondence between a source point and a target line.
-#[derive(Debug)]
-struct Correspondence {
-    /// Index in source cloud
-    source_idx: usize,
-    /// Target line (fitted from neighbors)
-    target_line: Line2D,
-    /// Squared distance to line
-    distance_sq: f32,
-}
+use crate::core::types::{Covariance2D, PointCloud2D, Pose2D};
+use correspondence::{Correspondence, find_correspondences_into};
 
 /// Point-to-Line ICP scan matcher.
 ///
@@ -238,197 +85,6 @@ impl PointToLineIcp {
     #[inline]
     fn build_kdtree(cloud: &PointCloud2D) -> KdTree<f32, 2> {
         icp_common::build_kdtree(cloud)
-    }
-
-    /// Find correspondences with line fitting into preallocated buffer.
-    /// Assumes transform_source() was called before this.
-    fn find_correspondences_into(
-        &self,
-        target: &PointCloud2D,
-        target_tree: &KdTree<f32, 2>,
-        output: &mut Vec<Correspondence>,
-    ) {
-        output.clear();
-        let max_dist_sq = self.config.max_correspondence_distance.powi(2);
-
-        for i in 0..self.transformed_source.len() {
-            // Use pre-transformed source point
-            let tx = self.transformed_source.xs[i];
-            let ty = self.transformed_source.ys[i];
-            let transformed = Point2D::new(tx, ty);
-
-            // Find k nearest neighbors in target
-            let neighbors =
-                target_tree.nearest_n::<SquaredEuclidean>(&[tx, ty], self.config.line_neighbors);
-
-            if neighbors.is_empty() {
-                continue;
-            }
-
-            // Check if closest is within range
-            let closest_dist_sq = neighbors[0].distance;
-            if closest_dist_sq > max_dist_sq {
-                continue;
-            }
-
-            // Gather neighbor points for line fitting using stack array
-            const MAX_LINE_NEIGHBORS: usize = 16;
-            let mut neighbor_points: [Point2D; MAX_LINE_NEIGHBORS] =
-                [Point2D::default(); MAX_LINE_NEIGHBORS];
-            let mut neighbor_count = 0;
-
-            for n in neighbors.iter() {
-                if n.distance <= max_dist_sq * 4.0 && neighbor_count < MAX_LINE_NEIGHBORS {
-                    neighbor_points[neighbor_count] = target.point_at(n.item as usize);
-                    neighbor_count += 1;
-                }
-            }
-
-            if neighbor_count < 2 {
-                continue;
-            }
-
-            // Fit line through neighbors
-            if let Some(line) = Line2D::fit(&neighbor_points[..neighbor_count]) {
-                if line.quality < self.config.min_line_quality {
-                    continue;
-                }
-
-                // Compute point-to-line distance
-                let dist_to_line = line.distance(&transformed);
-                let dist_sq = dist_to_line * dist_to_line;
-
-                output.push(Correspondence {
-                    source_idx: i,
-                    target_line: line,
-                    distance_sq: dist_sq,
-                });
-            }
-        }
-
-        // Apply outlier rejection
-        if self.config.outlier_ratio > 0.0 && !output.is_empty() {
-            output.sort_by(|a, b| a.distance_sq.partial_cmp(&b.distance_sq).unwrap());
-
-            let keep_count = ((1.0 - self.config.outlier_ratio) * output.len() as f32) as usize;
-            output.truncate(keep_count.max(self.config.min_correspondences));
-        }
-    }
-
-    /// Compute optimal transform using point-to-line minimization.
-    ///
-    /// Minimizes sum of squared point-to-line distances.
-    /// Assumes transform_source() was called before this with current_transform.
-    /// Uses original source coordinates for Jacobian (derivative of rotation).
-    fn compute_transform(
-        &self,
-        source: &PointCloud2D,
-        correspondences: &[Correspondence],
-        current_transform: &Pose2D,
-    ) -> Pose2D {
-        if correspondences.len() < 3 {
-            return Pose2D::identity();
-        }
-
-        let (sin_t, cos_t) = current_transform.theta.sin_cos();
-
-        // Build linear system: A * [dx, dy, dtheta]^T = b
-        // Using Gauss-Newton with point-to-line residuals
-        //
-        // Residual for correspondence i:
-        // r_i = n_i · (R(theta) * p_i + t - q_i)
-        // where n_i is line normal, p_i is source point, q_i is target point
-        //
-        // Linearized:
-        // ∂r/∂x = n_x
-        // ∂r/∂y = n_y
-        // ∂r/∂theta = n_x * (-sin(theta) * p_x - cos(theta) * p_y)
-        //           + n_y * (cos(theta) * p_x - sin(theta) * p_y)
-
-        // Normal equations: H * delta = g
-        // H = J^T * J (6x6 for 3D, 3x3 for 2D)
-        // g = -J^T * r
-
-        // Initialize 3x3 system
-        let mut h = [[0.0f32; 3]; 3]; // Hessian approximation
-        let mut g = [0.0f32; 3]; // Gradient
-
-        for corr in correspondences {
-            // Original source coordinates for Jacobian (derivative is w.r.t. original point)
-            let px_orig = source.xs[corr.source_idx];
-            let py_orig = source.ys[corr.source_idx];
-            let n_x = corr.target_line.a;
-            let n_y = corr.target_line.b;
-
-            // Use pre-transformed source point for residual
-            let px = self.transformed_source.xs[corr.source_idx];
-            let py = self.transformed_source.ys[corr.source_idx];
-
-            // Residual: r = n · p_transformed + c
-            let r = n_x * px + n_y * py + corr.target_line.c;
-
-            // Jacobian row
-            // The derivative ∂r/∂θ uses the original point because:
-            // p_transformed = R(θ) * p_original + t
-            // So ∂p_transformed/∂θ = ∂R/∂θ * p_original
-            let j0 = n_x;
-            let j1 = n_y;
-            let j2 = n_x * (-sin_t * px_orig - cos_t * py_orig)
-                + n_y * (cos_t * px_orig - sin_t * py_orig);
-
-            // Accumulate H = J^T * J
-            h[0][0] += j0 * j0;
-            h[0][1] += j0 * j1;
-            h[0][2] += j0 * j2;
-            h[1][0] += j1 * j0;
-            h[1][1] += j1 * j1;
-            h[1][2] += j1 * j2;
-            h[2][0] += j2 * j0;
-            h[2][1] += j2 * j1;
-            h[2][2] += j2 * j2;
-
-            // Accumulate g = -J^T * r
-            g[0] -= j0 * r;
-            g[1] -= j1 * r;
-            g[2] -= j2 * r;
-        }
-
-        // Solve 3x3 system using Cramer's rule (small system, direct solve)
-        let det = h[0][0] * (h[1][1] * h[2][2] - h[1][2] * h[2][1])
-            - h[0][1] * (h[1][0] * h[2][2] - h[1][2] * h[2][0])
-            + h[0][2] * (h[1][0] * h[2][1] - h[1][1] * h[2][0]);
-
-        if det.abs() < 1e-10 {
-            return Pose2D::identity();
-        }
-
-        let inv_det = 1.0 / det;
-
-        // Compute inverse of H
-        let h_inv = [
-            [
-                (h[1][1] * h[2][2] - h[1][2] * h[2][1]) * inv_det,
-                (h[0][2] * h[2][1] - h[0][1] * h[2][2]) * inv_det,
-                (h[0][1] * h[1][2] - h[0][2] * h[1][1]) * inv_det,
-            ],
-            [
-                (h[1][2] * h[2][0] - h[1][0] * h[2][2]) * inv_det,
-                (h[0][0] * h[2][2] - h[0][2] * h[2][0]) * inv_det,
-                (h[0][2] * h[1][0] - h[0][0] * h[1][2]) * inv_det,
-            ],
-            [
-                (h[1][0] * h[2][1] - h[1][1] * h[2][0]) * inv_det,
-                (h[0][1] * h[2][0] - h[0][0] * h[2][1]) * inv_det,
-                (h[0][0] * h[1][1] - h[0][1] * h[1][0]) * inv_det,
-            ],
-        ];
-
-        // delta = H^-1 * g
-        let dx = h_inv[0][0] * g[0] + h_inv[0][1] * g[1] + h_inv[0][2] * g[2];
-        let dy = h_inv[1][0] * g[0] + h_inv[1][1] * g[1] + h_inv[1][2] * g[2];
-        let dtheta = h_inv[2][0] * g[0] + h_inv[2][1] * g[1] + h_inv[2][2] * g[2];
-
-        Pose2D::new(dx, dy, dtheta)
     }
 
     /// Compute mean squared error of correspondences (point-to-line distance).
@@ -510,7 +166,7 @@ impl PointToLineIcp {
         target_tree: &KdTree<f32, 2>,
         initial_guess: &Pose2D,
     ) -> ScanMatchResult {
-        // FIX #3: Sparse scan handling - accept with lower confidence
+        // Sparse scan handling - accept with lower confidence
         // Real lidar scans typically have 100-360 points after preprocessing
         // Threshold of 30 allows tests with synthetic clouds to pass
         const MIN_POINTS_FOR_RELIABLE_MATCH: usize = 30;
@@ -539,7 +195,7 @@ impl PointToLineIcp {
         let mut current_transform = *initial_guess;
         let mut iterations = 0u32;
 
-        // FIX #1: Consecutive failure tracking - only terminate after multiple bad iterations
+        // Consecutive failure tracking - only terminate after multiple bad iterations
         let mut consecutive_increases = 0u32;
         const MAX_CONSECUTIVE_INCREASES: u32 = 3;
         let mut last_mse = f32::MAX;
@@ -551,7 +207,13 @@ impl PointToLineIcp {
             self.transform_source(source, &current_transform);
 
             // Find correspondences with line fitting using pre-transformed cloud
-            self.find_correspondences_into(target, target_tree, &mut corr_buffer);
+            find_correspondences_into(
+                &self.config,
+                &self.transformed_source,
+                target,
+                target_tree,
+                &mut corr_buffer,
+            );
 
             if corr_buffer.len() < self.config.min_correspondences {
                 // Return buffer before early exit
@@ -560,7 +222,12 @@ impl PointToLineIcp {
             }
 
             // Compute incremental transform (needs original source for Jacobian)
-            let delta = self.compute_transform(source, &corr_buffer, &current_transform);
+            let delta = gauss_newton::compute_transform(
+                source,
+                &self.transformed_source,
+                &corr_buffer,
+                &current_transform,
+            );
 
             // Apply delta
             current_transform = current_transform.compose(&delta);
@@ -579,65 +246,32 @@ impl PointToLineIcp {
                 let p2p_mse = self.compute_p2p_mse(target, target_tree);
                 let score = self.mse_to_score(p2p_mse);
 
-                // Identity snapping: If we have a high-quality match and both the initial guess
-                // and final transform are very close to identity, snap to the initial guess.
-                // This prevents quantization drift in static/slow-motion scenarios.
-                //
-                // We check translation and rotation separately with appropriate thresholds:
-                // - Translation: 3cm (typical encoder noise)
-                // - Rotation: 0.05 rad (~3°, typical gyro/P2L drift for static scans)
-                let final_transform = if score > 0.95 {
-                    let init_trans = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt();
-                    let init_rot = initial_guess.theta.abs();
-                    let curr_trans =
-                        (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt();
-                    let curr_rot = current_transform.theta.abs();
-
-                    // If both initial guess and result are near-identity, snap to initial
-                    // This prevents P2L aperture problem from causing rotation drift
-                    if init_trans < 0.03 && init_rot < 0.05 && curr_trans < 0.03 && curr_rot < 0.05
-                    {
-                        *initial_guess
-                    } else {
-                        current_transform
-                    }
-                } else {
-                    current_transform
-                };
+                // Identity snapping: prevent drift in static/slow-motion scenarios
+                let snap_config = IdentitySnapConfig::default();
+                let final_transform =
+                    maybe_snap_to_identity(score, initial_guess, &current_transform, &snap_config);
 
                 // Return buffer before early exit
                 self.correspondence_buffer = corr_buffer;
                 return ScanMatchResult::success(final_transform, score, iterations, p2p_mse);
             }
 
-            // FIX #4: Transform-based convergence - if delta is tiny, accept
+            // Transform-based convergence - if delta is tiny, accept
             if translation_change < 0.001 && rotation_change < 0.001 {
                 // Compute point-to-point MSE for fair comparison
                 let p2p_mse = self.compute_p2p_mse(target, target_tree);
                 let score = self.mse_to_score(p2p_mse);
 
-                // Identity snapping (same as above)
-                let final_transform = if score > 0.95 {
-                    let init_trans = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt();
-                    let init_rot = initial_guess.theta.abs();
-                    let curr_trans =
-                        (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt();
-                    let curr_rot = current_transform.theta.abs();
-                    if init_trans < 0.03 && init_rot < 0.05 && curr_trans < 0.03 && curr_rot < 0.05
-                    {
-                        *initial_guess
-                    } else {
-                        current_transform
-                    }
-                } else {
-                    current_transform
-                };
+                // Identity snapping: prevent drift in static/slow-motion scenarios
+                let snap_config = IdentitySnapConfig::default();
+                let final_transform =
+                    maybe_snap_to_identity(score, initial_guess, &current_transform, &snap_config);
 
                 self.correspondence_buffer = corr_buffer;
                 return ScanMatchResult::success(final_transform, score, iterations, p2p_mse);
             }
 
-            // FIX #1: Check if MSE is diverging (consecutive check)
+            // Check if MSE is diverging (consecutive check)
             // Only count as increase if worse than last iteration by significant margin
             if mse > last_mse * 1.1 {
                 consecutive_increases += 1;
@@ -653,26 +287,22 @@ impl PointToLineIcp {
 
         // Max iterations reached - compute final quality
         self.transform_source(source, &current_transform);
-        self.find_correspondences_into(target, target_tree, &mut corr_buffer);
+        find_correspondences_into(
+            &self.config,
+            &self.transformed_source,
+            target,
+            target_tree,
+            &mut corr_buffer,
+        );
 
         // Use point-to-point MSE for fair comparison with other algorithms
         let p2p_mse = self.compute_p2p_mse(target, target_tree);
         let score = self.mse_to_score(p2p_mse);
 
         // Identity snapping for max-iteration case
-        let final_transform = if score > 0.95 {
-            let init_trans = (initial_guess.x.powi(2) + initial_guess.y.powi(2)).sqrt();
-            let init_rot = initial_guess.theta.abs();
-            let curr_trans = (current_transform.x.powi(2) + current_transform.y.powi(2)).sqrt();
-            let curr_rot = current_transform.theta.abs();
-            if init_trans < 0.03 && init_rot < 0.05 && curr_trans < 0.03 && curr_rot < 0.05 {
-                *initial_guess
-            } else {
-                current_transform
-            }
-        } else {
-            current_transform
-        };
+        let snap_config = IdentitySnapConfig::default();
+        let final_transform =
+            maybe_snap_to_identity(score, initial_guess, &current_transform, &snap_config);
 
         // Return buffer for reuse
         self.correspondence_buffer = corr_buffer;
@@ -714,6 +344,7 @@ impl ScanMatcher for PointToLineIcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::types::Point2D;
     use approx::assert_relative_eq;
 
     /// Create an L-shaped point cloud (two perpendicular walls)
@@ -761,91 +392,6 @@ mod tests {
             cloud.push(Point2D::new(0.0, y));
         }
         cloud
-    }
-
-    #[test]
-    fn test_line_fit_horizontal() {
-        let points = vec![
-            Point2D::new(0.0, 0.0),
-            Point2D::new(1.0, 0.0),
-            Point2D::new(2.0, 0.0),
-            Point2D::new(3.0, 0.0),
-        ];
-
-        let line = Line2D::fit(&points).unwrap();
-
-        // Horizontal line: y = 0, or 0*x + 1*y + 0 = 0
-        assert!(
-            line.quality > 0.99,
-            "Quality should be high: {}",
-            line.quality
-        );
-        assert!(line.b.abs() > 0.99, "Should be near horizontal");
-    }
-
-    #[test]
-    fn test_line_fit_vertical() {
-        let points = vec![
-            Point2D::new(0.0, 0.0),
-            Point2D::new(0.0, 1.0),
-            Point2D::new(0.0, 2.0),
-            Point2D::new(0.0, 3.0),
-        ];
-
-        let line = Line2D::fit(&points).unwrap();
-
-        assert!(line.quality > 0.99);
-        assert!(line.a.abs() > 0.99, "Should be near vertical");
-    }
-
-    #[test]
-    fn test_line_fit_diagonal() {
-        let points = vec![
-            Point2D::new(0.0, 0.0),
-            Point2D::new(1.0, 1.0),
-            Point2D::new(2.0, 2.0),
-            Point2D::new(3.0, 3.0),
-        ];
-
-        let line = Line2D::fit(&points).unwrap();
-
-        assert!(line.quality > 0.99);
-        // For y = x, normal is [1, -1]/sqrt(2) or [-1, 1]/sqrt(2)
-        assert_relative_eq!(line.a.abs(), line.b.abs(), epsilon = 0.01);
-    }
-
-    #[test]
-    fn test_line_distance() {
-        let line = Line2D {
-            a: 0.0,
-            b: 1.0,
-            c: -1.0, // y = 1
-            quality: 1.0,
-        };
-
-        let p1 = Point2D::new(0.0, 1.0);
-        let p2 = Point2D::new(0.0, 2.0);
-        let p3 = Point2D::new(0.0, 0.0);
-
-        assert_relative_eq!(line.distance(&p1), 0.0, epsilon = 0.001);
-        assert_relative_eq!(line.distance(&p2), 1.0, epsilon = 0.001);
-        assert_relative_eq!(line.distance(&p3), -1.0, epsilon = 0.001);
-    }
-
-    #[test]
-    fn test_line_project() {
-        let line = Line2D {
-            a: 0.0,
-            b: 1.0,
-            c: -1.0, // y = 1
-            quality: 1.0,
-        };
-
-        let p = Point2D::new(5.0, 3.0);
-        let projected = line.project(&p);
-
-        assert_relative_eq!(projected.x, 5.0, epsilon = 0.001);
-        assert_relative_eq!(projected.y, 1.0, epsilon = 0.001);
     }
 
     #[test]
