@@ -47,3 +47,25 @@ initial_mode = "Mapping"
 # Lidar range filter (meters)
 min_range = 0.15
 max_range = 8.0
+
+[lidar]
+# Lidar offset configuration (follows TF transform convention like GMapping, Cartographer)
+# Coordinate frame: X=forward, Y=left, Theta=CCW (ROS REP-103)
+#
+# Calibrated using Python ICP tool (tools/icp_calibration.py) on rotate_3min.bag
+
+# 1. Lidar housing mounting position relative to robot center (meters)
+#    This is robot-specific - measured from robot center to lidar housing center
+mounting_x = -0.0936  # 93.6mm behind robot center (calibrated)
+mounting_y = 0.0      # Centered on robot axis
+
+# 2. Optical center offset (meters) - RADIAL
+#    Distance from lidar housing geometric center to actual laser origin (rotating scanner)
+#    This is a RADIAL offset - added to each range measurement along the laser beam direction
+#    It corrects for the scanner being offset from the housing center, not a fixed X/Y translation
+optical_offset = 0.0258  # 25.8mm radial offset (calibrated)
+
+# 3. Angular offset (radians)
+#    Rotation of lidar's 0° relative to robot forward
+#    Positive = CCW when viewed from above
+angle_offset = 0.0

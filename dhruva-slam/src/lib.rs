@@ -141,8 +141,8 @@ pub use sensors::odometry::{
 // Sensors - Preprocessing
 pub use sensors::preprocessing::{
     AngularDownsampler, AngularDownsamplerConfig, DynamicFilter, DynamicFilterConfig,
-    DynamicFilterStats, OutlierFilter, OutlierFilterConfig, PreprocessorConfig, RangeFilter,
-    RangeFilterConfig, ScanConverter, ScanFilter, ScanPreprocessor,
+    DynamicFilterStats, LidarOffset, OutlierFilter, OutlierFilterConfig, PreprocessorConfig,
+    RangeFilter, RangeFilterConfig, ScanConverter, ScanFilter, ScanPreprocessor,
 };
 
 // Algorithms - Matching

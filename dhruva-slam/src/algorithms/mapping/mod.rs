@@ -23,10 +23,14 @@
 //! map.save("map.bin")?;
 //! ```
 
+mod features;
 mod integrator;
 mod occupancy_grid;
 mod ray_tracer;
 
+pub use features::{
+    Corner, CornerType, FeatureExtractor, FeatureExtractorConfig, LineSegment, MapFeatures,
+};
 pub use integrator::{MapIntegrator, MapIntegratorConfig};
 pub use occupancy_grid::{CellState, OccupancyGrid, OccupancyGridConfig};
 pub use ray_tracer::RayTracer;

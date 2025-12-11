@@ -1,42 +1,75 @@
-//! dhruva-slam-node daemon
+//! Focused SLAM Node: MultiRes + Mahony + Feature Maps
 //!
-//! Connects to SangamIO, computes odometry and SLAM, and publishes data for visualization.
+//! Production-optimized SLAM daemon using:
+//! - **Matcher**: MultiResolution correlative scan matching (99.7% wall coherence)
+//! - **Odometry**: Mahony AHRS filter (auto-calibrating gyro fusion)
+//! - **Maps**: Dual representation (Occupancy Grid + Feature-based)
 //!
 //! # Usage
 //!
 //! ```bash
 //! # With default config
-//! cargo run --bin dhruva-slam-node
+//! cargo run --release --example dhruva_slam_node
 //!
 //! # With custom config file
-//! cargo run --bin dhruva-slam-node -- --config dhruva-slam.toml
+//! cargo run --release --example dhruva_slam_node -- --config dhruva-slam.toml
 //!
 //! # With command line overrides
-//! cargo run --bin dhruva-slam-node -- --sangam 192.168.68.101:5555 --port 5557
+//! cargo run --release --example dhruva_slam_node -- --sangam 192.168.68.101:5555 --port 5557
 //! ```
 
-use dhruva_slam::{
-    AngularDownsamplerConfig, ComplementaryConfig, LaserScan, OdometryPipeline,
-    OdometryPipelineConfig, OdometryPublisher, OnlineSlam, OnlineSlamConfig, OutlierFilterConfig,
-    Pose2D, PoseTracker, PreprocessorConfig, RangeFilterConfig, SangamClient, ScanPreprocessor,
-    SlamEngine, SlamMode, WheelOdometryConfig,
-};
-use serde::Deserialize;
 use std::fs;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-/// Configuration file structure
+use serde::Deserialize;
+
+use dhruva_slam::SangamClient;
+use dhruva_slam::algorithms::mapping::{
+    CellState, FeatureExtractor, FeatureExtractorConfig, MapIntegrator, MapIntegratorConfig,
+    OccupancyGrid, OccupancyGridConfig,
+};
+use dhruva_slam::algorithms::matching::{
+    MultiResolutionConfig, MultiResolutionMatcher, ScanMatcher,
+};
+use dhruva_slam::core::types::{LaserScan, PointCloud2D, Pose2D, PoseTracker};
+use dhruva_slam::io::bag::{BagMessage, BagPlayer};
+use dhruva_slam::io::streaming::OdometryPublisher;
+use dhruva_slam::sensors::odometry::{
+    DynOdometry, DynOdometryConfig, MahonyConfig, OdometryType, WheelOdometryConfig,
+};
+use dhruva_slam::sensors::preprocessing::{
+    AngularDownsamplerConfig, LidarOffset, OutlierFilterConfig, PreprocessorConfig,
+    RangeFilterConfig, ScanPreprocessor,
+};
+use dhruva_slam::utils::{WHEEL_BASE, WHEEL_TICKS_PER_METER};
+
+// ============================================================================
+// Hardware Calibration Constants (from benchmarks)
+// ============================================================================
+
+/// Lidar housing mounting position relative to robot center (meters)
+const LIDAR_MOUNTING_X: f32 = -0.110; // 110mm behind center
+const LIDAR_MOUNTING_Y: f32 = 0.0; // Centered on robot axis
+
+/// Optical center offset from housing center (meters)
+const LIDAR_OPTICAL_OFFSET: f32 = 0.02;
+
+/// Angular offset if lidar 0 degrees is not aligned with robot forward
+const LIDAR_ANGLE_OFFSET: f32 = 12.5;
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
 #[derive(Debug, Deserialize, Default)]
 struct Config {
     #[serde(default)]
     source: SourceConfig,
     #[serde(default)]
     output: OutputConfig,
-    #[serde(default)]
-    odometry: OdometryConfig,
     #[serde(default)]
     slam: SlamConfig,
 }
@@ -60,8 +93,8 @@ impl Default for SourceConfig {
 struct OutputConfig {
     bind_port: u16,
     odometry_rate_hz: f32,
-    slam_status_rate_hz: f32,
-    slam_map_rate_hz: f32,
+    map_rate_hz: f32,
+    feature_rate_hz: f32,
 }
 
 impl Default for OutputConfig {
@@ -69,34 +102,8 @@ impl Default for OutputConfig {
         Self {
             bind_port: 5557,
             odometry_rate_hz: 50.0,
-            slam_status_rate_hz: 5.0,
-            slam_map_rate_hz: 1.0,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(default)]
-struct OdometryConfig {
-    /// Odometry fusion mode: "wheel" for wheel-only, "complementary" for gyro fusion
-    mode: String,
-    ticks_per_meter: f32,
-    wheel_base: f32,
-    alpha: f32,
-    gyro_scale: f32,
-    gyro_bias_z: f32,
-}
-
-impl Default for OdometryConfig {
-    fn default() -> Self {
-        Self {
-            mode: "wheel".to_string(), // Default to wheel-only for best accuracy
-            ticks_per_meter: 1000.0,
-            wheel_base: 0.17,
-            alpha: 0.98,
-            // CRL-200S: raw units are 0.1 deg/s, convert to rad/s
-            gyro_scale: 0.1 * (std::f32::consts::PI / 180.0),
-            gyro_bias_z: 0.0,
+            map_rate_hz: 1.0,
+            feature_rate_hz: 0.2, // Every 5 seconds
         }
     }
 }
@@ -104,38 +111,29 @@ impl Default for OdometryConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 struct SlamConfig {
-    enabled: bool,
-    initial_mode: String,
     min_range: f32,
     max_range: f32,
-    /// Encoder weight for scan matching initial guess (0.0 = identity, 1.0 = full odometry).
-    /// Based on slam_benchmark: 1.0 gives best results with HybridP2L matcher.
-    encoder_weight: f32,
-    /// Whether to use scan-to-submap matching (vs scan-to-scan).
-    use_submap_matching: bool,
 }
 
 impl Default for SlamConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            initial_mode: "Mapping".to_string(),
-            min_range: 0.15, // 15cm minimum range (filter close returns)
+            min_range: 0.15, // 15cm minimum range
             max_range: 8.0,  // 8m maximum range
-            // Based on slam_benchmark results: full trust in encoder for best accuracy
-            encoder_weight: 1.0,
-            // Use scan-to-scan matching (like slam_benchmark) - proven 94.5% wall coherence
-            use_submap_matching: false,
         }
     }
 }
 
-/// Command line arguments
+// ============================================================================
+// CLI Arguments
+// ============================================================================
+
 struct Args {
     config_path: Option<String>,
     sangam_address: Option<String>,
     bind_port: Option<u16>,
-    odometry_mode: Option<String>,
+    bag_file: Option<String>,
+    loop_bag: bool,
 }
 
 fn parse_args() -> Args {
@@ -144,7 +142,8 @@ fn parse_args() -> Args {
         config_path: None,
         sangam_address: None,
         bind_port: None,
-        odometry_mode: None,
+        bag_file: None,
+        loop_bag: false,
     };
 
     let mut i = 1;
@@ -168,11 +167,14 @@ fn parse_args() -> Args {
                     i += 1;
                 }
             }
-            "--odometry" | "-o" => {
+            "--bag" | "-b" => {
                 if i + 1 < args.len() {
-                    result.odometry_mode = Some(args[i + 1].clone());
+                    result.bag_file = Some(args[i + 1].clone());
                     i += 1;
                 }
+            }
+            "--loop" | "-l" => {
+                result.loop_bag = true;
             }
             "--help" | "-h" => {
                 print_help();
@@ -191,7 +193,7 @@ fn parse_args() -> Args {
 }
 
 fn print_help() {
-    println!("dhruva-slam-node - SLAM and odometry daemon");
+    println!("dhruva-slam-node - Focused SLAM daemon (MultiRes + Mahony + Features)");
     println!();
     println!("USAGE:");
     println!("    dhruva-slam-node [OPTIONS]");
@@ -200,7 +202,8 @@ fn print_help() {
     println!("    -c, --config <FILE>     Configuration file (dhruva-slam.toml)");
     println!("    -s, --sangam <ADDR>     SangamIO address (192.168.68.101:5555)");
     println!("    -p, --port <PORT>       TCP publish port (5557)");
-    println!("    -o, --odometry <MODE>   Odometry mode: wheel or complementary (default: wheel)");
+    println!("    -b, --bag <FILE>        Bag file for offline playback (instead of SangamIO)");
+    println!("    -l, --loop              Loop bag file playback");
     println!("    -h, --help              Print help information");
 }
 
@@ -209,16 +212,16 @@ fn load_config(args: &Args) -> Config {
         Some(path) => match fs::read_to_string(path) {
             Ok(contents) => match basic_toml::from_str(&contents) {
                 Ok(cfg) => {
-                    eprintln!("Loaded config from {}", path);
+                    log::info!("Loaded config from {}", path);
                     cfg
                 }
                 Err(e) => {
-                    eprintln!("Failed to parse config {}: {}", path, e);
+                    log::warn!("Failed to parse config {}: {}", path, e);
                     Config::default()
                 }
             },
             Err(e) => {
-                eprintln!("Failed to read config {}: {}", path, e);
+                log::warn!("Failed to read config {}: {}", path, e);
                 Config::default()
             }
         },
@@ -228,7 +231,7 @@ fn load_config(args: &Args) -> Config {
                 if let Ok(contents) = fs::read_to_string(path)
                     && let Ok(cfg) = basic_toml::from_str(&contents)
                 {
-                    eprintln!("Loaded config from {}", path);
+                    log::info!("Loaded config from {}", path);
                     return apply_overrides(cfg, args);
                 }
             }
@@ -246,11 +249,12 @@ fn apply_overrides(mut config: Config, args: &Args) -> Config {
     if let Some(port) = args.bind_port {
         config.output.bind_port = port;
     }
-    if let Some(mode) = &args.odometry_mode {
-        config.odometry.mode = mode.clone();
-    }
     config
 }
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
 
 fn main() {
     // Initialize logging
@@ -266,19 +270,21 @@ fn main() {
         })
         .init();
 
-    // Parse arguments and load config
     let args = parse_args();
     let config = load_config(&args);
 
-    log::info!("dhruva-slam-node starting...");
-    log::info!("  SangamIO: {}", config.source.sangam_address);
-    log::info!("  Wire format: Protobuf");
-    log::info!("  Publish port: {}", config.output.bind_port);
-    log::info!("  Output rate: {} Hz", config.output.odometry_rate_hz);
-    log::info!("  SLAM enabled: {}", config.slam.enabled);
-    if config.slam.enabled {
-        log::info!("  SLAM mode: {}", config.slam.initial_mode);
+    log::info!("dhruva-slam-node starting (focused implementation)");
+    if let Some(ref bag) = args.bag_file {
+        log::info!("  Input: Bag file {}", bag);
+        if args.loop_bag {
+            log::info!("  Loop: enabled");
+        }
+    } else {
+        log::info!("  SangamIO: {}", config.source.sangam_address);
     }
+    log::info!("  Publish port: {}", config.output.bind_port);
+    log::info!("  Algorithm: MultiRes + Mahony");
+    log::info!("  Output: Occupancy Grid + Features");
 
     // Setup signal handler
     let running = Arc::new(AtomicBool::new(true));
@@ -290,19 +296,40 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Run main loop with reconnection
-    while running.load(Ordering::Relaxed) {
-        if let Err(e) = run_main_loop(&config, running.clone()) {
-            log::error!("Main loop error: {}", e);
-            if running.load(Ordering::Relaxed) {
-                log::info!("Reconnecting in 5 seconds...");
-                std::thread::sleep(Duration::from_secs(5));
+    // Run main loop - bag or live mode
+    if let Some(ref bag_path) = args.bag_file {
+        // Bag file playback mode
+        loop {
+            if !running.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Err(e) = run_bag_loop(&config, bag_path, running.clone()) {
+                log::error!("Bag playback error: {}", e);
+            }
+            if !args.loop_bag || !running.load(Ordering::Relaxed) {
+                break;
+            }
+            log::info!("Looping bag file...");
+        }
+    } else {
+        // Live SangamIO mode with reconnection
+        while running.load(Ordering::Relaxed) {
+            if let Err(e) = run_main_loop(&config, running.clone()) {
+                log::error!("Main loop error: {}", e);
+                if running.load(Ordering::Relaxed) {
+                    log::info!("Reconnecting in 5 seconds...");
+                    std::thread::sleep(Duration::from_secs(5));
+                }
             }
         }
     }
 
     log::info!("dhruva-slam-node shutdown complete");
 }
+
+// ============================================================================
+// Main Processing Loop
+// ============================================================================
 
 fn run_main_loop(
     config: &Config,
@@ -314,84 +341,38 @@ fn run_main_loop(
         config.source.sangam_address
     );
     let mut client = SangamClient::connect(&config.source.sangam_address)?;
-    log::info!("Connected to SangamIO (format: Protobuf)");
+    log::info!("Connected to SangamIO");
 
     // Start publisher
     let publisher = OdometryPublisher::new(config.output.bind_port)?;
     log::info!("Publisher listening on port {}", config.output.bind_port);
 
-    // Initialize odometry pipeline
-    // For wheel-only mode, set alpha=0 (ignore gyro) and disable gyro calibration
-    let use_wheel_only = config.odometry.mode.to_lowercase() == "wheel";
-    let pipeline_config = OdometryPipelineConfig {
-        wheel_odom: WheelOdometryConfig {
-            ticks_per_meter: config.odometry.ticks_per_meter,
-            wheel_base: config.odometry.wheel_base,
-        },
-        filter: ComplementaryConfig {
-            // alpha=0 means pure wheel odometry (ignore gyro for heading)
-            alpha: if use_wheel_only {
-                0.0
-            } else {
-                config.odometry.alpha
+    // Initialize Mahony AHRS odometry (auto-calibrating)
+    let mut odometry = DynOdometry::new(
+        OdometryType::Mahony,
+        DynOdometryConfig {
+            wheel: WheelOdometryConfig {
+                ticks_per_meter: WHEEL_TICKS_PER_METER,
+                wheel_base: WHEEL_BASE,
             },
-            gyro_scale: config.odometry.gyro_scale,
-            gyro_bias_z: config.odometry.gyro_bias_z,
-            ..ComplementaryConfig::default() // Uses gyro_sign=-1.0 for CRL-200S
-        },
-        output_rate_hz: config.output.odometry_rate_hz,
-        // Skip gyro calibration for wheel-only mode
-        calibration_samples: if use_wheel_only { 0 } else { 330 },
-    };
-    let mut pipeline = OdometryPipeline::new(pipeline_config);
-
-    // Initialize SLAM if enabled
-    let mut slam: Option<OnlineSlam> = if config.slam.enabled {
-        // Configure SLAM with encoder weight and matching settings
-        let slam_config = OnlineSlamConfig {
-            encoder_weight: config.slam.encoder_weight,
-            use_submap_matching: config.slam.use_submap_matching,
+            mahony: MahonyConfig::default(),
             ..Default::default()
-        };
-
-        let mut slam_engine = OnlineSlam::new(slam_config);
-
-        // Set initial mode
-        let mode = match config.slam.initial_mode.to_lowercase().as_str() {
-            "mapping" => SlamMode::Mapping,
-            "localization" => SlamMode::Localization,
-            "idle" => SlamMode::Idle,
-            _ => {
-                log::warn!(
-                    "Unknown SLAM mode '{}', defaulting to Mapping",
-                    config.slam.initial_mode
-                );
-                SlamMode::Mapping
-            }
-        };
-        slam_engine.set_mode(mode);
-        Some(slam_engine)
-    } else {
-        None
-    };
-
-    log::info!("Pipeline initialized");
-    log::info!(
-        "  odometry_mode: {}",
-        if use_wheel_only {
-            "wheel-only"
-        } else {
-            "complementary"
-        }
+        },
     );
-    log::info!("  ticks_per_meter: {}", config.odometry.ticks_per_meter);
-    log::info!("  wheel_base: {} m", config.odometry.wheel_base);
-    if !use_wheel_only {
-        log::info!("  alpha: {}", config.odometry.alpha);
-        log::info!("  gyro_scale: {}", config.odometry.gyro_scale);
-        log::info!("Gyro calibration: collecting 1500 samples (~3 seconds)...");
-    }
-    // Initialize scan preprocessor (matching slam_benchmark configuration)
+    log::info!("Odometry: Mahony AHRS (auto-calibrating gyro fusion)");
+
+    // Initialize MultiResolution scan matcher
+    let mut matcher = MultiResolutionMatcher::new(MultiResolutionConfig::default());
+    log::info!("Matcher: MultiResolution correlative");
+
+    // Initialize occupancy grid map
+    let mut map = OccupancyGrid::new(OccupancyGridConfig::default());
+    let integrator = MapIntegrator::new(MapIntegratorConfig::default());
+
+    // Initialize feature extractor
+    let mut feature_extractor = FeatureExtractor::new(FeatureExtractorConfig::default());
+
+    // Initialize scan preprocessor
     let preprocessor = ScanPreprocessor::new(PreprocessorConfig {
         range_filter: RangeFilterConfig {
             min_range: config.slam.min_range,
@@ -399,180 +380,447 @@ fn run_main_loop(
         },
         outlier_filter: OutlierFilterConfig::default(),
         downsampler: AngularDownsamplerConfig {
-            target_points: 180,                   // ~180 points for 360° scan (2° resolution)
-            min_angle_step: 1.0_f32.to_radians(), // 1 degree minimum spacing
+            target_points: 180,
+            min_angle_step: 1.0_f32.to_radians(),
         },
+        lidar_offset: LidarOffset::new(
+            LIDAR_MOUNTING_X,
+            LIDAR_MOUNTING_Y,
+            LIDAR_OPTICAL_OFFSET,
+            LIDAR_ANGLE_OFFSET,
+        ),
     });
 
-    if config.slam.enabled {
-        log::info!("SLAM matcher: HybridP2L (Correlative + Point-to-Line ICP)");
-        log::info!("  encoder_weight: {}", config.slam.encoder_weight);
-        log::info!(
-            "  matching_mode: {}",
-            if config.slam.use_submap_matching {
-                "scan-to-submap"
-            } else {
-                "scan-to-scan"
-            }
-        );
-        log::info!(
-            "  preprocessing: range={:.2}-{:.2}m, downsample=1deg",
-            config.slam.min_range,
-            config.slam.max_range
-        );
-    }
-
-    let mut last_log_time = Instant::now();
-    let mut last_status_time = Instant::now();
-    let mut last_map_time = Instant::now();
-    let mut msg_count = 0u64;
-    let mut lidar_count = 0u64;
-
-    // Use PoseTracker for odometry delta computation
+    // Pose tracking
     let mut odom_tracker = PoseTracker::new();
-
-    // Track SLAM-corrected pose for consistent visualization
-    // When SLAM is active, we publish SLAM pose + odometry delta for high-frequency updates
+    let mut slam_pose = Pose2D::identity();
     let mut slam_base_pose = Pose2D::identity();
-    let mut slam_odom_snapshot = PoseTracker::new(); // Tracks odometry at SLAM updates
+    let mut slam_odom_snapshot = PoseTracker::new();
 
-    // Rate limiting intervals
-    let status_interval = Duration::from_secs_f32(1.0 / config.output.slam_status_rate_hz);
-    let map_interval = Duration::from_secs_f32(1.0 / config.output.slam_map_rate_hz);
+    // Rate limiting
+    let map_interval = Duration::from_secs_f32(1.0 / config.output.map_rate_hz);
+    let feature_interval = Duration::from_secs_f32(1.0 / config.output.feature_rate_hz);
+    let mut last_map_time = Instant::now();
+    let mut last_feature_time = Instant::now();
+    let mut last_log_time = Instant::now();
+
+    // Statistics
+    let mut scans_processed = 0u64;
+    let mut _odom_updates = 0u64;
+
+    log::info!("Processing started");
+    log::info!(
+        "  Range filter: {:.2}-{:.2}m",
+        config.slam.min_range,
+        config.slam.max_range
+    );
+    log::info!("  Map rate: {} Hz", config.output.map_rate_hz);
+    log::info!("  Feature rate: {} Hz", config.output.feature_rate_hz);
 
     // Main processing loop
+    let mut msg_count = 0u64;
     while running.load(Ordering::Relaxed) {
-        // Receive message from SangamIO (blocking)
         let msg = client.recv()?;
         let timestamp_us = msg.timestamp_us();
+        msg_count += 1;
 
-        // Process sensor_status messages (odometry)
+        // Log message types periodically
+        if msg_count % 500 == 0 {
+            log::info!("Received {} messages, group_id: {}", msg_count, msg.group_id());
+        }
+
+        // Process sensor_status messages (odometry @ 110Hz)
         if msg.group_id() == "sensor_status" {
-            // Extract encoder and gyro data
             let (left, right) = match msg.encoder_ticks() {
                 Some(ticks) => ticks,
                 None => continue,
             };
-
             let gyro_yaw = msg.gyro_yaw_raw().unwrap_or(0);
 
-            // Process through pipeline
-            if let Some(odom_pose) = pipeline.process(left, right, gyro_yaw, timestamp_us) {
-                // Update odometry tracker with current pose
+            // Update odometry
+            if let Some(odom_pose) = odometry.update(left, right, gyro_yaw, timestamp_us) {
                 odom_tracker.set(odom_pose);
 
-                // When SLAM is active, publish SLAM pose + odometry delta for consistent visualization
-                // This ensures the robot marker stays aligned with the SLAM-built map
-                let published_pose = if slam.is_some() {
-                    // Compute odometry delta since last SLAM update using PoseTracker
-                    let odom_delta = slam_odom_snapshot
-                        .snapshot_pose()
-                        .inverse()
-                        .compose(&odom_pose);
-                    // Apply delta to SLAM-corrected base pose
-                    slam_base_pose.compose(&odom_delta)
-                } else {
-                    // No SLAM, use raw odometry
-                    odom_pose
-                };
+                // Compute SLAM-corrected pose for publishing
+                let odom_delta = slam_odom_snapshot
+                    .snapshot_pose()
+                    .inverse()
+                    .compose(&odom_pose);
+                let published_pose = slam_base_pose.compose(&odom_delta);
                 publisher.publish_pose(&published_pose, timestamp_us);
-                msg_count += 1;
-            }
-
-            // Publish diagnostics periodically
-            if let Some(diagnostics) = pipeline.diagnostics(timestamp_us) {
-                publisher.publish_diagnostics(&diagnostics);
+                _odom_updates += 1;
             }
         }
-        // Process lidar messages (SLAM)
-        else if msg.group_id() == "lidar"
-            && let Some(slam_engine) = slam.as_mut()
-            && let Some(lidar_data) = msg.as_lidar()
-        {
-            // Convert to LaserScan and preprocess (same as slam_benchmark)
-            // This applies: range filtering, outlier removal, angular downsampling
+        // Process lidar messages (SLAM @ ~5Hz)
+        else if msg.group_id() == "lidar" {
+            let lidar_data = match msg.as_lidar() {
+                Some(data) => data,
+                None => {
+                    log::warn!("Lidar message but as_lidar() returned None");
+                    continue;
+                }
+            };
+
+            // Preprocess scan
             let laser_scan = LaserScan::from_lidar_scan(lidar_data.data);
             let scan_cloud = preprocessor.process(&laser_scan);
+            log::debug!("Lidar scan: {} raw points -> {} processed", lidar_data.data.len(), scan_cloud.len());
 
-            // Skip if scan is too sparse after preprocessing
+            // Skip sparse scans
             if scan_cloud.len() < 50 {
                 continue;
             }
 
-            // Compute odometry delta since last SLAM update using PoseTracker
+            // Compute odometry delta since last scan
             let odom_delta = odom_tracker.delta_since_snapshot();
+            let predicted_pose = slam_pose.compose(&odom_delta);
 
-            // Process scan through SLAM
-            let result = slam_engine.process_scan(&scan_cloud, &odom_delta, timestamp_us);
+            // Scan-to-map matching
+            if scans_processed > 0 {
+                let map_cloud = map_to_point_cloud(&map);
+                if map_cloud.len() >= 50 {
+                    // Transform map to local frame relative to predicted pose
+                    let map_local = map_cloud.transform(&predicted_pose.inverse());
 
-            // Update SLAM base pose for consistent odometry publishing
-            // Store both the SLAM-corrected pose and the current odometry state
-            slam_base_pose = result.pose;
+                    // Match scan against local-frame map
+                    let match_result =
+                        matcher.match_scans(&scan_cloud, &map_local, &Pose2D::identity());
+
+                    if match_result.score > 0.3 {
+                        slam_pose = predicted_pose.compose(&match_result.transform);
+                    } else {
+                        slam_pose = predicted_pose;
+                    }
+                } else {
+                    slam_pose = predicted_pose;
+                }
+            }
+
+            // Integrate scan into map
+            let global_scan = scan_cloud.transform(&slam_pose);
+            integrator.integrate_cloud(&mut map, &global_scan, &slam_pose);
+
+            // Update pose tracking
+            slam_base_pose = slam_pose;
             slam_odom_snapshot.set(odom_tracker.pose());
             slam_odom_snapshot.take_snapshot();
-
-            // Take snapshot for next delta computation
             odom_tracker.take_snapshot();
 
-            // Publish scan with SLAM-corrected pose
-            publisher.publish_slam_scan(&scan_cloud, &result.pose, timestamp_us);
-
-            lidar_count += 1;
+            // Publish scan
+            publisher.publish_slam_scan(&scan_cloud, &slam_pose, timestamp_us);
+            scans_processed += 1;
         }
 
-        // Publish SLAM status and diagnostics at configured rate
-        if let Some(slam_engine) = slam.as_ref()
-            && last_status_time.elapsed() >= status_interval
-        {
-            let status = slam_engine.status();
-            publisher.publish_slam_status(&status);
-
-            // Publish diagnostics at the same rate as status
-            let diagnostics = slam_engine.diagnostics(timestamp_us);
-            publisher.publish_slam_diagnostics(&diagnostics);
-
-            last_status_time = Instant::now();
-        }
-
-        // Publish SLAM map at configured rate
-        if let Some(slam_engine) = slam.as_mut()
-            && last_map_time.elapsed() >= map_interval
-        {
-            let map = slam_engine.global_map();
-            publisher.publish_slam_map(map, timestamp_us);
+        // Publish map periodically
+        if last_map_time.elapsed() >= map_interval {
+            let occupied_count = count_occupied_cells(&map);
+            let (map_width, map_height) = map.dimensions();
+            log::info!(
+                "Publishing map: {}x{} cells, {} occupied, {} clients",
+                map_width,
+                map_height,
+                occupied_count,
+                publisher.client_count()
+            );
+            publisher.publish_slam_map(&map, timestamp_us);
             last_map_time = Instant::now();
+        }
+
+        // Extract and publish features periodically
+        if last_feature_time.elapsed() >= feature_interval {
+            let features = feature_extractor.extract(&map);
+            publisher.publish_features(&features, timestamp_us);
+            last_feature_time = Instant::now();
+
+            log::debug!(
+                "Features: {} lines, {} corners",
+                features.lines.len(),
+                features.corners.len()
+            );
         }
 
         // Log statistics periodically
         if last_log_time.elapsed() >= Duration::from_secs(10) {
-            let pose = pipeline.pose();
-            if let Some(slam_engine) = slam.as_ref() {
-                let status = slam_engine.status();
-                log::info!(
-                    "Pose: x={:.3}m y={:.3}m θ={:.1}° | SLAM: {:?} match={:.0}% kf={} | {} clients | {} odom {} lidar",
-                    pose.x,
-                    pose.y,
-                    pose.theta.to_degrees(),
-                    status.mode,
-                    status.last_match_score * 100.0,
-                    status.num_keyframes,
-                    publisher.client_count(),
-                    msg_count,
-                    lidar_count
-                );
-            } else {
-                log::info!(
-                    "Pose: x={:.3}m y={:.3}m θ={:.1}° | {} clients | {} msgs",
-                    pose.x,
-                    pose.y,
-                    pose.theta.to_degrees(),
-                    publisher.client_count(),
-                    msg_count
-                );
-            }
+            let (width, height) = map.dimensions();
+            let occupied = count_occupied_cells(&map);
+            log::info!(
+                "Pose: ({:.2}, {:.2}, {:.1}deg) | Map: {}x{} ({} occupied) | {} scans | {} clients",
+                slam_pose.x,
+                slam_pose.y,
+                slam_pose.theta.to_degrees(),
+                width,
+                height,
+                occupied,
+                scans_processed,
+                publisher.client_count()
+            );
             last_log_time = Instant::now();
         }
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Bag File Playback Loop
+// ============================================================================
+
+fn run_bag_loop(
+    config: &Config,
+    bag_path: &str,
+    running: Arc<AtomicBool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Open bag file
+    log::info!("Opening bag file: {}", bag_path);
+    let mut player = BagPlayer::open(bag_path)?;
+    player.set_speed(1.0); // Real-time playback
+
+    // Start publisher
+    let publisher = OdometryPublisher::new(config.output.bind_port)?;
+    log::info!("Publisher listening on port {}", config.output.bind_port);
+
+    // Initialize Mahony AHRS odometry (auto-calibrating)
+    let mut odometry = DynOdometry::new(
+        OdometryType::Mahony,
+        DynOdometryConfig {
+            wheel: WheelOdometryConfig {
+                ticks_per_meter: WHEEL_TICKS_PER_METER,
+                wheel_base: WHEEL_BASE,
+            },
+            mahony: MahonyConfig::default(),
+            ..Default::default()
+        },
+    );
+
+    // Initialize MultiResolution scan matcher
+    let mut matcher = MultiResolutionMatcher::new(MultiResolutionConfig::default());
+
+    // Initialize occupancy grid map
+    let mut map = OccupancyGrid::new(OccupancyGridConfig::default());
+    let integrator = MapIntegrator::new(MapIntegratorConfig::default());
+
+    // Initialize feature extractor
+    let mut feature_extractor = FeatureExtractor::new(FeatureExtractorConfig::default());
+
+    // Initialize scan preprocessor
+    let preprocessor = ScanPreprocessor::new(PreprocessorConfig {
+        range_filter: RangeFilterConfig {
+            min_range: config.slam.min_range,
+            max_range: config.slam.max_range,
+        },
+        outlier_filter: OutlierFilterConfig::default(),
+        downsampler: AngularDownsamplerConfig {
+            target_points: 180,
+            min_angle_step: 1.0_f32.to_radians(),
+        },
+        lidar_offset: LidarOffset::new(
+            LIDAR_MOUNTING_X,
+            LIDAR_MOUNTING_Y,
+            LIDAR_OPTICAL_OFFSET,
+            LIDAR_ANGLE_OFFSET,
+        ),
+    });
+
+    // Pose tracking
+    let mut odom_tracker = PoseTracker::new();
+    let mut slam_pose = Pose2D::identity();
+    let mut slam_base_pose = Pose2D::identity();
+    let mut slam_odom_snapshot = PoseTracker::new();
+
+    // Rate limiting
+    let map_interval = Duration::from_secs_f32(1.0 / config.output.map_rate_hz);
+    let feature_interval = Duration::from_secs_f32(1.0 / config.output.feature_rate_hz);
+    let mut last_map_time = Instant::now();
+    let mut last_feature_time = Instant::now();
+    let mut last_log_time = Instant::now();
+
+    // Statistics
+    let mut scans_processed = 0u64;
+    let mut last_timestamp_us = 0u64;
+
+    log::info!("Bag playback started");
+
+    // Main processing loop
+    while running.load(Ordering::Relaxed) {
+        let msg = match player.next() {
+            Ok(Some(m)) => m,
+            Ok(None) => {
+                log::info!("End of bag file reached");
+                break;
+            }
+            Err(e) => {
+                log::error!("Bag read error: {}", e);
+                break;
+            }
+        };
+
+        match msg {
+            BagMessage::SensorStatus(status) => {
+                let timestamp_us = status.timestamp_us;
+                last_timestamp_us = timestamp_us;
+
+                // Update odometry
+                if let Some(odom_pose) = odometry.update(
+                    status.encoder.left,
+                    status.encoder.right,
+                    status.gyro_raw[2],
+                    timestamp_us,
+                ) {
+                    odom_tracker.set(odom_pose);
+
+                    // Compute SLAM-corrected pose for publishing
+                    let odom_delta = slam_odom_snapshot
+                        .snapshot_pose()
+                        .inverse()
+                        .compose(&odom_pose);
+                    let published_pose = slam_base_pose.compose(&odom_delta);
+                    publisher.publish_pose(&published_pose, timestamp_us);
+                }
+            }
+            BagMessage::Lidar(timestamped) => {
+                let timestamp_us = timestamped.timestamp_us;
+                last_timestamp_us = timestamp_us;
+
+                // Preprocess scan
+                let laser_scan = LaserScan::from_lidar_scan(&timestamped.data);
+                let scan_cloud = preprocessor.process(&laser_scan);
+
+                // Skip sparse scans
+                if scan_cloud.len() < 50 {
+                    continue;
+                }
+
+                // Compute odometry delta since last scan
+                let odom_delta = odom_tracker.delta_since_snapshot();
+                let predicted_pose = slam_pose.compose(&odom_delta);
+
+                // Scan-to-map matching
+                if scans_processed > 0 {
+                    let map_cloud = map_to_point_cloud(&map);
+                    if map_cloud.len() >= 50 {
+                        // Transform map to local frame relative to predicted pose
+                        let map_local = map_cloud.transform(&predicted_pose.inverse());
+
+                        // Match scan against local-frame map
+                        let match_result =
+                            matcher.match_scans(&scan_cloud, &map_local, &Pose2D::identity());
+
+                        if match_result.score > 0.3 {
+                            slam_pose = predicted_pose.compose(&match_result.transform);
+                        } else {
+                            slam_pose = predicted_pose;
+                        }
+                    } else {
+                        slam_pose = predicted_pose;
+                    }
+                }
+
+                // Integrate scan into map
+                let global_scan = scan_cloud.transform(&slam_pose);
+                integrator.integrate_cloud(&mut map, &global_scan, &slam_pose);
+
+                // Update pose tracking
+                slam_base_pose = slam_pose;
+                slam_odom_snapshot.set(odom_tracker.pose());
+                slam_odom_snapshot.take_snapshot();
+                odom_tracker.take_snapshot();
+
+                // Publish scan
+                publisher.publish_slam_scan(&scan_cloud, &slam_pose, timestamp_us);
+                scans_processed += 1;
+            }
+            BagMessage::Odometry(_) => {
+                // Skip raw odometry messages, we compute our own
+            }
+        }
+
+        let timestamp_us = last_timestamp_us;
+
+        // Publish map periodically
+        if last_map_time.elapsed() >= map_interval {
+            let occupied_count = count_occupied_cells(&map);
+            let (map_width, map_height) = map.dimensions();
+            log::info!(
+                "Publishing map: {}x{} cells, {} occupied, {} clients",
+                map_width,
+                map_height,
+                occupied_count,
+                publisher.client_count()
+            );
+            publisher.publish_slam_map(&map, timestamp_us);
+            last_map_time = Instant::now();
+        }
+
+        // Extract and publish features periodically
+        if last_feature_time.elapsed() >= feature_interval {
+            let features = feature_extractor.extract(&map);
+            publisher.publish_features(&features, timestamp_us);
+            last_feature_time = Instant::now();
+
+            log::debug!(
+                "Features: {} lines, {} corners",
+                features.lines.len(),
+                features.corners.len()
+            );
+        }
+
+        // Log statistics periodically
+        if last_log_time.elapsed() >= Duration::from_secs(10) {
+            let (width, height) = map.dimensions();
+            let occupied = count_occupied_cells(&map);
+            log::info!(
+                "Bag: Pose: ({:.2}, {:.2}, {:.1}deg) | Map: {}x{} ({} occupied) | {} scans | {} clients",
+                slam_pose.x,
+                slam_pose.y,
+                slam_pose.theta.to_degrees(),
+                width,
+                height,
+                occupied,
+                scans_processed,
+                publisher.client_count()
+            );
+            last_log_time = Instant::now();
+        }
+    }
+
+    log::info!(
+        "Bag playback finished: {} scans processed",
+        scans_processed
+    );
+    Ok(())
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Extract occupied cells from occupancy grid as point cloud for scan-to-map matching.
+fn map_to_point_cloud(map: &OccupancyGrid) -> PointCloud2D {
+    let mut points = Vec::new();
+    let (width, height) = map.dimensions();
+
+    for cy in 0..height {
+        for cx in 0..width {
+            if map.get_state(cx, cy) == CellState::Occupied {
+                let (x, y) = map.cell_to_world(cx, cy);
+                points.push(dhruva_slam::core::types::Point2D::new(x, y));
+            }
+        }
+    }
+
+    PointCloud2D::from_points(points)
+}
+
+/// Count occupied cells in the map.
+fn count_occupied_cells(map: &OccupancyGrid) -> usize {
+    let (width, height) = map.dimensions();
+    let mut count = 0;
+    for cy in 0..height {
+        for cx in 0..width {
+            if map.get_state(cx, cy) == CellState::Occupied {
+                count += 1;
+            }
+        }
+    }
+    count
 }

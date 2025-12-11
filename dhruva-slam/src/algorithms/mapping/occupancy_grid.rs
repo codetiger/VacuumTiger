@@ -535,6 +535,48 @@ impl OccupancyGrid {
     pub fn memory_usage(&self) -> usize {
         self.cells.len() * std::mem::size_of::<f32>()
     }
+
+    /// Get all occupied cell centers as world-coordinate points.
+    ///
+    /// Useful for feature extraction algorithms.
+    pub fn occupied_points(&self) -> Vec<crate::core::types::Point2D> {
+        let mut points = Vec::new();
+
+        for cy in 0..self.height {
+            for cx in 0..self.width {
+                if self.get_state(cx, cy) == CellState::Occupied {
+                    let (x, y) = self.cell_to_world(cx, cy);
+                    points.push(crate::core::types::Point2D::new(x, y));
+                }
+            }
+        }
+
+        points
+    }
+
+    /// Get occupied cell centers within a specific region.
+    pub fn occupied_points_in_region(
+        &self,
+        region: &MapRegion,
+    ) -> Vec<crate::core::types::Point2D> {
+        let mut points = Vec::new();
+
+        let min_x = region.min_x.max(0) as usize;
+        let max_x = (region.max_x as usize).min(self.width.saturating_sub(1));
+        let min_y = region.min_y.max(0) as usize;
+        let max_y = (region.max_y as usize).min(self.height.saturating_sub(1));
+
+        for cy in min_y..=max_y {
+            for cx in min_x..=max_x {
+                if self.get_state(cx, cy) == CellState::Occupied {
+                    let (x, y) = self.cell_to_world(cx, cy);
+                    points.push(crate::core::types::Point2D::new(x, y));
+                }
+            }
+        }
+
+        points
+    }
 }
 
 // Map file format constants

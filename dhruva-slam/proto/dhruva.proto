@@ -11,6 +11,7 @@ message DhruvaMessage {
     SlamMap slam_map = 5;
     SlamScan slam_scan = 6;
     SlamDiagnostics slam_diagnostics = 7;
+    MapFeatures map_features = 8;
   }
 }
 
@@ -117,4 +118,36 @@ message LoopClosureStats {
   float last_closure_score = 3;
   uint32 pose_graph_nodes = 4;
   uint32 pose_graph_edges = 5;
+}
+
+// ============================================================================
+// Map Features (extracted from occupancy grid)
+// ============================================================================
+
+// Line segment representing a wall - topic: "slam/features"
+message LineSegment {
+  float start_x = 1;      // start point X (meters)
+  float start_y = 2;      // start point Y (meters)
+  float end_x = 3;        // end point X (meters)
+  float end_y = 4;        // end point Y (meters)
+  float length = 5;       // segment length (meters)
+  float quality = 6;      // R² fit quality (0-1)
+  uint32 point_count = 7; // number of points used to fit this line
+}
+
+// Corner where two walls meet
+message Corner {
+  float x = 1;            // corner position X (meters)
+  float y = 2;            // corner position Y (meters)
+  float angle = 3;        // angle between walls (radians, 0 to pi)
+  uint32 line1_idx = 4;   // index of first line in MapFeatures.lines
+  uint32 line2_idx = 5;   // index of second line in MapFeatures.lines
+  string corner_type = 6; // "L", "T", "X", "Acute", "Obtuse"
+}
+
+// Extracted map features - topic: "slam/features"
+message MapFeatures {
+  repeated LineSegment lines = 1;
+  repeated Corner corners = 2;
+  uint64 timestamp_us = 3;
 }

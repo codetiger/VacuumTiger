@@ -33,6 +33,7 @@ use serde::Serialize;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -128,10 +129,17 @@ pub enum SlamMessage {
     Diagnostics(SlamDiagnosticsMessage),
 }
 
-/// Client connection state
+/// Maximum number of pending messages per client before dropping
+const CLIENT_QUEUE_SIZE: usize = 16;
+
+/// Client connection state with async write channel
 struct Client {
-    stream: TcpStream,
+    /// Sender channel for queueing messages to write
+    sender: SyncSender<Arc<Vec<u8>>>,
+    /// Client address for logging
     addr: std::net::SocketAddr,
+    /// Flag to indicate if the client writer thread is still alive
+    alive: Arc<AtomicBool>,
 }
 
 /// TCP publisher for broadcasting odometry data to visualization clients.
@@ -158,6 +166,7 @@ impl OdometryPublisher {
         let clients_clone = clients.clone();
         let running_clone = running.clone();
 
+        log::info!("Spawning accept thread for port {}...", port);
         let listener_handle = thread::spawn(move || {
             Self::accept_loop(listener, clients_clone, running_clone);
         });
@@ -177,23 +186,47 @@ impl OdometryPublisher {
         clients: Arc<Mutex<Vec<Client>>>,
         running: Arc<AtomicBool>,
     ) {
+        log::info!("Accept loop started, waiting for connections...");
         while running.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, addr)) => {
                     log::info!("New odometry client connected: {}", addr);
+
+                    // IMPORTANT: Set client socket to blocking mode
+                    // (listener is non-blocking, but accepted sockets inherit this)
+                    if let Err(e) = stream.set_nonblocking(false) {
+                        log::warn!("Failed to set blocking mode: {}", e);
+                    }
 
                     // Set TCP_NODELAY for low latency
                     if let Err(e) = stream.set_nodelay(true) {
                         log::warn!("Failed to set TCP_NODELAY: {}", e);
                     }
 
-                    // Set write timeout
-                    if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(1))) {
+                    // Set write timeout (10s to handle large map messages ~1MB)
+                    if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(10))) {
                         log::warn!("Failed to set write timeout: {}", e);
                     }
 
-                    if let Ok(mut clients) = clients.lock() {
-                        clients.push(Client { stream, addr });
+                    // Create channel for async writes
+                    let (sender, receiver) = mpsc::sync_channel::<Arc<Vec<u8>>>(CLIENT_QUEUE_SIZE);
+                    let alive = Arc::new(AtomicBool::new(true));
+                    let alive_clone = alive.clone();
+                    let addr_clone = addr;
+
+                    // Spawn writer thread for this client
+                    thread::spawn(move || {
+                        Self::client_writer_loop(stream, receiver, alive_clone, addr_clone);
+                    });
+
+                    match clients.lock() {
+                        Ok(mut c) => {
+                            c.push(Client { sender, addr, alive });
+                            log::info!("Client added, total clients: {}", c.len());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to lock clients mutex: {}", e);
+                        }
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -206,6 +239,37 @@ impl OdometryPublisher {
                 }
             }
         }
+        log::info!("Accept loop exiting");
+    }
+
+    /// Writer loop for a single client - runs in its own thread
+    fn client_writer_loop(
+        mut stream: TcpStream,
+        receiver: mpsc::Receiver<Arc<Vec<u8>>>,
+        alive: Arc<AtomicBool>,
+        addr: std::net::SocketAddr,
+    ) {
+        log::debug!("Writer thread started for client {}", addr);
+
+        while let Ok(data) = receiver.recv() {
+            let len_bytes = (data.len() as u32).to_be_bytes();
+
+            // Write length prefix
+            if let Err(e) = stream.write_all(&len_bytes) {
+                log::warn!("Client {} write failed (len): {}", addr, e);
+                break;
+            }
+
+            // Write payload
+            if let Err(e) = stream.write_all(&data) {
+                log::warn!("Client {} write failed (payload, {} bytes): {}", addr, data.len(), e);
+                break;
+            }
+        }
+
+        // Mark client as dead so it gets cleaned up
+        alive.store(false, Ordering::Relaxed);
+        log::info!("Writer thread exiting for client {}", addr);
     }
 
     /// Get number of connected clients
@@ -357,6 +421,52 @@ impl OdometryPublisher {
         self.broadcast_proto(&msg);
     }
 
+    /// Publish map features (lines and corners) to all connected clients.
+    pub fn publish_features(
+        &self,
+        features: &crate::algorithms::mapping::MapFeatures,
+        timestamp_us: u64,
+    ) {
+        let lines: Vec<proto::dhruva::LineSegment> = features
+            .lines
+            .iter()
+            .map(|line| proto::dhruva::LineSegment {
+                start_x: line.start.x,
+                start_y: line.start.y,
+                end_x: line.end.x,
+                end_y: line.end.y,
+                length: line.length,
+                quality: line.quality,
+                point_count: line.point_count as u32,
+            })
+            .collect();
+
+        let corners: Vec<proto::dhruva::Corner> = features
+            .corners
+            .iter()
+            .map(|corner| proto::dhruva::Corner {
+                x: corner.position.x,
+                y: corner.position.y,
+                angle: corner.angle,
+                line1_idx: corner.line1_idx as u32,
+                line2_idx: corner.line2_idx as u32,
+                corner_type: format!("{:?}", corner.corner_type),
+            })
+            .collect();
+
+        let msg = proto::dhruva::DhruvaMessage {
+            topic: "slam/features".to_string(),
+            payload: Some(proto::dhruva::dhruva_message::Payload::MapFeatures(
+                proto::dhruva::MapFeatures {
+                    lines,
+                    corners,
+                    timestamp_us,
+                },
+            )),
+        };
+        self.broadcast_proto(&msg);
+    }
+
     /// Publish SLAM diagnostics to all connected clients.
     pub fn publish_slam_diagnostics(&self, diagnostics: &SlamDiagnosticsMessage) {
         let msg = proto::dhruva::DhruvaMessage {
@@ -413,11 +523,14 @@ impl OdometryPublisher {
         self.broadcast_bytes(&buf);
     }
 
-    /// Broadcast raw bytes to all connected clients.
+    /// Broadcast raw bytes to all connected clients (non-blocking).
     ///
-    /// Removes clients that fail to receive the message.
+    /// Messages are queued for each client's writer thread. If a client's
+    /// queue is full, the message is dropped for that client (backpressure).
+    /// Dead clients are removed automatically.
     fn broadcast_bytes(&self, bytes: &[u8]) {
-        let len_bytes = (bytes.len() as u32).to_be_bytes();
+        // Wrap bytes in Arc so we can share across clients without copying
+        let data = Arc::new(bytes.to_vec());
 
         let mut clients = match self.clients.lock() {
             Ok(c) => c,
@@ -427,24 +540,36 @@ impl OdometryPublisher {
             }
         };
 
-        // Track indices of failed clients
-        let mut failed_indices = Vec::new();
+        // Track indices of dead clients to remove
+        let mut dead_indices = Vec::new();
 
-        for (i, client) in clients.iter_mut().enumerate() {
-            if let Err(e) = client.stream.write_all(&len_bytes) {
-                log::debug!("Client {} write failed (len): {}", client.addr, e);
-                failed_indices.push(i);
+        for (i, client) in clients.iter().enumerate() {
+            // Check if writer thread is still alive
+            if !client.alive.load(Ordering::Relaxed) {
+                dead_indices.push(i);
                 continue;
             }
 
-            if let Err(e) = client.stream.write_all(bytes) {
-                log::debug!("Client {} write failed (payload): {}", client.addr, e);
-                failed_indices.push(i);
+            // Try to send to client's queue (non-blocking)
+            match client.sender.try_send(data.clone()) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    // Queue is full - drop this message for this client (backpressure)
+                    log::debug!(
+                        "Client {} queue full, dropping {} byte message",
+                        client.addr,
+                        bytes.len()
+                    );
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    // Writer thread died
+                    dead_indices.push(i);
+                }
             }
         }
 
-        // Remove failed clients (in reverse order to preserve indices)
-        for i in failed_indices.into_iter().rev() {
+        // Remove dead clients (in reverse order to preserve indices)
+        for i in dead_indices.into_iter().rev() {
             let client = clients.remove(i);
             log::info!("Removed disconnected client: {}", client.addr);
         }

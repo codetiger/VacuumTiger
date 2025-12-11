@@ -44,6 +44,23 @@ pub struct MapNoiseMetrics {
 
     /// Map bounds in world coordinates (min_x, min_y, max_x, max_y).
     pub bounds: (f32, f32, f32, f32),
+
+    // === New metrics to detect drift and skew ===
+    /// Map area in square meters (bounding box area).
+    /// Inflated values indicate drift spreading the map.
+    pub map_area_m2: f64,
+
+    /// Occupied cell density: occupied_cells / map_area.
+    /// Low values indicate walls spread over too large an area (drift).
+    pub occupied_density: f64,
+
+    /// Wall thickness metric: ratio of occupied cells to perimeter estimate.
+    /// Consistent values indicate uniform wall thickness; high variance = smearing.
+    pub wall_compactness: f64,
+
+    /// Aspect ratio of the map bounding box (max/min dimension).
+    /// Very high values may indicate skew in one axis.
+    pub aspect_ratio: f64,
 }
 
 impl Default for MapNoiseMetrics {
@@ -58,6 +75,10 @@ impl Default for MapNoiseMetrics {
             wall_coherence: 0.0,
             avg_occupied_neighbors: 0.0,
             bounds: (0.0, 0.0, 0.0, 0.0),
+            map_area_m2: 0.0,
+            occupied_density: 0.0,
+            wall_compactness: 0.0,
+            aspect_ratio: 1.0,
         }
     }
 }
@@ -84,11 +105,19 @@ impl std::fmt::Display for MapNoiseMetrics {
         )?;
         writeln!(f, "  Wall coherence: {:.1}%", self.wall_coherence * 100.0)?;
         writeln!(f, "  Avg neighbors: {:.2}", self.avg_occupied_neighbors)?;
-        write!(
+        writeln!(
             f,
             "  Bounds: ({:.2}, {:.2}) to ({:.2}, {:.2})",
             self.bounds.0, self.bounds.1, self.bounds.2, self.bounds.3
-        )
+        )?;
+        writeln!(f, "  Map area: {:.2} m²", self.map_area_m2)?;
+        writeln!(
+            f,
+            "  Occupied density: {:.1} cells/m²",
+            self.occupied_density
+        )?;
+        writeln!(f, "  Wall compactness: {:.3}", self.wall_compactness)?;
+        write!(f, "  Aspect ratio: {:.2}", self.aspect_ratio)
     }
 }
 
@@ -214,6 +243,37 @@ pub fn analyze_map_noise(grid: &OccupancyGrid) -> MapNoiseMetrics {
         0.0
     };
 
+    // Compute new metrics for drift/skew detection
+    let width_m = (max_x - min_x) as f64;
+    let height_m = (max_y - min_y) as f64;
+    let map_area_m2 = width_m * height_m;
+
+    // Occupied density: cells per square meter
+    // Higher is better (walls concentrated in smaller area)
+    let occupied_density = if map_area_m2 > 0.0 {
+        occupied_cells as f64 / map_area_m2
+    } else {
+        0.0
+    };
+
+    // Wall compactness: ratio of occupied cells to bounding box perimeter
+    // For a well-formed rectangular room, this should be relatively consistent
+    // Smeared/drifted maps will have lower compactness (same cells, larger perimeter)
+    let perimeter = 2.0 * (width_m + height_m);
+    let wall_compactness = if perimeter > 0.0 {
+        (occupied_cells as f64 * resolution as f64) / perimeter
+    } else {
+        0.0
+    };
+
+    // Aspect ratio: max dimension / min dimension
+    // Very high values may indicate skew along one axis
+    let aspect_ratio = if width_m > 0.0 && height_m > 0.0 {
+        width_m.max(height_m) / width_m.min(height_m)
+    } else {
+        1.0
+    };
+
     MapNoiseMetrics {
         occupied_cells,
         free_cells,
@@ -224,6 +284,10 @@ pub fn analyze_map_noise(grid: &OccupancyGrid) -> MapNoiseMetrics {
         wall_coherence,
         avg_occupied_neighbors,
         bounds: (min_x, min_y, max_x, max_y),
+        map_area_m2,
+        occupied_density,
+        wall_compactness,
+        aspect_ratio,
     }
 }
 
@@ -371,6 +435,10 @@ mod tests {
             wall_coherence: 0.95,
             avg_occupied_neighbors: 2.5,
             bounds: (-1.0, -2.0, 3.0, 4.0),
+            map_area_m2: 24.0,
+            occupied_density: 4.17,
+            wall_compactness: 0.85,
+            aspect_ratio: 1.5,
         };
 
         let output = format!("{}", metrics);
