@@ -526,9 +526,15 @@ class SlamView(QWidget):
         cells = map_data.get('cells', b'')
 
         if not cells or width == 0 or height == 0:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Skipping map update: cells_len={len(cells) if cells else 0}, w={width}, h={height}"
+            )
             return
 
         # Decode cells - handle both raw bytes (from protobuf) and base64 (legacy)
+        import logging
+        logger = logging.getLogger(__name__)
         try:
             if isinstance(cells, bytes):
                 # Raw bytes from protobuf
@@ -537,7 +543,9 @@ class SlamView(QWidget):
                 # Base64 string (legacy JSON format)
                 cells_bytes = base64.b64decode(cells)
                 cells_array = np.frombuffer(cells_bytes, dtype=np.uint8).reshape((height, width))
+            logger.debug(f"Decoded map cells: {len(cells)} bytes -> {height}x{width} array")
         except Exception as e:
+            logger.error(f"Failed to decode map cells: {e} (cells type={type(cells)}, len={len(cells) if cells else 0}, w={width}, h={height})")
             return
 
         # Convert to RGB image
@@ -563,17 +571,33 @@ class SlamView(QWidget):
         self._map_width = width
         self._map_height = height
 
-        # Update image item with correct position/scale
-        # Note: pyqtgraph ImageItem maps image[row, col] to position (col, row) in local coords,
-        # then setRect maps this to world coordinates. Since cells_array[y, x] contains the
-        # cell at world (origin_x + x*res, origin_y + y*res), and rgb_image[y, x] gets color
-        # from cells_array[y, x], the mapping is: rgb_image[y, x] -> world (origin_x + x*res, origin_y + y*res)
+        # pyqtgraph ImageItem expects image data where:
+        # - image[row, col] corresponds to (x=col, y=row) in image coordinates
+        # - By default, row 0 is at the BOTTOM of the display (y increases upward)
+        # - Our cells_array[y, x] has row 0 at top (y=0 is origin_y in world coords)
+        #
+        # To correctly map world coordinates:
+        # - World (origin_x, origin_y) should map to image row=0, col=0
+        # - World Y increases upward, image row increases upward in pyqtgraph
+        # - So no flip needed if we set the rect correctly
+        #
+        # The cells are in row-major order: cells[y][x] where y=0 is at origin_y
+        # pyqtgraph will display image[0,:] at y=origin_y (bottom of rect)
         self._map_item.setImage(rgb_image)
         self._map_item.setRect(
             origin_x,
             origin_y,
             width * resolution,
             height * resolution
+        )
+
+        # Debug: log map stats
+        occupied_count = np.sum(occupied_mask)
+        free_count = np.sum(free_mask)
+        logger.debug(
+            f"Map updated: {width}x{height} @ {resolution}m, "
+            f"origin=({origin_x:.1f}, {origin_y:.1f}), "
+            f"occupied={occupied_count}, free={free_count}"
         )
 
     def update_scan(self, scan_data: dict):

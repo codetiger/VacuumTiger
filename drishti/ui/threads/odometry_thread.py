@@ -145,6 +145,7 @@ class OdometryThread(QThread):
         """Process a received message and emit appropriate signal."""
         topic = message.topic
         which = message.WhichOneof('payload')
+        logger.info(f"Received message: topic={topic}, payload_type={which}")
 
         if topic == 'odometry/pose' and which == 'odometry_pose':
             pose = message.odometry_pose
@@ -186,17 +187,20 @@ class OdometryThread(QThread):
 
         elif topic == 'slam/map' and which == 'slam_map':
             slam_map = message.slam_map
+            cells_bytes = slam_map.cells
+            # Count non-zero (non-unknown) cells for debugging
+            non_zero = sum(1 for b in cells_bytes if b != 0) if cells_bytes else 0
             payload = {
                 'resolution': slam_map.resolution,
                 'width': slam_map.width,
                 'height': slam_map.height,
                 'origin_x': slam_map.origin_x,
                 'origin_y': slam_map.origin_y,
-                'cells': slam_map.cells,  # Raw bytes (no base64)
+                'cells': cells_bytes,  # Raw bytes (no base64)
                 'timestamp_us': slam_map.timestamp_us
             }
             self.slam_map_received.emit(payload)
-            logger.debug(f"SLAM map: {slam_map.width}x{slam_map.height} @ {slam_map.resolution}m")
+            logger.info(f"SLAM map: {slam_map.width}x{slam_map.height} @ {slam_map.resolution}m, {non_zero} non-unknown cells")
 
         elif topic == 'slam/scan' and which == 'slam_scan':
             scan = message.slam_scan
