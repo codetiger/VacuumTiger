@@ -221,7 +221,11 @@ impl OdometryPublisher {
 
                     match clients.lock() {
                         Ok(mut c) => {
-                            c.push(Client { sender, addr, alive });
+                            c.push(Client {
+                                sender,
+                                addr,
+                                alive,
+                            });
                             log::info!("Client added, total clients: {}", c.len());
                         }
                         Err(e) => {
@@ -262,7 +266,12 @@ impl OdometryPublisher {
 
             // Write payload
             if let Err(e) = stream.write_all(&data) {
-                log::warn!("Client {} write failed (payload, {} bytes): {}", addr, data.len(), e);
+                log::warn!(
+                    "Client {} write failed (payload, {} bytes): {}",
+                    addr,
+                    data.len(),
+                    e
+                );
                 break;
             }
         }

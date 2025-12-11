@@ -426,7 +426,11 @@ fn run_main_loop(
 
         // Log message types periodically
         if msg_count % 500 == 0 {
-            log::info!("Received {} messages, group_id: {}", msg_count, msg.group_id());
+            log::info!(
+                "Received {} messages, group_id: {}",
+                msg_count,
+                msg.group_id()
+            );
         }
 
         // Process sensor_status messages (odometry @ 110Hz)
@@ -464,7 +468,11 @@ fn run_main_loop(
             // Preprocess scan
             let laser_scan = LaserScan::from_lidar_scan(lidar_data.data);
             let scan_cloud = preprocessor.process(&laser_scan);
-            log::debug!("Lidar scan: {} raw points -> {} processed", lidar_data.data.len(), scan_cloud.len());
+            log::debug!(
+                "Lidar scan: {} raw points -> {} processed",
+                lidar_data.data.len(),
+                scan_cloud.len()
+            );
 
             // Skip sparse scans
             if scan_cloud.len() < 50 {
@@ -783,10 +791,7 @@ fn run_bag_loop(
         }
     }
 
-    log::info!(
-        "Bag playback finished: {} scans processed",
-        scans_processed
-    );
+    log::info!("Bag playback finished: {} scans processed", scans_processed);
     Ok(())
 }
 
