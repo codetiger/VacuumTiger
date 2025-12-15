@@ -47,6 +47,26 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+// ============================================================================
+// Timing Constants
+// ============================================================================
+
+/// Delay after switching motor mode from 0x00 to 0x02 (milliseconds).
+///
+/// The GD32F103 firmware requires this time to reconfigure internal state
+/// before it can accept component commands. Without this delay, commands
+/// sent immediately after mode switch may be ignored.
+///
+/// Determined empirically through protocol analysis.
+const MODE_SWITCH_DELAY_MS: u64 = 100;
+
+/// Interval between STM32 data requests in milliseconds.
+///
+/// The stock R2D firmware sends 0x0D requests approximately every 1.5 seconds,
+/// as observed in MITM captures (see COMMANDS.md "Request STM32 Data" entry).
+/// This appears to be a keep-alive/diagnostic query.
+const STM32_REQUEST_INTERVAL_MS: u64 = 1500;
+
 /// Heartbeat loop - sends appropriate commands at configured interval
 ///
 /// This loop runs continuously on a dedicated OS thread to maintain the GD32 watchdog timer.
@@ -89,11 +109,8 @@ pub(super) fn heartbeat_loop(
     let mut pkt = TxPacket::new(); // For variable commands (velocity, actuators)
 
     // Counter for periodic STM32 data request (0x0D)
-    // The stock R2D firmware sends 0x0D requests approximately every 1.5 seconds,
-    // as observed in MITM captures (see COMMANDS.md "Request STM32 Data" entry).
-    // This appears to be a keep-alive/diagnostic query - response contents are TBD.
-    // At 20ms heartbeat interval: 1500ms / 20ms = 75 cycles between requests.
-    let stm32_request_interval = 1500 / interval_ms;
+    // Response contents are TBD but request is sent to match stock firmware behavior.
+    let stm32_request_interval = STM32_REQUEST_INTERVAL_MS / interval_ms;
     let mut stm32_request_counter: u64 = 0;
 
     while !shutdown.load(Ordering::Relaxed) {
@@ -118,12 +135,10 @@ pub(super) fn heartbeat_loop(
                     .motor_mode_set
                     .store(true, Ordering::Relaxed);
                 log::info!("Motor mode set to navigation (0x02)");
-                // Wait 100ms for GD32 firmware to process mode switch
-                // This is a hardware requirement: the GD32F103 needs this time to
-                // reconfigure internal state before it can accept component commands.
+                // Wait for GD32 firmware to process mode switch (see MODE_SWITCH_DELAY_MS docs).
                 // Releasing the port lock during sleep allows other operations to proceed.
                 drop(port);
-                thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(MODE_SWITCH_DELAY_MS));
                 continue; // Skip commands this cycle, send them next cycle
             }
         } else if !any_component_active && component_state.motor_mode_set.load(Ordering::Relaxed) {

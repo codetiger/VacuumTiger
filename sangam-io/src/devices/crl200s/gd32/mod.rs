@@ -136,7 +136,10 @@ impl GD32Driver {
 
         for attempt in 1..=5 {
             {
-                let mut port = self.port.lock().map_err(|_| Error::MutexPoisoned)?;
+                let mut port = self
+                    .port
+                    .lock()
+                    .map_err(|e| Error::MutexPoisoned(format!("serial port (init): {}", e)))?;
                 if let Err(e) = init_pkt.send_to(&mut *port) {
                     log::warn!("Init send failed (attempt {}): {}", attempt, e);
                 }
@@ -217,16 +220,47 @@ impl GD32Driver {
     }
 
     /// Shutdown the driver
+    ///
+    /// Signals all threads to stop and waits for them to exit.
+    /// Threads should exit within ~100ms (heartbeat interval + serial timeout).
     pub fn shutdown(&mut self) -> Result<()> {
         log::info!("Shutting down GD32 driver...");
         self.shutdown.store(true, Ordering::Relaxed);
 
-        // Wait for threads to finish
+        // Wait for threads to finish with timeout tracking
+        // Threads check shutdown flag every cycle, so should exit within:
+        // - Heartbeat: heartbeat_interval_ms (20-50ms)
+        // - Reader: SERIAL_READ_TIMEOUT_MS (typically 5ms)
+        // Total max wait: ~100ms under normal conditions
+        let start = std::time::Instant::now();
+        let warn_timeout = Duration::from_millis(500);
+
         if let Some(handle) = self.heartbeat_handle.take() {
-            handle.join().map_err(|_| Error::ThreadPanic)?;
+            log::debug!("Waiting for heartbeat thread to exit...");
+            if handle.join().is_err() {
+                log::error!("Heartbeat thread panicked");
+                return Err(Error::ThreadPanic);
+            }
+            log::debug!("Heartbeat thread exited");
         }
+
         if let Some(handle) = self.reader_handle.take() {
-            handle.join().map_err(|_| Error::ThreadPanic)?;
+            log::debug!("Waiting for reader thread to exit...");
+            if handle.join().is_err() {
+                log::error!("Reader thread panicked");
+                return Err(Error::ThreadPanic);
+            }
+            log::debug!("Reader thread exited");
+        }
+
+        let elapsed = start.elapsed();
+        if elapsed > warn_timeout {
+            log::warn!(
+                "Thread shutdown took longer than expected: {:?} (expected <100ms)",
+                elapsed
+            );
+        } else {
+            log::debug!("Threads exited in {:?}", elapsed);
         }
 
         // Send stop command

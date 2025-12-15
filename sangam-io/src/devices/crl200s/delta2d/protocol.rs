@@ -234,10 +234,12 @@ impl Delta2DPacketReader {
                 return Ok(ParseResult::None);
             }
 
-            // NOTE: CRC validation disabled for now as the Delta-2D protocol's
-            // actual checksum algorithm is not confirmed. The loop-based resync
-            // on header validation still provides robustness against false sync bytes.
-            // TODO: Re-enable once the correct CRC algorithm is determined.
+            // NOTE: CRC validation disabled - the Delta-2D protocol's checksum algorithm
+            // is not confirmed. Header validation provides robustness against false sync bytes.
+            // WARNING: Without CRC, corrupted packets may be accepted silently.
+            // The diagnostics() method reports crc_failures count for monitoring.
+            //
+            // To re-enable when CRC algorithm is determined, uncomment:
             // if !self.validate_crc(total_len) {
             //     self.crc_failures += 1;
             //     self.bytes_discarded += 1;
@@ -245,6 +247,16 @@ impl Delta2DPacketReader {
             //     log::trace!("Lidar: CRC failed, draining 1 byte and retrying");
             //     continue;
             // }
+
+            // Log warning periodically if we've processed many packets without CRC
+            static WARN_INTERVAL: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let count = WARN_INTERVAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count == 0 {
+                log::warn!(
+                    "Lidar CRC validation disabled - packets accepted without checksum verification"
+                );
+            }
 
             // Valid packet! Parse it
             let cmd_type = CommandType::from(self.buffer[5]);

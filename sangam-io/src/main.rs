@@ -98,7 +98,7 @@ fn main() -> Result<()> {
     let _udp_handle = thread::Builder::new()
         .name("udp-publisher".to_string())
         .spawn(move || {
-            let publisher = UdpPublisher::new(
+            let mut publisher = UdpPublisher::new(
                 udp_socket,
                 udp_serializer,
                 udp_sensor_data,
@@ -214,7 +214,9 @@ fn main() -> Result<()> {
     // Shutdown
     log::info!("Shutting down...");
     {
-        let mut driver = driver.lock().map_err(|_| error::Error::MutexPoisoned)?;
+        let mut driver = driver
+            .lock()
+            .map_err(|e| error::Error::MutexPoisoned(format!("driver mutex: {}", e)))?;
         driver.send_command(crate::core::types::Command::Shutdown)?;
     }
 

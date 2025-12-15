@@ -60,8 +60,8 @@ pub enum Error {
     #[error("Thread panic")]
     ThreadPanic,
 
-    #[error("Mutex poisoned")]
-    MutexPoisoned,
+    #[error("Mutex poisoned: {0}")]
+    MutexPoisoned(String),
 
     #[error("Not implemented: {0}")]
     NotImplemented(String),

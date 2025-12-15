@@ -20,6 +20,10 @@ use std::time::Duration;
 /// Type alias for UDP client registry (single client at a time)
 pub type UdpClientRegistry = Arc<Mutex<Option<SocketAddr>>>;
 
+/// Maximum expected UDP payload size (4-byte length prefix + protobuf message)
+/// Typical sensor message ~150 bytes, lidar ~2KB, allow headroom
+const MAX_UDP_BUFFER_SIZE: usize = 4096;
+
 /// UDP publisher that streams sensor data to registered clients
 pub struct UdpPublisher {
     socket: UdpSocket,
@@ -56,14 +60,18 @@ impl UdpPublisher {
 
     /// Get current registered client address (if any)
     fn get_client(&self) -> Option<SocketAddr> {
-        *self.client_registry
+        *self
+            .client_registry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
     }
 
     /// Run the publisher loop (unicast to registered client)
-    pub fn run(&self) -> Result<()> {
+    pub fn run(&mut self) -> Result<()> {
         log::info!("UDP publisher started (unicast mode - waiting for client registration)");
+
+        // Pre-allocate send buffer to avoid allocation per message
+        let mut send_buffer = Vec::with_capacity(MAX_UDP_BUFFER_SIZE);
 
         // Track last sent sequence numbers for polling-based groups
         // (excluding groups that have streaming channels)
@@ -103,7 +111,11 @@ impl UdpPublisher {
                 loop {
                     match rx.try_recv() {
                         Ok(data) => {
-                            if let Err(e) = self.send_sensor_group(&data, target_addr) {
+                            if let Err(e) = self.send_sensor_group_with_buffer(
+                                &data,
+                                target_addr,
+                                &mut send_buffer,
+                            ) {
                                 // UDP send errors are not fatal - just log and continue
                                 log::warn!("Failed to send {} stream data: {}", group_id, e);
                             } else {
@@ -151,7 +163,9 @@ impl UdpPublisher {
                         *seq = cloned.sequence_number;
                     }
 
-                    if let Err(e) = self.send_sensor_group(&cloned, target_addr) {
+                    if let Err(e) =
+                        self.send_sensor_group_with_buffer(&cloned, target_addr, &mut send_buffer)
+                    {
                         // UDP send errors are not fatal - just log and continue
                         log::warn!("Failed to send {} poll data: {}", group_id, e);
                     } else {
@@ -186,17 +200,23 @@ impl UdpPublisher {
     ///
     /// Uses same wire format as TCP for client compatibility:
     /// [4-byte length prefix (big-endian)] + [protobuf payload]
-    fn send_sensor_group(&self, data: &SensorGroupData, target: SocketAddr) -> Result<()> {
+    ///
+    /// Uses provided buffer to avoid allocation per message.
+    fn send_sensor_group_with_buffer(
+        &self,
+        data: &SensorGroupData,
+        target: SocketAddr,
+        buffer: &mut Vec<u8>,
+    ) -> Result<()> {
         let payload = self.serializer.serialize_sensor_group(data)?;
         let len = (payload.len() as u32).to_be_bytes();
 
-        // Combine length prefix and payload into a single buffer
-        // (same format as TCP for client compatibility)
-        let mut buf = Vec::with_capacity(4 + payload.len());
-        buf.extend_from_slice(&len);
-        buf.extend_from_slice(&payload);
+        // Reuse buffer - clear and rebuild (no allocation if capacity sufficient)
+        buffer.clear();
+        buffer.extend_from_slice(&len);
+        buffer.extend_from_slice(&payload);
 
-        self.socket.send_to(&buf, target)?;
+        self.socket.send_to(buffer, target)?;
 
         Ok(())
     }

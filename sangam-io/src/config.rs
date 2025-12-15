@@ -308,14 +308,33 @@ pub struct Config {
     pub network: NetworkConfig,
 }
 
+/// Minimum heartbeat interval (hardware requirement)
+const MIN_HEARTBEAT_INTERVAL_MS: u64 = 20;
+/// Maximum heartbeat interval (hardware requirement)
+const MAX_HEARTBEAT_INTERVAL_MS: u64 = 50;
+
 impl Config {
     /// Load configuration from TOML file
+    ///
+    /// # Validation
+    ///
+    /// - `heartbeat_interval_ms` must be between 20-50ms (hardware requirement)
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(&path)
             .map_err(|e| Error::Config(format!("Failed to read config: {}", e)))?;
 
         let config: Config = basic_toml::from_str(&content)
             .map_err(|e| Error::Config(format!("Failed to parse config: {}", e)))?;
+
+        // Validate heartbeat interval is within hardware-required range
+        let interval = config.device.hardware.heartbeat_interval_ms;
+        if !(MIN_HEARTBEAT_INTERVAL_MS..=MAX_HEARTBEAT_INTERVAL_MS).contains(&interval) {
+            return Err(Error::Config(format!(
+                "heartbeat_interval_ms must be between {}ms and {}ms (got {}ms). \
+                Values outside this range will cause motor watchdog timeout.",
+                MIN_HEARTBEAT_INTERVAL_MS, MAX_HEARTBEAT_INTERVAL_MS, interval
+            )));
+        }
 
         Ok(config)
     }

@@ -98,7 +98,9 @@ const ID_MCU: &str = "mcu";
 
 /// Helper to send a TxPacket over the serial port
 fn send_packet(port: &Arc<Mutex<Box<dyn SerialPort>>>, pkt: &TxPacket) -> Result<()> {
-    let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
+    let mut port_guard = port
+        .lock()
+        .map_err(|e| Error::MutexPoisoned(format!("serial port (send_packet): {}", e)))?;
     pkt.send_to(&mut *port_guard).map_err(Error::Io)?;
     Ok(())
 }
@@ -170,7 +172,9 @@ fn emergency_stop(
     component_state.clear_all();
 
     // Send all component stop commands BEFORE motor velocity
-    let mut port_guard = port.lock().map_err(|_| Error::MutexPoisoned)?;
+    let mut port_guard = port
+        .lock()
+        .map_err(|e| Error::MutexPoisoned(format!("serial port (emergency_stop): {}", e)))?;
 
     // Stop all components
     pkt.set_air_pump(0);
