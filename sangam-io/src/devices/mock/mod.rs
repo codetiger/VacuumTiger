@@ -1,7 +1,128 @@
-//! Mock device driver for simulation
+//! Mock device driver for hardware-free robot simulation
 //!
-//! Provides a simulated CRL-200S robot for algorithm testing without hardware.
-//! Uses PGM+YAML maps for environment simulation.
+//! This module provides a complete simulation of CRL-200S robot hardware,
+//! enabling SLAM and navigation algorithm development without physical robots.
+//!
+//! # Overview
+//!
+//! The mock driver simulates all sensors and actuators of the CRL-200S:
+//!
+//! | Component | Simulation Method |
+//! |-----------|-------------------|
+//! | Lidar (Delta-2D) | Ray-casting against occupancy grid |
+//! | Wheel encoders | Differential drive kinematics + slip noise |
+//! | IMU (gyro/accel) | Physics-based with configurable noise |
+//! | Bumpers | Collision detection against map |
+//! | Cliff sensors | Cliff mask lookup or boundary detection |
+//! | Battery/buttons | Fixed configurable states |
+//!
+//! # Map Format
+//!
+//! Uses ROS-standard PGM + YAML format for maximum compatibility:
+//!
+//! ```yaml
+//! # maps/example.yaml
+//! image: example.pgm        # Grayscale occupancy grid
+//! resolution: 0.02          # meters per pixel
+//! origin: [-5.0, -5.0, 0.0] # [x, y, yaw] of bottom-left pixel
+//! occupied_thresh: 0.65     # Darker = occupied
+//! cliff_mask: cliffs.pgm    # Optional cliff layer
+//! ```
+//!
+//! PGM pixel values:
+//! - **White (255)**: Free space
+//! - **Black (0)**: Occupied/wall
+//! - **Gray (205)**: Unknown
+//!
+//! # Configuration
+//!
+//! Enable the `mock` feature to use this driver:
+//!
+//! ```bash
+//! cargo build --features mock
+//! cargo run --features mock -- mock.toml
+//! ```
+//!
+//! Example configuration (`mock.toml`):
+//!
+//! ```toml
+//! [device]
+//! type = "mock"
+//! name = "Mock CRL-200S"
+//!
+//! [device.simulation]
+//! map_file = "maps/example.yaml"
+//! start_x = 1.5
+//! start_y = 3.5
+//! start_theta = 0.0
+//! speed_factor = 1.0    # 2.0 = 2x speed
+//! random_seed = 42      # 0 = random each run
+//!
+//! [network]
+//! bind_address = "0.0.0.0:5555"
+//! ```
+//!
+//! # Simulation Loop
+//!
+//! The simulation runs at 110Hz (matching CRL-200S hardware):
+//!
+//! ```text
+//! Every ~9ms:
+//! 1. Read velocity commands from shared state
+//! 2. Update physics (pose, collision detection)
+//! 3. Generate encoder ticks from wheel velocities
+//! 4. Generate IMU readings (gyro, accel, tilt)
+//! 5. Check bumpers and cliff sensors
+//! 6. Publish sensor_status via streaming channel
+//!
+//! Every ~200ms (5Hz):
+//! 7. Generate lidar scan via ray-casting
+//! 8. Update lidar sensor group
+//! ```
+//!
+//! # Speed Factor
+//!
+//! The `speed_factor` setting accelerates simulation time:
+//!
+//! | Factor | sensor_status | lidar | Use Case |
+//! |--------|---------------|-------|----------|
+//! | 1.0 | 110 Hz | 5 Hz | Real-time testing |
+//! | 2.0 | 220 Hz | 10 Hz | Faster algorithm iteration |
+//! | 5.0 | 550 Hz | 25 Hz | Quick integration tests |
+//!
+//! # Noise Models
+//!
+//! All sensors include configurable noise for realistic testing:
+//!
+//! - **Lidar**: Range stddev, angle stddev, miss rate, quality decay
+//! - **Encoders**: Wheel slip (multiplicative), quantization noise
+//! - **IMU**: Per-axis stddev, bias, gyro drift rate
+//!
+//! # Thread Model
+//!
+//! ```text
+//! ┌─────────────────┐
+//! │   Main Thread   │
+//! │  (initialize)   │
+//! └────────┬────────┘
+//!          │ spawns
+//!          ▼
+//! ┌─────────────────┐     ┌─────────────────┐
+//! │ Simulation Loop │────▶│ Streaming Chan  │
+//! │  (mock-sim)     │     │ (sensor_status) │
+//! └─────────────────┘     └─────────────────┘
+//! ```
+//!
+//! # Module Structure
+//!
+//! - [`config`]: Configuration structures for all simulation parameters
+//! - [`physics`]: Differential drive kinematics and collision handling
+//! - [`lidar_sim`]: Ray-casting lidar simulation
+//! - [`imu_sim`]: IMU data generation with noise
+//! - [`encoder_sim`]: Wheel encoder simulation with slip
+//! - [`sensor_sim`]: Bumper, cliff, and binary sensor simulation
+//! - [`map_loader`]: PGM + YAML map loading
+//! - [`noise`]: Configurable noise generator
 
 pub mod config;
 mod encoder_sim;

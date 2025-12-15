@@ -63,7 +63,7 @@ const MODE_SWITCH_DELAY_MS: u64 = 100;
 /// Interval between STM32 data requests in milliseconds.
 ///
 /// The stock R2D firmware sends 0x0D requests approximately every 1.5 seconds,
-/// as observed in MITM captures (see COMMANDS.md "Request STM32 Data" entry).
+/// as observed in MITM captures (see [`../COMMANDS.md`](../COMMANDS.md) "Request STM32 Data" entry).
 /// This appears to be a keep-alive/diagnostic query.
 const STM32_REQUEST_INTERVAL_MS: u64 = 1500;
 

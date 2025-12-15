@@ -1,8 +1,11 @@
-# GD32 Command Reference
+# CRL-200S GD32 Command Reference
+
+> **Device-specific documentation for the CRL-200S robotic vacuum platform.**
+> This document describes the serial protocol between SangamIO and the GD32F103 motor controller MCU.
 
 This document lists all known GD32 commands discovered from reverse-engineering the AuxCtrl binary, captured logs, and current SangamIO implementation.
 
-**Source Reference:** `src/devices/crl200s/constants.rs`, `src/devices/crl200s/gd32/packet.rs`, `src/devices/crl200s/gd32/commands.rs`
+**Source Code:** [`constants.rs`](constants.rs), [`gd32/packet.rs`](gd32/packet.rs), [`gd32/commands.rs`](gd32/commands.rs)
 
 ## Command Format
 
@@ -14,7 +17,7 @@ All commands use the packet format: `[0xFA 0xFB] [LEN] [CMD] [PAYLOAD] [CRC_H] [
 - **PAYLOAD**: Variable length data
 - **CRC**: 16-bit big-endian word sum checksum (except 0x08)
 
-### CRC Calculation (from `packet.rs`)
+### CRC Calculation (from [`gd32/packet.rs`](gd32/packet.rs))
 
 ```rust
 fn checksum(data: &[u8]) -> u16 {
@@ -177,3 +180,10 @@ RobotCommand {
 
 **Note:** The `Configure` action for lidar is ignored. PWM is controlled exclusively by `sangamio.toml`, not by upstream clients.
 
+---
+
+## Related Documentation
+
+- [SENSORSTATUS.md](SENSORSTATUS.md) - Status packet byte layout (96 bytes)
+- [`gd32/reader.rs`](gd32/reader.rs) - Status packet parsing implementation
+- [`delta2d/protocol.rs`](delta2d/protocol.rs) - Lidar protocol (separate from GD32)

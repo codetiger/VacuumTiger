@@ -1,7 +1,56 @@
 //! Mock device simulation configuration
 //!
-//! Defines all configuration structures for simulating CRL-200S hardware.
-//! All parameters have defaults matching the real hardware specifications.
+//! This module defines all configuration structures for the mock device driver.
+//! Every parameter has sensible defaults matching CRL-200S hardware specifications,
+//! allowing minimal configuration for basic usage while enabling deep customization
+//! for advanced testing scenarios.
+//!
+//! # Configuration Hierarchy
+//!
+//! ```text
+//! SimulationConfig
+//! ├── map_file, start_x/y/theta     # Environment setup
+//! ├── speed_factor, random_seed      # Simulation control
+//! ├── RobotConfig                    # Physical parameters
+//! │   ├── wheel_base, ticks_per_meter
+//! │   ├── max_linear/angular_speed
+//! │   └── collision_mode, robot_radius
+//! ├── LidarConfig                    # Lidar simulation
+//! │   ├── num_rays, scan_rate_hz
+//! │   ├── min/max_range, mounting offsets
+//! │   └── LidarNoiseConfig
+//! ├── ImuConfig                      # IMU simulation
+//! │   ├── GyroNoiseConfig
+//! │   ├── Noise3DConfig (accel)
+//! │   └── Noise3DConfig (tilt)
+//! ├── EncoderConfig                  # Encoder simulation
+//! │   └── EncoderNoiseConfig
+//! ├── BumpersConfig                  # Bumper zones
+//! ├── CliffsConfig                   # Cliff sensor positions
+//! ├── SensorsConfig                  # Battery, buttons, etc.
+//! └── ActuatorsConfig                # Logging options
+//! ```
+//!
+//! # Default Values
+//!
+//! All defaults match CRL-200S hardware specifications:
+//!
+//! | Parameter | Default | Source |
+//! |-----------|---------|--------|
+//! | wheel_base | 0.233 m | Measured |
+//! | ticks_per_meter | 4464 | Calibrated |
+//! | max_linear_speed | 0.3 m/s | Hardware limit |
+//! | max_angular_speed | 1.0 rad/s | Hardware limit |
+//! | robot_radius | 0.17 m | Physical size |
+//! | lidar_num_rays | 360 | Delta-2D spec |
+//! | lidar_scan_rate | 5 Hz | Delta-2D spec |
+//! | lidar_max_range | 8 m | Delta-2D spec |
+//!
+//! # Noise Configuration
+//!
+//! Noise parameters are initial estimates and should be calibrated based on
+//! SLAM performance with real hardware data. Start with defaults, then adjust
+//! if simulated performance differs significantly from real-world results.
 
 use serde::Deserialize;
 use std::f32::consts::PI;

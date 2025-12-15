@@ -1,6 +1,7 @@
-# GD32 Sensor Status Packet (0x15)
+# CRL-200S GD32 Sensor Status Packet (0x15)
 
-This document details the 96-byte sensor status packet sent by the GD32 motor controller at approximately 110Hz (limited by 115200 baud serial).
+> **Device-specific documentation for the CRL-200S robotic vacuum platform.**
+> This document describes the 96-byte sensor status packet sent by the GD32 motor controller.
 
 ## Packet Structure
 
@@ -60,7 +61,7 @@ Frequency: ~110 Hz (every ~9ms, limited by 115200 baud)
 | 2 | 0x04 | Bumper Left | 1 = left bumper triggered |
 | 3-7 | - | Reserved | - |
 
-**Code Reference:** `constants.rs:97-98`
+**Code Reference:** [`constants.rs`](constants.rs) lines 97-98
 
 ### Byte 0x03: Cliff Flags
 
@@ -72,7 +73,7 @@ Frequency: ~110 Hz (every ~9ms, limited by 115200 baud)
 | 3 | 0x08 | Cliff Right Side | 1 = drop detected |
 | 4-7 | - | Reserved | - |
 
-**Code Reference:** `constants.rs:99-102`
+**Code Reference:** [`constants.rs`](constants.rs) lines 99-102
 
 ### Byte 0x04: Dustbox Flags
 
@@ -84,7 +85,7 @@ Frequency: ~110 Hz (every ~9ms, limited by 115200 baud)
 
 **Note:** This byte may also indicate box type (0x00 = normal dustbox, 0x04 = 2-in-1 mop box) based on MITM observations.
 
-**Code Reference:** `constants.rs:103`
+**Code Reference:** [`constants.rs`](constants.rs) line 103
 
 ### Byte 0x07: Charging Flags
 
@@ -94,7 +95,7 @@ Frequency: ~110 Hz (every ~9ms, limited by 115200 baud)
 | 1 | 0x02 | Charging | 1 = actively charging |
 | 2-7 | - | Reserved | - |
 
-**Code Reference:** `constants.rs:95-96`
+**Code Reference:** [`constants.rs`](constants.rs) lines 95-96
 
 ### Byte 0x08: Battery Voltage
 
@@ -109,25 +110,25 @@ BATTERY_VOLTAGE_MAX = 15.5V  (100%)
 percentage = (voltage - 13.5) / (15.5 - 13.5) * 100
 ```
 
-**Code Reference:** `constants.rs:91-92`
+**Code Reference:** [`constants.rs`](constants.rs) lines 91-92
 
 ### Bytes 0x10-0x11: Left Wheel Encoder
 
 - **Type:** u16 little-endian
 - **Description:** Encoder tick count for left wheel
-- **Implementation:** Only lower 2 bytes are read by `reader.rs`
+- **Implementation:** Only lower 2 bytes are read by [`gd32/reader.rs`](gd32/reader.rs)
 - **Note:** Bytes 0x12-0x17 may contain upper bytes of a larger counter, but are currently unused
 
-**Code Reference:** `constants.rs:67`, `reader.rs`
+**Code Reference:** [`constants.rs`](constants.rs) line 67
 
 ### Bytes 0x18-0x19: Right Wheel Encoder
 
 - **Type:** u16 little-endian
 - **Description:** Encoder tick count for right wheel
-- **Implementation:** Only lower 2 bytes are read by `reader.rs`
+- **Implementation:** Only lower 2 bytes are read by [`gd32/reader.rs`](gd32/reader.rs)
 - **Note:** Bytes 0x1A-0x1F may contain upper bytes of a larger counter, but are currently unused
 
-**Code Reference:** `constants.rs:68`, `reader.rs`
+**Code Reference:** [`constants.rs`](constants.rs) line 68
 
 ### IMU Data (0x28-0x33)
 
@@ -163,7 +164,7 @@ z = [0, -1]  # output_z (Yaw) = input_x * -1 (sign flip)
 - `gyro_y` = Pitch rate (Y axis rotation, nose up/down)
 - `gyro_z` = Yaw rate (Z axis rotation, CCW positive)
 
-**Code Reference:** `constants.rs:73-88`, `reader.rs:313-323`
+**Code Reference:** [`constants.rs`](constants.rs) lines 73-88, [`gd32/reader.rs`](gd32/reader.rs) lines 313-323
 
 ### LP-Filtered Tilt Vector (0x34-0x39)
 
@@ -175,7 +176,7 @@ Low-pass filtered gravity vector for tilt correction. Useful for determining rob
 | 0x36-0x37 | 2 | Tilt Y | i16 LE - LP gravity vector Y |
 | 0x38-0x39 | 2 | Tilt Z | i16 LE - LP gravity vector Z |
 
-**Code Reference:** `constants.rs:85-88`, `reader.rs:334-355`
+**Code Reference:** [`constants.rs`](constants.rs) lines 85-88, [`gd32/reader.rs`](gd32/reader.rs) lines 334-355
 
 ### Bytes 0x3A-0x3B: Start Button
 
@@ -183,7 +184,7 @@ Low-pass filtered gravity vector for tilt correction. Useful for determining rob
 - **Description:** Start button press state
 - **Implementation:** Read as u16 from bytes 0x3A-0x3B
 
-**Code Reference:** `constants.rs:70`, `reader.rs:223-229`
+**Code Reference:** [`constants.rs`](constants.rs) line 70, [`gd32/reader.rs`](gd32/reader.rs) lines 223-229
 
 ### Bytes 0x3E-0x3F: Dock Button
 
@@ -191,7 +192,7 @@ Low-pass filtered gravity vector for tilt correction. Useful for determining rob
 - **Description:** Dock/home button press state
 - **Implementation:** Read as u16 from bytes 0x3E-0x3F
 
-**Code Reference:** `constants.rs:71`, `reader.rs:230-236`
+**Code Reference:** [`constants.rs`](constants.rs) line 71, [`gd32/reader.rs`](gd32/reader.rs) lines 230-236
 
 ### Byte 0x46: Water Tank Level
 
@@ -239,7 +240,7 @@ Legend:
 
 The reader requires a minimum payload size of 80 bytes (`STATUS_PAYLOAD_MIN_SIZE`). Packets smaller than this are discarded.
 
-**Code Reference:** `constants.rs:59`
+**Code Reference:** [`constants.rs`](constants.rs) line 59
 
 ### Data Endianness
 
@@ -300,17 +301,18 @@ These may contain additional sensor data, error codes, or internal state. Furthe
 
 ---
 
-## Related Files
+## Related Documentation
 
-- `src/devices/crl200s/constants.rs` - Offset and flag constants
-- `src/devices/crl200s/gd32/reader.rs` - Status packet parsing logic
-- `src/devices/crl200s/gd32/protocol.rs` - Packet framing and CRC
-- `COMMANDS.md` - GD32 command reference
+- [COMMANDS.md](COMMANDS.md) - GD32 command reference
+- [`constants.rs`](constants.rs) - Offset and flag constants
+- [`gd32/reader.rs`](gd32/reader.rs) - Status packet parsing logic
+- [`gd32/protocol.rs`](gd32/protocol.rs) - Packet framing and CRC
 
 ---
 
 ## Changelog
 
+- **2024-12-15:** Moved to `src/devices/crl200s/` directory, updated relative paths
 - **2024-12-07:** Added coordinate frame transform documentation for IMU data (ROS REP-103 conversion)
 - **2024-11-30:** Fixed encoder and button sizes to match actual reader.rs implementation (u16, not u64/u32)
 - **2024-11-30:** Initial documentation based on reverse-engineered constants and MITM captures

@@ -1,4 +1,57 @@
-//! TCP receiver thread - receives commands from client
+//! TCP command receiver for client control
+//!
+//! This module handles incoming commands from connected clients over TCP.
+//! Commands include robot motion control, actuator control, and component
+//! enable/disable operations.
+//!
+//! # Purpose
+//!
+//! TCP is used for commands (not UDP) because:
+//!
+//! - **Reliability**: Commands must not be lost (e.g., "stop motors")
+//! - **Ordering**: Commands must execute in sequence
+//! - **Acknowledgment**: Sender knows the command was received
+//! - **State sync**: TCP connection state tracks client presence
+//!
+//! # Wire Format
+//!
+//! Commands use length-prefixed Protobuf encoding:
+//!
+//! ```text
+//! ┌──────────────────┬─────────────────────┐
+//! │ Length (4 bytes) │ Protobuf Command    │
+//! │ Big-endian u32   │ (variable size)     │
+//! └──────────────────┴─────────────────────┘
+//! ```
+//!
+//! # Command Types
+//!
+//! | Command | Description |
+//! |---------|-------------|
+//! | `ComponentControl::drive` | Set linear/angular velocity |
+//! | `ComponentControl::lidar` | Enable/disable lidar motor |
+//! | `ComponentControl::vacuum` | Control vacuum motor speed |
+//! | `ComponentControl::main_brush` | Control main brush speed |
+//! | `ComponentControl::side_brush` | Control side brush speed |
+//! | `ComponentControl::water_pump` | Control water pump speed |
+//! | `ComponentControl::led` | Set LED state |
+//! | `Shutdown` | Graceful daemon shutdown |
+//!
+//! # Connection Lifecycle
+//!
+//! ```text
+//! 1. Client connects to TCP port 5555
+//! 2. Server spawns TcpReceiver thread for this client
+//! 3. Client IP is registered for UDP streaming
+//! 4. Receiver loop processes commands until disconnect
+//! 5. On disconnect, UDP registration is cleared
+//! ```
+//!
+//! # Safety Features
+//!
+//! - **Read timeout**: 500ms timeout allows periodic shutdown flag checks
+//! - **Buffer limit**: Commands > 1MB are rejected (DoS protection)
+//! - **Graceful shutdown**: Handles both global and per-connection flags
 
 use crate::core::driver::DeviceDriver;
 use crate::core::types::Command;

@@ -1,11 +1,71 @@
-//! UDP publisher thread - streams sensor data to registered clients
+//! UDP publisher for real-time sensor data streaming
 //!
-//! Supports two modes for different data rates:
-//! - **Streaming mode**: For high-rate sensors (GD32 @ 110Hz), consumes from channel
-//! - **Polling mode**: For low-rate sensors (lidar @ 5Hz), polls shared mutex
+//! This module implements the UDP unicast publisher that streams sensor data
+//! to registered clients. It's optimized for low-latency, high-frequency
+//! sensor delivery on embedded systems.
 //!
-//! Uses UDP unicast to registered clients only (not broadcast).
-//! Clients are registered when they connect via TCP for commands.
+//! # Design Principles
+//!
+//! ## Two Data Delivery Modes
+//!
+//! Different sensors have different update rates and delivery requirements:
+//!
+//! | Mode | Sensors | Rate | Mechanism |
+//! |------|---------|------|-----------|
+//! | Streaming | sensor_status (GD32) | 110Hz | Crossbeam channel |
+//! | Polling | lidar, device_version | 5Hz | Shared mutex |
+//!
+//! **Streaming mode** uses lock-free channels for high-rate sensors where
+//! every packet matters and we need to minimize latency.
+//!
+//! **Polling mode** uses shared mutexes for low-rate sensors where it's
+//! acceptable to occasionally miss an update if the publisher is busy.
+//!
+//! ## Unicast vs Broadcast
+//!
+//! UDP streaming uses **unicast** (not broadcast) because:
+//!
+//! - **Security**: Only authorized clients receive data
+//! - **Efficiency**: No processing overhead on non-listening hosts
+//! - **Firewall-friendly**: Works across subnets with proper routing
+//! - **Single client**: Robot typically has one SLAM client at a time
+//!
+//! # Client Registration
+//!
+//! Clients are automatically registered when they connect via TCP:
+//!
+//! ```text
+//! 1. Client connects TCP to port 5555
+//! 2. TcpReceiver extracts client IP from socket
+//! 3. Client IP is stored in UdpClientRegistry
+//! 4. UdpPublisher sends packets to registered IP
+//! 5. When TCP disconnects, registration is cleared
+//! ```
+//!
+//! # Wire Format
+//!
+//! Each UDP datagram uses the same format as TCP for client compatibility:
+//!
+//! ```text
+//! ┌──────────────────┬──────────────────────┐
+//! │ Length (4 bytes) │ Protobuf SensorGroup │
+//! │ Big-endian u32   │ (~150 bytes typical) │
+//! └──────────────────┴──────────────────────┘
+//! ```
+//!
+//! # Performance Characteristics
+//!
+//! - **Buffer reuse**: Pre-allocated send buffer avoids allocation per packet
+//! - **Non-blocking**: Channel draining and mutex polling are non-blocking
+//! - **Rate limiting**: 500μs minimum sleep between packets to yield CPU
+//! - **Graceful degradation**: Packet loss is logged but doesn't block sender
+//!
+//! # Example Packet Rates
+//!
+//! At default settings:
+//! - sensor_status: ~110 packets/sec (~16.5 KB/s)
+//! - lidar: ~5 packets/sec (~10 KB/s with 360 points)
+//! - device_version: 1 packet (one-time)
 
 use crate::core::types::{SensorGroupData, StreamReceiver};
 use crate::error::Result;
