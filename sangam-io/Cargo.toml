@@ -28,6 +28,10 @@ thiserror = "1.0"
 # Signal handling
 ctrlc = "3.5"
 
+# Unix socket operations (socket buffer configuration)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [build-dependencies]
 prost-build = "0.13"
 

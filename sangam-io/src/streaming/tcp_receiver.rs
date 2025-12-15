@@ -13,7 +13,10 @@ use std::sync::{Arc, Mutex};
 pub struct TcpReceiver {
     serializer: Serializer,
     driver: Arc<Mutex<Box<dyn DeviceDriver>>>,
+    /// Global running flag (daemon shutdown)
     running: Arc<AtomicBool>,
+    /// Per-connection alive flag (connection health)
+    conn_alive: Arc<AtomicBool>,
     /// Reusable buffer for reading command payloads (avoids allocation per command)
     read_buffer: Vec<u8>,
 }
@@ -27,11 +30,13 @@ impl TcpReceiver {
         serializer: Serializer,
         driver: Arc<Mutex<Box<dyn DeviceDriver>>>,
         running: Arc<AtomicBool>,
+        conn_alive: Arc<AtomicBool>,
     ) -> Self {
         Self {
             serializer,
             driver,
             running,
+            conn_alive,
             // Pre-allocate buffer to avoid allocation on first command
             read_buffer: Vec::with_capacity(INITIAL_BUFFER_CAPACITY),
         }
@@ -49,8 +54,13 @@ impl TcpReceiver {
         log::debug!("Entering receiver loop");
 
         loop {
+            // Check both global running flag and per-connection alive flag
             if !self.running.load(Ordering::Relaxed) {
                 log::debug!("Running flag cleared, exiting");
+                break;
+            }
+            if !self.conn_alive.load(Ordering::Relaxed) {
+                log::debug!("Connection alive flag cleared, exiting");
                 break;
             }
 
@@ -65,6 +75,10 @@ impl TcpReceiver {
                     // Timeout or non-command message, continue loop
                 }
                 Err(e) => {
+                    // Signal connection is dead and shutdown socket
+                    self.conn_alive.store(false, Ordering::Relaxed);
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+
                     // Check if it's a connection closed error
                     if let Error::Io(ref io_err) = e
                         && (io_err.kind() == std::io::ErrorKind::UnexpectedEof
@@ -78,6 +92,10 @@ impl TcpReceiver {
                 }
             }
         }
+
+        // Clean shutdown: signal connection dead and close socket
+        self.conn_alive.store(false, Ordering::Relaxed);
+        let _ = stream.shutdown(std::net::Shutdown::Both);
 
         log::info!("TCP receiver stopped");
         Ok(())

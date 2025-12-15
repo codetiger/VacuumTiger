@@ -67,8 +67,14 @@ z = [0, -1]   # output_z (yaw) = input_x * -1 (sign flip)
 # z = [2, 1]
 
 [network]
-# TCP server bind address for client connections
+# TCP server bind address for command connections
 # Format: "host:port"
 # Use "0.0.0.0:5555" to listen on all interfaces
-# Clients connect here to receive sensor streams and send commands
+# TCP is commands-only + triggers UDP streaming registration
 bind_address = "0.0.0.0:5555"
+
+# UDP streaming port for sensor data (unicast to registered clients)
+# When a TCP client connects, their IP is registered for UDP streaming
+# Sensor data is sent to <client_ip>:<udp_streaming_port>
+# Default: 5556
+udp_streaming_port = 5556

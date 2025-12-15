@@ -1,4 +1,12 @@
 //! SangamIO - Hardware abstraction daemon for robot vacuum
+//!
+//! ## Protocol Architecture
+//!
+//! - **UDP Unicast (port 5556)**: Sensor streaming to registered clients (fire-and-forget)
+//! - **TCP (port 5555)**: Commands only (reliable, bidirectional)
+//!
+//! When a TCP client connects for commands, their IP is automatically registered
+//! for UDP sensor streaming. This eliminates network flooding from broadcasts.
 
 mod config;
 mod core;
@@ -9,9 +17,9 @@ mod streaming;
 use crate::config::Config;
 use crate::devices::create_device;
 use crate::error::Result;
-use crate::streaming::{TcpPublisher, TcpReceiver, create_serializer};
+use crate::streaming::{TcpReceiver, UdpClientRegistry, UdpPublisher, create_serializer};
 use std::env;
-use std::net::TcpListener;
+use std::net::{Shutdown, SocketAddr, TcpListener, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -64,7 +72,49 @@ fn main() -> Result<()> {
 
     log::info!("Wire format: Protobuf");
 
-    // Start TCP listener
+    // =========================================================================
+    // UDP Unicast Setup (sensor streaming to registered clients)
+    // =========================================================================
+    let udp_streaming_port = config.network.udp_streaming_port;
+
+    // Bind UDP socket to any available port (we only send, not receive)
+    let udp_socket = UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| error::Error::Other(format!("Failed to create UDP socket: {}", e)))?;
+
+    log::info!(
+        "UDP unicast streaming enabled (port {} - clients register via TCP)",
+        udp_streaming_port
+    );
+
+    // Client registry: tracks which IP to send UDP sensor data to
+    // Updated when TCP clients connect/disconnect
+    let udp_client_registry: UdpClientRegistry = Arc::new(Mutex::new(None));
+
+    // Spawn single UDP publisher thread (unicast to registered client)
+    let udp_serializer = create_serializer();
+    let udp_sensor_data = sensor_data.clone();
+    let udp_running = Arc::clone(&running);
+    let udp_registry_clone = Arc::clone(&udp_client_registry);
+    let _udp_handle = thread::Builder::new()
+        .name("udp-publisher".to_string())
+        .spawn(move || {
+            let publisher = UdpPublisher::new(
+                udp_socket,
+                udp_serializer,
+                udp_sensor_data,
+                stream_receivers, // UDP gets ownership of streaming channels
+                udp_running,
+                udp_registry_clone,
+            );
+            if let Err(e) = publisher.run() {
+                log::error!("UDP publisher error: {}", e);
+            }
+        })
+        .map_err(|e| error::Error::Other(format!("Failed to spawn UDP publisher: {}", e)))?;
+
+    // =========================================================================
+    // TCP Server Setup (commands only)
+    // =========================================================================
     let bind_addr = &config.network.bind_address;
     let listener = TcpListener::bind(bind_addr)
         .map_err(|e| error::Error::Other(format!("Failed to bind to {}: {}", bind_addr, e)))?;
@@ -72,62 +122,88 @@ fn main() -> Result<()> {
         log::warn!("Failed to set nonblocking mode: {}", e);
     }
 
-    log::info!("TCP server listening on {}", bind_addr);
+    log::info!("TCP server listening on {} (commands only)", bind_addr);
     log::info!("SangamIO running. Press Ctrl-C to stop.");
 
-    // Main loop - accept connections and spawn handlers
+    // Main loop - accept TCP connections for commands
+    // NOTE: TCP connect also registers client for UDP sensor streaming.
+    // Only one client at a time - prevents conflicting commands.
     while running.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, addr)) => {
-                log::info!("Client connected: {}", addr);
-
-                // Clone resources for threads
-                let sensor_data_clone = sensor_data.clone();
-                let stream_receivers_clone = stream_receivers.clone();
-                let driver_clone = Arc::clone(&driver);
-
-                // Create serializers for each thread
-                let pub_serializer = create_serializer();
-                let recv_serializer = create_serializer();
-
-                // Spawn publisher thread
-                let pub_running = Arc::clone(&running);
-                let pub_stream = match stream.try_clone() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::error!("Failed to clone stream: {}", e);
-                        continue;
+                // Check if we already have an active client (UDP registry doubles as client tracker)
+                let should_accept = {
+                    let mut registry = udp_client_registry
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if registry.is_some() {
+                        log::warn!(
+                            "Rejecting TCP connection from {}: already have active client {:?}",
+                            addr,
+                            *registry
+                        );
+                        false
+                    } else {
+                        // Register client for UDP streaming (client_ip:udp_streaming_port)
+                        let udp_addr = SocketAddr::new(addr.ip(), udp_streaming_port);
+                        *registry = Some(udp_addr);
+                        log::info!(
+                            "TCP client connected: {} (UDP streaming -> {})",
+                            addr,
+                            udp_addr
+                        );
+                        true
                     }
                 };
-                let _pub_handle = thread::Builder::new()
-                    .name("tcp-publisher".to_string())
-                    .spawn(move || {
-                        let publisher = TcpPublisher::new(
-                            pub_serializer,
-                            sensor_data_clone,
-                            stream_receivers_clone,
-                            pub_running,
-                        );
-                        if let Err(e) = publisher.run(pub_stream) {
-                            log::error!("Publisher error: {}", e);
-                        }
-                    });
 
-                // Spawn receiver thread
+                if !should_accept {
+                    // Close the rejected connection
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
+
+                // Set socket to blocking mode for reliable command handling
+                if let Err(e) = stream.set_nonblocking(false) {
+                    log::error!("Failed to set socket to blocking mode: {}", e);
+                    // Clear UDP registry on error
+                    if let Ok(mut guard) = udp_client_registry.lock() {
+                        *guard = None;
+                    }
+                    continue;
+                }
+
+                // Clone resources for receiver thread
+                let driver_clone = Arc::clone(&driver);
+                let recv_serializer = create_serializer();
                 let recv_running = Arc::clone(&running);
+                let registry_clone = Arc::clone(&udp_client_registry);
+
+                // Spawn receiver thread (commands only - no publisher needed)
                 let _recv_handle = thread::Builder::new()
                     .name("tcp-receiver".to_string())
                     .spawn(move || {
-                        let mut receiver =
-                            TcpReceiver::new(recv_serializer, driver_clone, recv_running);
+                        // Create a simple alive flag for this connection
+                        let conn_alive = Arc::new(AtomicBool::new(true));
+                        let mut receiver = TcpReceiver::new(
+                            recv_serializer,
+                            driver_clone,
+                            recv_running,
+                            conn_alive,
+                        );
                         if let Err(e) = receiver.run(stream) {
-                            log::error!("Receiver error: {}", e);
+                            log::error!("TCP receiver error: {}", e);
+                        }
+                        log::info!("TCP client disconnected: {}", addr);
+
+                        // Unregister client from UDP streaming
+                        if let Ok(mut guard) = registry_clone.lock() {
+                            *guard = None;
                         }
                     });
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // No connection pending, sleep briefly
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                // No connection pending, sleep briefly (10ms for responsive connection acceptance)
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
             Err(e) => {
                 log::error!("Accept error: {}", e);
