@@ -478,7 +478,6 @@ Accelerate simulation for faster testing:
 
 ### Mock Device Simulation
 - [docs/mock-device-guide.md](docs/mock-device-guide.md) - Mock device user guide
-- [docs/proposal-mock-device.md](docs/proposal-mock-device.md) - Mock device design document
 
 ## Debugging
 

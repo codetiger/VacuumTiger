@@ -287,9 +287,10 @@ pub struct DeviceConfig {
 /// Network configuration for TCP/UDP server
 ///
 /// Controls how the daemon listens for client connections and streams sensor data.
+/// Both TCP (commands) and UDP (sensor streaming) use the same port from `bind_address`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NetworkConfig {
-    /// TCP bind address and port (for commands only)
+    /// TCP/UDP bind address and port
     ///
     /// **Format**: "host:port"
     /// **Examples**:
@@ -297,21 +298,23 @@ pub struct NetworkConfig {
     /// - "127.0.0.1:5555" (localhost only)
     /// - "192.168.1.100:5555" (specific interface)
     ///
+    /// TCP is used for commands, UDP for sensor streaming.
+    /// Both use the same port for simpler client configuration.
+    ///
     /// **Required**: Yes
     pub bind_address: String,
-
-    /// UDP streaming port for sensor data (unicast to registered clients)
-    ///
-    /// When a TCP client connects, their IP is registered for UDP streaming.
-    /// Sensor data is sent via unicast to `<client_ip>:<udp_streaming_port>`.
-    ///
-    /// **Default**: 5556
-    #[serde(default = "default_udp_streaming_port")]
-    pub udp_streaming_port: u16,
 }
 
-fn default_udp_streaming_port() -> u16 {
-    5556
+impl NetworkConfig {
+    /// Extract the port number from bind_address.
+    /// Used for both TCP listening and UDP streaming to clients.
+    pub fn port(&self) -> u16 {
+        self.bind_address
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(5555)
+    }
 }
 
 /// Root configuration

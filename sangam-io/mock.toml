@@ -121,5 +121,6 @@ is_charging = false
 log_state_changes = true
 
 # Network configuration
+# Both TCP (commands) and UDP (sensor streaming) use the same port
 [network]
 bind_address = "0.0.0.0:5555"
