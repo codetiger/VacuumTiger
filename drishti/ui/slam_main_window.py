@@ -28,12 +28,13 @@ logger = logging.getLogger(__name__)
 class SlamMainWindow(QMainWindow):
     """Main application window for SLAM mode."""
 
-    def __init__(self, slam_host="localhost", slam_port=5557, command_port=5558):
+    def __init__(self, slam_host="localhost", slam_port=5557, command_port=None):
         super().__init__()
 
         self.slam_host = slam_host
         self.slam_port = slam_port
-        self.command_port = command_port
+        # Command port defaults to same as slam_port (unified architecture)
+        self.command_port = command_port if command_port is not None else slam_port
         self.slam_thread = None
 
         # Initialize UI

@@ -1,16 +1,20 @@
 """
 SLAM thread for receiving data from DhruvaSLAM daemon.
 
-Uses the new DhruvaStream protocol (port 5557) for continuous data:
+Uses DhruvaStream protocol for continuous data (via TCP):
 - RobotStatus: pose, state, battery, mapping progress
 - SensorStatus: lidar, encoders, IMU
 - CurrentMap: occupancy grid
 - MapList: saved maps
-- NavigationStatus: path planning (future)
+- NavigationStatus: path planning
 
-And DhruvaCommand/Response protocol (port 5558) for commands:
+And DhruvaCommand/Response protocol for commands (via same TCP port):
 - StartMapping, StopMapping, ClearMap
-- RenameMap, DeleteMap, EnableMap
+- RenameMap, DeleteMap, EnableMap, SetGoal, CancelGoal
+
+Note: Both streams and commands use the same port (5557) following the
+unified DhruvaSLAM architecture. Two separate TCP connections are used:
+one for streaming data, one for command/response.
 """
 
 import socket
@@ -70,11 +74,12 @@ class SlamThread(QThread):
     # Payload: {request_id, success, error_message, data: {...}}
     command_response_received = pyqtSignal(dict)
 
-    def __init__(self, host: str, port: int = 5557, command_port: int = 5558, parent=None):
+    def __init__(self, host: str, port: int = 5557, command_port: int = None, parent=None):
         super().__init__(parent)
         self.host = host
         self.port = port
-        self.command_port = command_port
+        # Command port defaults to same as stream port (unified architecture)
+        self.command_port = command_port if command_port is not None else port
         self._running = True
         self.stream_socket = None
         self.command_socket = None
@@ -163,7 +168,11 @@ class SlamThread(QThread):
             msg.ParseFromString(data)
             return msg
         except Exception as e:
+            # Save problematic data for debugging
+            with open('/tmp/failed_proto.bin', 'wb') as f:
+                f.write(data)
             logger.error(f"Parse error: {e}, data len={len(data)}, first 50 bytes: {data[:50].hex()}")
+            logger.error(f"Saved failed message to /tmp/failed_proto.bin")
             raise
 
     def _recv_exact(self, sock: socket.socket, n: int) -> bytes:

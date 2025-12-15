@@ -130,13 +130,13 @@ def main():
         "--port",
         type=int,
         default=5557,
-        help="DhruvaSLAM stream port (default: 5557)"
+        help="DhruvaSLAM port for TCP commands+maps and UDP status (default: 5557)"
     )
     slam_parser.add_argument(
         "--command-port",
         type=int,
-        default=5558,
-        help="DhruvaSLAM command port (default: 5558)"
+        default=None,
+        help="DhruvaSLAM command port (default: same as --port)"
     )
 
     args = parser.parse_args()
