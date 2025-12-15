@@ -1,6 +1,17 @@
 """
 Telemetry thread for receiving sensor data from SangamIO daemon.
-Supports Protobuf wire format with Message/SensorGroup structure.
+
+Protocol Architecture:
+- **TCP (port 5555)**: Commands + registration for UDP streaming
+- **UDP (port 5556)**: Receives sensor data via unicast (fire-and-forget)
+
+Connection Flow:
+1. Connect via TCP to SangamIO (registers client IP for UDP streaming)
+2. SangamIO starts sending UDP unicast packets to this client
+3. TCP connection kept alive for sending commands
+4. On TCP disconnect, UDP streaming stops
+
+This design eliminates network flooding - only registered clients receive data.
 """
 
 import socket
@@ -18,9 +29,17 @@ from proto import sangamio_pb2
 
 logger = logging.getLogger(__name__)
 
+# Default ports
+UDP_SENSOR_PORT = 5556  # UDP unicast for sensor data
+TCP_COMMAND_PORT = 5555  # TCP for commands + UDP registration
+
 
 class TelemetryThread(QThread):
-    """Background thread for receiving telemetry from SangamIO."""
+    """Background thread for receiving telemetry from SangamIO.
+
+    Connects via TCP first (to register for UDP streaming), then
+    receives sensor data via UDP unicast. TCP is kept alive for commands.
+    """
 
     # Signal emitted when new sensor data is received
     sensor_data_received = pyqtSignal(dict)
@@ -28,12 +47,16 @@ class TelemetryThread(QThread):
     # Signal for connection status
     connection_status = pyqtSignal(bool, str)
 
-    def __init__(self, host: str, port: int = 5555, log_raw_packets: bool = False, parent=None):
+    def __init__(self, host: str, port: int = TCP_COMMAND_PORT,
+                 udp_port: int = UDP_SENSOR_PORT,
+                 log_raw_packets: bool = False, parent=None):
         super().__init__(parent)
         self.host = host
-        self.port = port
+        self.tcp_port = port  # TCP port for commands
+        self.udp_port = udp_port  # UDP port for sensor broadcast
         self._running = True
-        self.socket = None
+        self.udp_socket = None  # UDP socket for receiving sensors
+        self.tcp_socket = None  # TCP socket for sending commands
         self.log_raw_packets = log_raw_packets
         self.raw_packet_file = None
         self.sensor_data_file = None
@@ -41,8 +64,10 @@ class TelemetryThread(QThread):
         self._sensor_log_count = 0
 
     def run(self):
-        """Main thread loop - connect and receive data."""
-        logger.info(f"Telemetry thread starting, connecting to {self.host}:{self.port}")
+        """Main thread loop - connect TCP first, then receive UDP sensor data."""
+        logger.info(f"Telemetry thread starting")
+        logger.info(f"  TCP registration: {self.host}:{self.tcp_port}")
+        logger.info(f"  UDP sensor data: port {self.udp_port}")
 
         # Open log files if enabled
         if self.log_raw_packets:
@@ -56,51 +81,124 @@ class TelemetryThread(QThread):
 
         while self._running:
             try:
-                # Connect to SangamIO
-                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.socket.settimeout(5.0)
-                self.socket.connect((self.host, self.port))
-                self.connection_status.emit(True, f"Connected to {self.host}:{self.port}")
-                logger.info(f"Connected to {self.host}:{self.port} (wire format: Protobuf)")
+                # Step 1: Connect TCP first (registers us for UDP streaming)
+                self.connection_status.emit(False, f"Connecting to {self.host}:{self.tcp_port}...")
+                if not self._connect_tcp():
+                    if self._running:
+                        self.connection_status.emit(False, f"TCP connection failed, retrying...")
+                        self.msleep(2000)
+                    continue
 
-                # Receive loop
+                # Step 2: Create UDP socket for receiving sensor data
+                self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+                # Bind to UDP port to receive unicast packets
+                self.udp_socket.bind(('0.0.0.0', self.udp_port))
+                self.udp_socket.settimeout(2.0)  # Timeout for checking _running flag
+
+                self.connection_status.emit(True, f"Connected to {self.host} (UDP streaming active)")
+                logger.info(f"UDP socket bound to port {self.udp_port} (receiving unicast from {self.host})")
+
+                # Step 3: Receive loop - UDP datagrams
                 while self._running:
                     try:
-                        message = self._read_message()
-                        if message:
-                            self._process_message(message)
+                        # UDP receives complete datagrams
+                        data, addr = self.udp_socket.recvfrom(65536)  # Max UDP packet size
+                        if data:
+                            message = self._parse_udp_message(data)
+                            if message:
+                                self._process_message(message)
                     except socket.timeout:
+                        # Check if TCP connection is still alive
+                        if not self._is_tcp_connected():
+                            logger.warning("TCP connection lost, reconnecting...")
+                            self.connection_status.emit(False, "TCP disconnected, reconnecting...")
+                            break
                         continue
                     except Exception as e:
                         if self._running:
-                            logger.error(f"Read error: {e}")
-                            self.connection_status.emit(False, f"Read error: {e}")
+                            logger.error(f"UDP receive error: {e}")
+                            self.connection_status.emit(False, f"UDP error: {e}")
                         break
 
             except Exception as e:
                 if self._running:
-                    logger.error(f"Connection failed: {e}")
-                    self.connection_status.emit(False, f"Connection failed: {e}")
+                    logger.error(f"Connection setup failed: {e}")
+                    self.connection_status.emit(False, f"Setup failed: {e}")
                     # Wait before retry
                     self.msleep(2000)
 
             finally:
-                if self.socket:
+                # Clean up sockets
+                if self.udp_socket:
                     try:
-                        self.socket.close()
+                        self.udp_socket.close()
                     except:
                         pass
-                    self.socket = None
+                    self.udp_socket = None
+                if self.tcp_socket:
+                    try:
+                        self.tcp_socket.close()
+                    except:
+                        pass
+                    self.tcp_socket = None
 
         logger.info("Telemetry thread stopped")
+
+    def _connect_tcp(self) -> bool:
+        """Connect TCP socket to register for UDP streaming."""
+        try:
+            self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.tcp_socket.settimeout(5.0)
+            self.tcp_socket.connect((self.host, self.tcp_port))
+            logger.info(f"TCP connected to {self.host}:{self.tcp_port} (registered for UDP streaming)")
+            return True
+        except Exception as e:
+            logger.error(f"TCP connection failed: {e}")
+            if self.tcp_socket:
+                try:
+                    self.tcp_socket.close()
+                except:
+                    pass
+            self.tcp_socket = None
+            return False
+
+    def _is_tcp_connected(self) -> bool:
+        """Check if TCP socket is still connected."""
+        if not self.tcp_socket:
+            return False
+        try:
+            # Use non-blocking check - recv with MSG_PEEK
+            self.tcp_socket.setblocking(False)
+            try:
+                data = self.tcp_socket.recv(1, socket.MSG_PEEK)
+                # If recv returns empty, connection was closed
+                if data == b'':
+                    return False
+            except BlockingIOError:
+                # No data available but connection is alive
+                pass
+            except ConnectionResetError:
+                return False
+            finally:
+                self.tcp_socket.setblocking(True)
+            return True
+        except Exception:
+            return False
 
     def stop(self):
         """Stop the thread."""
         logger.info("Stopping telemetry thread...")
         self._running = False
-        if self.socket:
+        if self.udp_socket:
             try:
-                self.socket.close()
+                self.udp_socket.close()
+            except:
+                pass
+        if self.tcp_socket:
+            try:
+                self.tcp_socket.close()
             except:
                 pass
         if self.raw_packet_file:
@@ -117,8 +215,12 @@ class TelemetryThread(QThread):
                 pass
         self.wait()
 
+    def _ensure_tcp_connected(self) -> bool:
+        """Check if TCP socket is connected (established in run())."""
+        return self.tcp_socket is not None and self._is_tcp_connected()
+
     def send_command(self, command: dict) -> bool:
-        """Send a command through the existing connection.
+        """Send a command via TCP connection.
 
         Commands use the ComponentControl protocol:
         {
@@ -127,8 +229,8 @@ class TelemetryThread(QThread):
             "action": {"type": "Enable" | "Disable" | "Reset" | "Configure", "config": {...}}
         }
         """
-        if not self.socket:
-            logger.error("Cannot send command: not connected")
+        if not self._ensure_tcp_connected():
+            logger.error("Cannot send command: TCP not connected")
             return False
 
         try:
@@ -165,15 +267,16 @@ class TelemetryThread(QThread):
                 self._set_sensor_value(sensor_val, value)
                 action.config[key].CopyFrom(sensor_val)
 
-            # Serialize and send
+            # Serialize and send via TCP
             data = msg.SerializeToString()
             length = struct.pack('>I', len(data))
-            self.socket.sendall(length + data)
-            logger.debug(f"Command sent: {command}")
+            self.tcp_socket.sendall(length + data)
+            logger.debug(f"Command sent via TCP: {command}")
             return True
 
         except Exception as e:
             logger.error(f"Failed to send command: {e}")
+            # Connection error will be detected by run() loop on next timeout
             return False
 
     def _set_sensor_value(self, sensor_val: sangamio_pb2.SensorValue, value):
@@ -213,38 +316,34 @@ class TelemetryThread(QThread):
         elif isinstance(value, str):
             sensor_val.string_val = value
 
-    def _read_message(self) -> sangamio_pb2.Message:
-        """Read a length-prefixed Protobuf message."""
-        # Read 4-byte length prefix
-        length_data = self._recv_exact(4)
-        if not length_data:
+    def _parse_udp_message(self, data: bytes) -> sangamio_pb2.Message:
+        """Parse a UDP datagram containing a length-prefixed Protobuf message.
+
+        UDP datagrams are received atomically, so we get the complete message
+        in one receive. The format is: [4-byte length][protobuf payload]
+        """
+        if len(data) < 4:
+            logger.warning(f"UDP packet too short: {len(data)} bytes")
             return None
 
-        length = struct.unpack('>I', length_data)[0]
+        # Read 4-byte length prefix
+        length = struct.unpack('>I', data[:4])[0]
+
+        # Validate length matches packet size
+        expected_size = 4 + length
+        if len(data) != expected_size:
+            logger.warning(f"UDP packet size mismatch: expected {expected_size}, got {len(data)}")
+            return None
 
         # Sanity check
         if length > 1024 * 1024:
-            raise ValueError(f"Message too large: {length} bytes")
-
-        # Read message body
-        data = self._recv_exact(length)
-        if not data:
+            logger.warning(f"UDP message too large: {length} bytes")
             return None
 
-        # Parse Protobuf
+        # Parse Protobuf payload (after 4-byte length prefix)
         msg = sangamio_pb2.Message()
-        msg.ParseFromString(data)
+        msg.ParseFromString(data[4:])
         return msg
-
-    def _recv_exact(self, n: int) -> bytes:
-        """Receive exactly n bytes."""
-        data = b''
-        while len(data) < n:
-            chunk = self.socket.recv(n - len(data))
-            if not chunk:
-                return None
-            data += chunk
-        return data
 
     def _process_message(self, message: sangamio_pb2.Message):
         """Process a received message and emit signal."""

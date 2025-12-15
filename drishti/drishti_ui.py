@@ -2,14 +2,15 @@
 """
 Drishti UI - CRL-200S Robot Visualization
 
-Full-screen robot diagram with sensor overlays.
+Two modes:
+- sensor: Connect to SangamIO for raw sensor visualization (robot view)
+- slam: Connect to DhruvaSLAM for SLAM visualization (map, trajectory, controls)
 """
 
 import sys
 import argparse
 import logging
 from PyQt5.QtWidgets import QApplication
-from ui.main_window import MainWindow
 
 # Configure logging
 logging.basicConfig(
@@ -20,82 +21,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Drishti - CRL-200S Robot Visualization"
-    )
-    parser.add_argument(
-        "--robot",
-        default="192.168.68.101",
-        help="Robot hostname or IP address (default: 192.168.68.101)"
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=5555,
-        help="TCP port (default: 5555)"
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose logging"
-    )
-    parser.add_argument(
-        "--log-raw-packets",
-        action="store_true",
-        help="Log raw GD32 status packets to file for debugging"
-    )
+def run_sensor_mode(args):
+    """Run sensor mode - connects to SangamIO for raw sensor data."""
+    from ui.main_window import MainWindow
 
-    # SLAM/Odometry arguments
-    parser.add_argument(
-        "--slam-host",
-        default="localhost",
-        help="dhruva-slam-node hostname (default: localhost)"
-    )
-    parser.add_argument(
-        "--slam-port",
-        type=int,
-        default=5557,
-        help="dhruva-slam-node TCP port (default: 5557)"
-    )
-    parser.add_argument(
-        "--no-slam",
-        action="store_true",
-        help="Disable SLAM/odometry connection"
-    )
-
-    args = parser.parse_args()
-
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
-    logger.info("Drishti - CRL-200S Robot Visualization")
-    logger.info(f"Connecting to robot at {args.robot}:{args.port}")
+    logger.info("Drishti - Sensor Mode")
+    logger.info(f"Connecting to SangamIO at {args.robot}:{args.port}")
     if args.log_raw_packets:
         logger.info("Raw packet logging ENABLED")
-    if not args.no_slam:
-        logger.info(f"SLAM enabled: {args.slam_host}:{args.slam_port}")
-    else:
-        logger.info("SLAM disabled")
 
-    # Create Qt application
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
 
-    # Create and show main window
     try:
         window = MainWindow(
             robot_ip=args.robot,
             port=args.port,
-            log_raw_packets=args.log_raw_packets,
-            slam_host=args.slam_host,
-            slam_port=args.slam_port,
-            no_slam=args.no_slam
+            log_raw_packets=args.log_raw_packets
         )
         window.show()
-
-        logger.info("Application started")
+        logger.info("Sensor mode started")
         sys.exit(app.exec_())
 
     except KeyboardInterrupt:
@@ -103,6 +48,109 @@ def main():
         sys.exit(0)
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
+
+
+def run_slam_mode(args):
+    """Run SLAM mode - connects to DhruvaSLAM for SLAM visualization."""
+    from ui.slam_main_window import SlamMainWindow
+
+    logger.info("Drishti - SLAM Mode")
+    logger.info(f"Connecting to DhruvaSLAM at {args.host}:{args.port}")
+    if args.command_port:
+        logger.info(f"Command port: {args.command_port}")
+
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+
+    try:
+        window = SlamMainWindow(
+            slam_host=args.host,
+            slam_port=args.port,
+            command_port=args.command_port
+        )
+        window.show()
+        logger.info("SLAM mode started")
+        sys.exit(app.exec_())
+
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Drishti - CRL-200S Robot Visualization"
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+
+    subparsers = parser.add_subparsers(dest="mode", help="Operating mode")
+
+    # Sensor mode subcommand
+    sensor_parser = subparsers.add_parser(
+        "sensor",
+        help="Sensor mode - connect to SangamIO for raw sensor visualization"
+    )
+    sensor_parser.add_argument(
+        "--robot",
+        default="192.168.68.101",
+        help="SangamIO hostname or IP address (default: 192.168.68.101)"
+    )
+    sensor_parser.add_argument(
+        "--port",
+        type=int,
+        default=5555,
+        help="SangamIO TCP port (default: 5555)"
+    )
+    sensor_parser.add_argument(
+        "--log-raw-packets",
+        action="store_true",
+        help="Log raw GD32 status packets to file for debugging"
+    )
+
+    # SLAM mode subcommand
+    slam_parser = subparsers.add_parser(
+        "slam",
+        help="SLAM mode - connect to DhruvaSLAM for map visualization"
+    )
+    slam_parser.add_argument(
+        "--host",
+        default="localhost",
+        help="DhruvaSLAM hostname (default: localhost)"
+    )
+    slam_parser.add_argument(
+        "--port",
+        type=int,
+        default=5557,
+        help="DhruvaSLAM stream port (default: 5557)"
+    )
+    slam_parser.add_argument(
+        "--command-port",
+        type=int,
+        default=5558,
+        help="DhruvaSLAM command port (default: 5558)"
+    )
+
+    args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    if args.mode == "sensor":
+        run_sensor_mode(args)
+    elif args.mode == "slam":
+        run_slam_mode(args)
+    else:
+        # Default: show help
+        parser.print_help()
         sys.exit(1)
 
 
