@@ -5,6 +5,10 @@ edition = "2024"
 description = "Hardware abstraction daemon for robot vacuum"
 authors = ["CodeTiger"]
 
+[features]
+default = []
+mock = ["dep:image", "dep:serde_yaml", "dep:rand", "dep:rand_distr"]
+
 [dependencies]
 # Serialization
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
@@ -24,6 +28,12 @@ crossbeam-channel = { version = "0.5", default-features = false, features = ["st
 
 # Error handling
 thiserror = "1.0"
+
+# Mock device simulation (optional)
+image = { version = "0.25", optional = true, default-features = false, features = ["png", "pnm"] }
+serde_yaml = { version = "0.9", optional = true }
+rand = { version = "0.8", optional = true, default-features = false, features = ["std", "std_rng", "small_rng"] }
+rand_distr = { version = "0.4", optional = true, default-features = false, features = ["std"] }
 
 # Signal handling
 ctrlc = "3.5"

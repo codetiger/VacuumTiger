@@ -24,12 +24,22 @@
 
 pub mod crl200s;
 
+#[cfg(feature = "mock")]
+pub mod mock;
+
 use crate::config::Config;
 use crate::core::driver::DeviceDriver;
 use crate::error::{Error, Result};
 use crl200s::CRL200SDriver;
 
+#[cfg(feature = "mock")]
+use mock::MockDriver;
+
 /// Device factory - creates driver based on `device.type` in config.
+///
+/// Supported device types:
+/// - `crl200s`: Real CRL-200S robot hardware
+/// - `mock`: Simulated robot for algorithm testing (requires `mock` feature)
 ///
 /// To add a new device type, add a match arm here:
 /// ```ignore
@@ -41,6 +51,15 @@ pub fn create_device(config: &Config) -> Result<Box<dyn DeviceDriver>> {
             let driver = CRL200SDriver::new(config.device.clone())?;
             Ok(Box::new(driver))
         }
+        #[cfg(feature = "mock")]
+        "mock" => {
+            let driver = MockDriver::new(config.device.clone())?;
+            Ok(Box::new(driver))
+        }
+        #[cfg(not(feature = "mock"))]
+        "mock" => Err(Error::Config(
+            "Mock device not available: rebuild with --features mock".to_string(),
+        )),
         _ => Err(Error::UnknownDevice(config.device.device_type.clone())),
     }
 }

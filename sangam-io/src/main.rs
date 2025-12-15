@@ -24,6 +24,33 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+/// Parse config path from command line arguments.
+///
+/// Supports:
+/// - `sangam-io <path>` (positional)
+/// - `sangam-io --config <path>` (flag-based)
+/// - `sangam-io -c <path>` (short flag)
+///
+/// Defaults to `/etc/sangamio.toml` if not specified.
+fn parse_config_path() -> String {
+    let args: Vec<String> = env::args().collect();
+
+    // Look for --config or -c flag
+    for i in 1..args.len() {
+        if (args[i] == "--config" || args[i] == "-c") && i + 1 < args.len() {
+            return args[i + 1].clone();
+        }
+    }
+
+    // Fall back to first positional argument (if it doesn't start with -)
+    if args.len() > 1 && !args[1].starts_with('-') {
+        return args[1].clone();
+    }
+
+    // Default path
+    "/etc/sangamio.toml".to_string()
+}
+
 fn main() -> Result<()> {
     // Initialize logger
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -31,9 +58,8 @@ fn main() -> Result<()> {
     log::info!("SangamIO v0.3.0 starting...");
 
     // Get config path from args or default
-    let config_path = env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/etc/sangamio.toml".to_string());
+    // Supports: sangam-io <path> OR sangam-io --config <path>
+    let config_path = parse_config_path();
 
     // Load configuration
     log::info!("Using config: {}", config_path);

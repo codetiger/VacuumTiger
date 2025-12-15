@@ -1,0 +1,19 @@
+# Example Map Configuration for Mock Device
+# ROS-standard format for occupancy grid maps
+
+# PGM image file (relative to this YAML file)
+image: example.pgm
+
+# Resolution in meters per pixel
+resolution: 0.05
+
+# Origin of map: [x, y, yaw]
+# World coordinates of the lower-left corner of the map image
+origin: [0.0, 0.0, 0.0]
+
+# Threshold for occupancy (pixels with value < (1-threshold)*255 are occupied)
+occupied_thresh: 0.65
+
+# Optional cliff mask file (same dimensions as main map)
+# Uncomment to enable cliff detection
+# cliff_mask: example_cliffs.pgm

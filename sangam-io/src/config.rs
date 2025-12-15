@@ -50,6 +50,9 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
+#[cfg(feature = "mock")]
+use crate::devices::mock::config::SimulationConfig;
+
 // ============================================================================
 // Coordinate Frame Transforms (ROS REP-103)
 // ============================================================================
@@ -254,7 +257,7 @@ fn default_lidar_pwm() -> u8 {
 pub struct DeviceConfig {
     /// Device type identifier
     ///
-    /// **Valid values**: "crl-200s"
+    /// **Valid values**: "crl200s", "mock" (mock requires --features mock)
     /// **Required**: Yes
     #[serde(rename = "type")]
     pub device_type: String,
@@ -267,8 +270,18 @@ pub struct DeviceConfig {
 
     /// Hardware-specific configuration
     ///
-    /// **Required**: Yes
-    pub hardware: HardwareConfig,
+    /// **Required**: For "crl200s" device type
+    /// **Optional**: For "mock" device type
+    #[serde(default)]
+    pub hardware: Option<HardwareConfig>,
+
+    /// Simulation configuration
+    ///
+    /// **Required**: For "mock" device type
+    /// **Optional**: For "crl200s" device type (ignored)
+    #[cfg(feature = "mock")]
+    #[serde(default)]
+    pub simulation: Option<SimulationConfig>,
 }
 
 /// Network configuration for TCP/UDP server
@@ -318,7 +331,13 @@ impl Config {
     ///
     /// # Validation
     ///
+    /// For "crl200s" device:
+    /// - `hardware` section is required
     /// - `heartbeat_interval_ms` must be between 20-50ms (hardware requirement)
+    ///
+    /// For "mock" device:
+    /// - `simulation` section is required
+    /// - `map_file` must be specified
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(&path)
             .map_err(|e| Error::Config(format!("Failed to read config: {}", e)))?;
@@ -326,14 +345,52 @@ impl Config {
         let config: Config = basic_toml::from_str(&content)
             .map_err(|e| Error::Config(format!("Failed to parse config: {}", e)))?;
 
-        // Validate heartbeat interval is within hardware-required range
-        let interval = config.device.hardware.heartbeat_interval_ms;
-        if !(MIN_HEARTBEAT_INTERVAL_MS..=MAX_HEARTBEAT_INTERVAL_MS).contains(&interval) {
-            return Err(Error::Config(format!(
-                "heartbeat_interval_ms must be between {}ms and {}ms (got {}ms). \
-                Values outside this range will cause motor watchdog timeout.",
-                MIN_HEARTBEAT_INTERVAL_MS, MAX_HEARTBEAT_INTERVAL_MS, interval
-            )));
+        // Device-specific validation
+        match config.device.device_type.as_str() {
+            "crl200s" => {
+                // Hardware config is required for CRL-200S
+                let hardware = config.device.hardware.as_ref().ok_or_else(|| {
+                    Error::Config("crl200s device requires [device.hardware] section".to_string())
+                })?;
+
+                // Validate heartbeat interval is within hardware-required range
+                let interval = hardware.heartbeat_interval_ms;
+                if !(MIN_HEARTBEAT_INTERVAL_MS..=MAX_HEARTBEAT_INTERVAL_MS).contains(&interval) {
+                    return Err(Error::Config(format!(
+                        "heartbeat_interval_ms must be between {}ms and {}ms (got {}ms). \
+                        Values outside this range will cause motor watchdog timeout.",
+                        MIN_HEARTBEAT_INTERVAL_MS, MAX_HEARTBEAT_INTERVAL_MS, interval
+                    )));
+                }
+            }
+            #[cfg(feature = "mock")]
+            "mock" => {
+                // Simulation config is required for mock device
+                let simulation = config.device.simulation.as_ref().ok_or_else(|| {
+                    Error::Config("mock device requires [device.simulation] section".to_string())
+                })?;
+
+                // Map file is required
+                if simulation.map_file.is_empty() {
+                    return Err(Error::Config(
+                        "mock device requires map_file in [device.simulation]".to_string(),
+                    ));
+                }
+
+                // Validate speed factor is positive
+                if simulation.speed_factor <= 0.0 {
+                    return Err(Error::Config("speed_factor must be positive".to_string()));
+                }
+            }
+            #[cfg(not(feature = "mock"))]
+            "mock" => {
+                return Err(Error::Config(
+                    "Mock device not available: rebuild with --features mock".to_string(),
+                ));
+            }
+            other => {
+                return Err(Error::UnknownDevice(other.to_string()));
+            }
         }
 
         Ok(config)

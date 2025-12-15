@@ -74,6 +74,11 @@ impl DeviceDriver for CRL200SDriver {
     fn initialize(&mut self) -> Result<DriverInitResult> {
         log::info!("Initializing CRL-200S device: {}", self.config.name);
 
+        // Get hardware config (required for CRL200S)
+        let hardware = self.config.hardware.as_ref().ok_or_else(|| {
+            crate::error::Error::Config("CRL200S requires hardware configuration".to_string())
+        })?;
+
         let mut sensor_data = HashMap::new();
         let mut stream_receivers = HashMap::new();
 
@@ -105,9 +110,9 @@ impl DeviceDriver for CRL200SDriver {
 
         // Initialize GD32 motor controller
         let mut gd32 = GD32Driver::new(
-            &self.config.hardware.gd32_port,
-            self.config.hardware.heartbeat_interval_ms,
-            self.config.hardware.lidar_pwm,
+            &hardware.gd32_port,
+            hardware.heartbeat_interval_ms,
+            hardware.lidar_pwm,
         )?;
 
         // Send initialization sequence
@@ -118,18 +123,15 @@ impl DeviceDriver for CRL200SDriver {
             gd32_data,
             Some(version_data),
             Some(stream_tx),
-            self.config.hardware.frame_transforms.imu_gyro,
-            self.config.hardware.frame_transforms.imu_accel,
+            hardware.frame_transforms.imu_gyro,
+            hardware.frame_transforms.imu_accel,
         )?;
 
         self.gd32 = Some(gd32);
 
         // Initialize lidar driver
         // Driver starts but lidar motor is OFF - will be enabled via command
-        let mut lidar = Delta2DDriver::new(
-            &self.config.hardware.lidar_port,
-            self.config.hardware.frame_transforms.lidar,
-        );
+        let mut lidar = Delta2DDriver::new(&hardware.lidar_port, hardware.frame_transforms.lidar);
         lidar.start(lidar_data)?;
         self.lidar = Some(lidar);
         log::info!("Lidar driver started (motor OFF - enable via command)");

@@ -1,0 +1,125 @@
+# Mock Device Configuration for SangamIO
+# Simulates CRL-200S robot hardware for algorithm testing
+
+[device]
+type = "mock"
+name = "Mock CRL-200S Simulator"
+
+[device.simulation]
+# Map file (YAML file that references PGM image)
+map_file = "maps/example.yaml"
+
+# Initial robot pose (in free space area of example map)
+start_x = 1.5    # meters
+start_y = 3.5    # meters
+start_theta = 0.0  # radians (0 = facing +X)
+
+# Simulation parameters
+speed_factor = 1.0    # 1.0 = real-time, 2.0 = 2x speed
+random_seed = 0       # 0 = random each run, >0 = deterministic
+log_level = "standard"  # "minimal", "standard", "verbose"
+
+# Robot physical parameters (CRL-200S defaults)
+[device.simulation.robot]
+wheel_base = 0.233         # Distance between wheels (meters)
+ticks_per_meter = 4464.0   # Encoder ticks per meter
+max_linear_speed = 0.3     # Maximum linear velocity (m/s)
+max_angular_speed = 1.0    # Maximum angular velocity (rad/s)
+robot_radius = 0.17        # Collision radius (meters)
+collision_mode = "stop"    # "stop", "slide", "passthrough"
+slide_friction = 0.3       # Used when collision_mode = "slide"
+
+# Lidar configuration (Delta-2D specifications)
+[device.simulation.lidar]
+num_rays = 360           # Rays per 360° scan
+scan_rate_hz = 5.0       # Scans per second
+min_range = 0.15         # Minimum detection range (meters)
+max_range = 8.0          # Maximum detection range (meters)
+mounting_x = -0.110      # Lidar X offset from robot center (negative = behind)
+mounting_y = 0.0         # Lidar Y offset from robot center
+optical_offset = 0.025   # Optical offset from lidar center
+angle_offset = 0.2182    # Angle offset from robot forward (radians)
+
+[device.simulation.lidar.noise]
+range_stddev = 0.005     # Range measurement noise (meters)
+range_bias = 0.0         # Systematic range bias (meters)
+angle_stddev = 0.001     # Angular noise (radians)
+quality_base = 200       # Base quality value (0-255)
+quality_distance_decay = 10  # Quality reduction per meter
+miss_rate = 0.01         # Probability of invalid reading (0.0-1.0)
+
+# IMU configuration
+[device.simulation.imu.gyro_noise]
+stddev = [5.0, 5.0, 10.0]   # Noise standard deviation [x, y, z] (raw units)
+bias = [0.0, 0.0, 0.0]      # Constant bias [x, y, z]
+drift_rate = 0.0            # Bias drift rate (units/second)
+
+[device.simulation.imu.accel_noise]
+stddev = [10.0, 10.0, 20.0]  # Noise standard deviation [x, y, z] (raw units)
+bias = [0.0, 0.0, 0.0]       # Constant bias [x, y, z]
+
+[device.simulation.imu.tilt_noise]
+stddev = [5.0, 5.0, 5.0]     # Noise standard deviation [x, y, z] (raw units)
+bias = [0.0, 0.0, 0.0]       # Constant bias [x, y, z]
+
+# Encoder configuration
+[device.simulation.encoder.noise]
+slip_stddev = 0.002      # Wheel slip noise (multiplicative, 0.0-1.0)
+slip_bias = 0.0          # Systematic slip bias
+quantization_noise = true  # Enable ±0.5 tick jitter
+
+# Bumper configuration
+[device.simulation.bumpers]
+trigger_distance = 0.01  # Distance from robot edge to trigger (meters)
+
+[device.simulation.bumpers.left]
+start_angle = 0.3        # Start angle (radians, CCW from forward)
+end_angle = 1.5708       # End angle (π/2)
+
+[device.simulation.bumpers.right]
+start_angle = -1.5708    # Start angle (-π/2)
+end_angle = -0.3         # End angle (radians)
+
+# Cliff sensor configuration
+[device.simulation.cliffs]
+enabled = true
+
+[[device.simulation.cliffs.sensors]]
+name = "left_side"
+x = 0.12                 # X position from robot center (meters)
+y = 0.10                 # Y position from robot center (meters)
+
+[[device.simulation.cliffs.sensors]]
+name = "left_front"
+x = 0.15
+y = 0.05
+
+[[device.simulation.cliffs.sensors]]
+name = "right_front"
+x = 0.15
+y = -0.05
+
+[[device.simulation.cliffs.sensors]]
+name = "right_side"
+x = 0.12
+y = -0.10
+
+# Binary sensors (fixed states)
+[device.simulation.sensors]
+dustbox_attached = true
+dock_connected = false
+start_button = 0
+dock_button = 0
+
+[device.simulation.sensors.battery]
+voltage = 14.8           # Battery voltage (volts)
+level = 85               # Battery level (0-100%)
+is_charging = false
+
+# Actuator configuration
+[device.simulation.actuators]
+log_state_changes = true
+
+# Network configuration
+[network]
+bind_address = "0.0.0.0:5555"

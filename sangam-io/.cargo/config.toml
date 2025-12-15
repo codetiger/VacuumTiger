@@ -1,5 +1,7 @@
-[build]
-target = "armv7-unknown-linux-musleabihf"
+# Default target commented out to allow host builds for simulation
+# Uncomment for deployment builds, or use: cargo build --target armv7-unknown-linux-musleabihf
+# [build]
+# target = "armv7-unknown-linux-musleabihf"
 
 [target.armv7-unknown-linux-musleabihf]
 linker = "armv7-unknown-linux-musleabihf-gcc"
