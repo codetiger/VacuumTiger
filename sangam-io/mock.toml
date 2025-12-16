@@ -7,11 +7,11 @@ name = "Mock CRL-200S Simulator"
 
 [device.simulation]
 # Map file (YAML file that references PGM image)
-map_file = "maps/example.yaml"
+map_file = "maps/large_room.yaml"
 
-# Initial robot pose (in free space area of example map)
-start_x = 1.5    # meters
-start_y = 3.5    # meters
+# Initial robot pose (corner of 5m x 5m room - requires movement to explore)
+start_x = 1.0    # meters (near left wall)
+start_y = 1.0    # meters (near bottom wall)
 start_theta = 0.0  # radians (0 = facing +X)
 
 # Simulation parameters
@@ -26,7 +26,7 @@ ticks_per_meter = 4464.0   # Encoder ticks per meter
 max_linear_speed = 0.3     # Maximum linear velocity (m/s)
 max_angular_speed = 1.0    # Maximum angular velocity (rad/s)
 robot_radius = 0.17        # Collision radius (meters)
-collision_mode = "stop"    # "stop", "slide", "passthrough"
+collision_mode = "passthrough"    # "stop", "slide", "passthrough" - passthrough for testing
 slide_friction = 0.3       # Used when collision_mode = "slide"
 
 # Lidar configuration (Delta-2D specifications)
@@ -41,12 +41,12 @@ optical_offset = 0.025   # Optical offset from lidar center
 angle_offset = 0.2182    # Angle offset from robot forward (radians)
 
 [device.simulation.lidar.noise]
-range_stddev = 0.005     # Range measurement noise (meters)
+range_stddev = 0.0       # Range measurement noise (disabled for testing)
 range_bias = 0.0         # Systematic range bias (meters)
-angle_stddev = 0.001     # Angular noise (radians)
+angle_stddev = 0.0       # Angular noise (disabled for testing)
 quality_base = 200       # Base quality value (0-255)
 quality_distance_decay = 10  # Quality reduction per meter
-miss_rate = 0.01         # Probability of invalid reading (0.0-1.0)
+miss_rate = 0.0          # Probability of invalid reading (disabled for testing)
 
 # IMU configuration
 [device.simulation.imu.gyro_noise]
@@ -64,9 +64,9 @@ bias = [0.0, 0.0, 0.0]       # Constant bias [x, y, z]
 
 # Encoder configuration
 [device.simulation.encoder.noise]
-slip_stddev = 0.002      # Wheel slip noise (multiplicative, 0.0-1.0)
+slip_stddev = 0.0        # Wheel slip noise (disabled for testing)
 slip_bias = 0.0          # Systematic slip bias
-quantization_noise = true  # Enable ±0.5 tick jitter
+quantization_noise = false  # Disable tick jitter for testing
 
 # Bumper configuration
 [device.simulation.bumpers]
