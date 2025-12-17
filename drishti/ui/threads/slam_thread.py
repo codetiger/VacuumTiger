@@ -1,20 +1,23 @@
 """
 SLAM thread for receiving data from DhruvaSLAM daemon.
 
-Uses DhruvaStream protocol for continuous data (via TCP):
-- RobotStatus: pose, state, battery, mapping progress
-- SensorStatus: lidar, encoders, IMU
-- CurrentMap: occupancy grid
-- MapList: saved maps
-- NavigationStatus: path planning
+Uses DhruvaStream protocol with dual TCP/UDP architecture:
 
-And DhruvaCommand/Response protocol for commands (via same TCP port):
+UDP (high-frequency streams):
+- RobotStatus: pose, state, battery (10Hz)
+- SensorStatus: lidar, encoders, IMU (10Hz)
+- NavigationStatus: path planning (5Hz)
+- MappingProgress: exploration stats (2Hz)
+
+TCP (large/critical data):
+- CurrentMap: occupancy grid (1Hz)
+- MapList: saved maps (on change)
+
+Commands use DhruvaCommand/Response protocol via separate TCP connection:
 - StartMapping, StopMapping, ClearMap
 - RenameMap, DeleteMap, EnableMap, SetGoal, CancelGoal
 
-Note: Both streams and commands use the same port (5557) following the
-unified DhruvaSLAM architecture. Two separate TCP connections are used:
-one for streaming data, one for command/response.
+Note: TCP connection also registers client for UDP streaming (unicast).
 """
 
 import socket
@@ -22,6 +25,7 @@ import struct
 import logging
 import uuid
 import os
+import select
 from PyQt5.QtCore import QThread, pyqtSignal
 
 # Import protobuf definitions
@@ -81,30 +85,74 @@ class SlamThread(QThread):
         # Command port defaults to same as stream port (unified architecture)
         self.command_port = command_port if command_port is not None else port
         self._running = True
-        self.stream_socket = None
-        self.command_socket = None
+        self.stream_socket = None  # TCP for large data (maps) and registration
+        self.udp_socket = None     # UDP for high-frequency streams (nav, robot, sensor)
 
     def run(self):
-        """Main thread loop - connect and receive data."""
+        """Main thread loop - connect and receive data via TCP+UDP."""
         logger.info(f"SLAM thread starting, connecting to {self.host}:{self.port}")
 
         while self._running:
             try:
-                # Connect to stream port
+                # Step 1: Connect TCP (registers us for UDP streaming from DhruvaSLAM)
                 self.stream_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.stream_socket.settimeout(5.0)
                 self.stream_socket.connect((self.host, self.port))
-                self.connection_status.emit(True, f"Connected to DhruvaSLAM at {self.host}:{self.port}")
-                logger.info(f"Connected to DhruvaSLAM stream at {self.host}:{self.port}")
 
-                # Receive loop
+                # Get our local (source) port - DhruvaSLAM sends UDP to this port
+                local_addr = self.stream_socket.getsockname()
+                local_port = local_addr[1]
+                logger.info(f"Connected to DhruvaSLAM TCP at {self.host}:{self.port} (local port {local_port})")
+
+                self.stream_socket.setblocking(False)  # Non-blocking for select()
+
+                # Step 2: Create UDP socket bound to same local port as TCP
+                # DhruvaSLAM sends UDP to client's TCP source address (IP:port)
+                self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self.udp_socket.bind(('0.0.0.0', local_port))
+                self.udp_socket.setblocking(False)  # Non-blocking for select()
+                logger.info(f"UDP socket bound to port {local_port} (matching TCP source port)")
+
+                self.connection_status.emit(True, f"Connected to DhruvaSLAM at {self.host}:{self.port}")
+
+                # Step 3: Receive loop - handle both TCP and UDP with select()
+                tcp_buffer = b''  # Buffer for TCP stream reassembly
+
                 while self._running:
                     try:
-                        message = self._read_stream_message()
-                        if message:
-                            self._process_stream_message(message)
-                    except socket.timeout:
-                        continue
+                        # Wait for data on either socket (100ms timeout)
+                        readable, _, _ = select.select(
+                            [self.stream_socket, self.udp_socket], [], [], 0.1
+                        )
+
+                        for sock in readable:
+                            if sock == self.udp_socket:
+                                # UDP: Complete datagrams, no reassembly needed
+                                try:
+                                    data, addr = self.udp_socket.recvfrom(65536)
+                                    if data:
+                                        message = self._parse_udp_message(data)
+                                        if message:
+                                            self._process_stream_message(message)
+                                except BlockingIOError:
+                                    pass
+
+                            elif sock == self.stream_socket:
+                                # TCP: May need stream reassembly
+                                try:
+                                    chunk = self.stream_socket.recv(65536)
+                                    if not chunk:
+                                        # Connection closed
+                                        logger.warning("TCP connection closed by server")
+                                        raise ConnectionError("TCP closed")
+                                    tcp_buffer += chunk
+
+                                    # Process complete messages from buffer
+                                    tcp_buffer = self._process_tcp_buffer(tcp_buffer)
+                                except BlockingIOError:
+                                    pass
+
                     except Exception as e:
                         if self._running:
                             logger.error(f"Stream read error: {e}")
@@ -119,6 +167,12 @@ class SlamThread(QThread):
                     self.msleep(3000)
 
             finally:
+                if self.udp_socket:
+                    try:
+                        self.udp_socket.close()
+                    except:
+                        pass
+                    self.udp_socket = None
                 if self.stream_socket:
                     try:
                         self.stream_socket.close()
@@ -132,17 +186,75 @@ class SlamThread(QThread):
         """Stop the thread."""
         logger.info("Stopping SLAM thread...")
         self._running = False
+        if self.udp_socket:
+            try:
+                self.udp_socket.close()
+            except:
+                pass
         if self.stream_socket:
             try:
                 self.stream_socket.close()
             except:
                 pass
-        if self.command_socket:
-            try:
-                self.command_socket.close()
-            except:
-                pass
         self.wait()
+
+    def _parse_udp_message(self, data: bytes) -> dhruva_pb2.DhruvaStream:
+        """Parse a UDP datagram containing a length-prefixed Protobuf message.
+
+        UDP datagrams are received atomically, so we get the complete message
+        in one receive. Format: [4-byte big-endian length][protobuf payload]
+        """
+        if len(data) < 4:
+            logger.warning(f"UDP packet too short: {len(data)} bytes")
+            return None
+
+        length = struct.unpack('>I', data[:4])[0]
+        expected_size = 4 + length
+
+        if len(data) != expected_size:
+            logger.warning(f"UDP packet size mismatch: got {len(data)}, expected {expected_size}")
+            return None
+
+        try:
+            msg = dhruva_pb2.DhruvaStream()
+            msg.ParseFromString(data[4:])
+            return msg
+        except Exception as e:
+            logger.error(f"UDP protobuf parse error: {e}")
+            return None
+
+    def _process_tcp_buffer(self, buffer: bytes) -> bytes:
+        """Process complete messages from TCP buffer, return remaining bytes.
+
+        TCP is a stream, so we may receive partial messages or multiple
+        messages in one recv(). This reassembles them properly.
+        """
+        while len(buffer) >= 4:
+            # Read length prefix
+            length = struct.unpack('>I', buffer[:4])[0]
+
+            # Sanity check
+            if length > 10 * 1024 * 1024:  # 10MB max
+                logger.error(f"TCP message too large: {length} bytes, clearing buffer")
+                return b''
+
+            total_size = 4 + length
+            if len(buffer) < total_size:
+                # Incomplete message, wait for more data
+                break
+
+            # Extract complete message
+            message_data = buffer[4:total_size]
+            buffer = buffer[total_size:]
+
+            try:
+                msg = dhruva_pb2.DhruvaStream()
+                msg.ParseFromString(message_data)
+                self._process_stream_message(msg)
+            except Exception as e:
+                logger.error(f"TCP protobuf parse error: {e}")
+
+        return buffer
 
     def _read_stream_message(self) -> dhruva_pb2.DhruvaStream:
         """Read a length-prefixed DhruvaStream message."""
@@ -341,28 +453,32 @@ class SlamThread(QThread):
 
         Returns True if command was sent successfully.
         Response will be emitted via command_response_received signal.
+
+        Uses a fresh connection for each command to avoid stale socket issues.
         """
+        cmd_socket = None
         try:
-            # Connect to command port if needed
-            if not self.command_socket:
-                self.command_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.command_socket.settimeout(5.0)
-                self.command_socket.connect((self.host, self.command_port))
-                logger.info(f"Connected to DhruvaSLAM command port at {self.host}:{self.command_port}")
+            # Create fresh connection for each command
+            logger.info(f"Connecting to command port {self.host}:{self.command_port}")
+            cmd_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            cmd_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            cmd_socket.settimeout(5.0)
+            cmd_socket.connect((self.host, self.command_port))
 
             # Serialize and send
             payload = command.SerializeToString()
             length = struct.pack('>I', len(payload))
-            self.command_socket.sendall(length + payload)
+            logger.info(f"Sending command ({len(payload)} bytes)")
+            cmd_socket.sendall(length + payload)
 
             # Read response
-            len_bytes = self._recv_exact(self.command_socket, 4)
+            len_bytes = self._recv_exact(cmd_socket, 4)
             if not len_bytes:
                 logger.error("No response from command port")
                 return False
 
             resp_len = struct.unpack('>I', len_bytes)[0]
-            resp_data = self._recv_exact(self.command_socket, resp_len)
+            resp_data = self._recv_exact(cmd_socket, resp_len)
             if not resp_data:
                 logger.error("Incomplete response from command port")
                 return False
@@ -392,18 +508,22 @@ class SlamThread(QThread):
                 resp_payload['data'] = {}
 
             self.command_response_received.emit(resp_payload)
+            logger.info(f"Command successful: {response.success}")
             return True
 
         except Exception as e:
             logger.error(f"Command send failed: {e}")
-            # Reset command socket
-            if self.command_socket:
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+        finally:
+            # Always close the command socket
+            if cmd_socket:
                 try:
-                    self.command_socket.close()
+                    cmd_socket.close()
                 except:
                     pass
-                self.command_socket = None
-            return False
 
     def start_mapping(self, map_name: str = "") -> str:
         """Start mapping with optional map name. Returns request_id."""

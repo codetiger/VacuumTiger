@@ -265,10 +265,11 @@ enum NavState {
   NAV_STATE_IDLE = 0;                 // No active navigation
   NAV_STATE_PLANNING = 1;             // Computing path
   NAV_STATE_NAVIGATING = 2;           // Following path
-  NAV_STATE_ROTATING_TO_HEADING = 3;  // Rotating to final heading at target
-  NAV_STATE_REACHED = 4;              // Goal reached
-  NAV_STATE_FAILED = 5;               // Navigation failed
-  NAV_STATE_CANCELLED = 6;            // Navigation cancelled by user
+  NAV_STATE_ESCAPING = 3;             // Backing away from obstacle before replan
+  NAV_STATE_ROTATING_TO_HEADING = 4;  // Rotating to final heading at target
+  NAV_STATE_REACHED = 5;              // Goal reached
+  NAV_STATE_FAILED = 6;               // Navigation failed
+  NAV_STATE_CANCELLED = 7;            // Navigation cancelled by user
 }
 
 // ----------------------------------------------------------------------------

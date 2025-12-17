@@ -303,17 +303,32 @@ pub struct NetworkConfig {
     ///
     /// **Required**: Yes
     pub bind_address: String,
+
+    /// UDP client port override (optional).
+    ///
+    /// If specified, UDP streaming will use this port instead of the TCP port.
+    /// Useful for localhost testing where TCP and UDP need different ports.
+    ///
+    /// **Default**: Same as TCP port from `bind_address`
+    #[serde(default)]
+    pub udp_client_port: Option<u16>,
 }
 
 impl NetworkConfig {
     /// Extract the port number from bind_address.
-    /// Used for both TCP listening and UDP streaming to clients.
+    /// Used for TCP listening.
     pub fn port(&self) -> u16 {
         self.bind_address
             .rsplit(':')
             .next()
             .and_then(|p| p.parse().ok())
             .unwrap_or(5555)
+    }
+
+    /// Get the UDP streaming port.
+    /// Uses `udp_client_port` if set, otherwise same as TCP port.
+    pub fn udp_port(&self) -> u16 {
+        self.udp_client_port.unwrap_or_else(|| self.port())
     }
 }
 

@@ -63,6 +63,19 @@ pub struct NavigatorConfig {
 
     /// Minimum distance from path before replanning (meters).
     pub replan_deviation_threshold: f32,
+
+    /// Escape duration (seconds).
+    ///
+    /// How long to back away from obstacle before replanning.
+    pub escape_duration_s: f32,
+
+    /// Escape velocity (m/s).
+    ///
+    /// Speed at which to back away from obstacles (negative = backward).
+    pub escape_velocity: f32,
+
+    /// Minimum clearance to achieve during escape (meters).
+    pub escape_clearance_m: f32,
 }
 
 impl Default for NavigatorConfig {
@@ -76,9 +89,12 @@ impl Default for NavigatorConfig {
             max_angular_vel: 0.5,
             linear_vel: 0.2,
             angular_vel: 0.3,
-            stuck_timeout_s: 10.0,
+            stuck_timeout_s: 5.0,
             max_replan_attempts: 3,
             replan_deviation_threshold: 0.3,
+            escape_duration_s: 1.5,
+            escape_velocity: -0.1, // Negative = backward
+            escape_clearance_m: 0.15,
         }
     }
 }
@@ -175,11 +191,17 @@ impl Navigator {
         map: Option<&CurrentMapData>,
         hazard: bool,
     ) -> NavUpdate {
-        // Handle hazard - stop and request replan
+        // Handle hazard - escape before replanning
         if hazard && nav_state.is_navigating() {
-            log::warn!("Hazard detected during navigation, replanning...");
-            nav_state.request_replan();
-            return NavUpdate::stop().with_state_change();
+            log::warn!("Hazard detected during navigation, escaping before replan...");
+            // Calculate escape direction (opposite of current heading = backward)
+            let escape_dir = pose.theta + std::f32::consts::PI;
+            nav_state.start_escape(escape_dir);
+            return NavUpdate {
+                linear_vel: self.config.escape_velocity,
+                angular_vel: 0.0,
+                state_changed: true,
+            };
         }
 
         match nav_state.nav_state {
@@ -198,6 +220,11 @@ impl Navigator {
                 self.handle_navigating(nav_state, pose)
             }
 
+            NavState::Escaping => {
+                // Back away from obstacle before replanning
+                self.handle_escaping(nav_state, pose)
+            }
+
             NavState::RotatingToHeading => {
                 // Rotate to final heading
                 self.handle_rotating_to_heading(nav_state, pose)
@@ -212,6 +239,22 @@ impl Navigator {
         pose: &Pose2D,
         map: Option<&CurrentMapData>,
     ) -> NavUpdate {
+        // Check if we've exceeded max replan attempts
+        if nav_state.replan_attempts >= self.config.max_replan_attempts {
+            log::error!(
+                "Navigation failed: exceeded {} replan attempts",
+                self.config.max_replan_attempts
+            );
+            nav_state.set_failed(PathFailureReason::PathBlocked {
+                replan_attempts: nav_state.replan_attempts,
+            });
+            nav_state.set_status(format!(
+                "Path blocked after {} attempts",
+                nav_state.replan_attempts
+            ));
+            return NavUpdate::stop().with_state_change();
+        }
+
         // Get target info (clone what we need to avoid borrow issues)
         let (target_id, goal_x, goal_y, description) = match nav_state.current_target() {
             Some(t) => (t.id, t.position.x, t.position.y, t.description.clone()),
@@ -331,10 +374,15 @@ impl Navigator {
         }
 
         // Get current waypoint
-        let waypoint = match nav_state.current_waypoint() {
-            Some(w) => *w,
+        let (waypoint, waypoint_idx, total_waypoints) = match nav_state.current_waypoint() {
+            Some(w) => {
+                let idx = nav_state.current_waypoint_index;
+                let total = nav_state.current_path().map(|p| p.len()).unwrap_or(0);
+                (*w, idx, total)
+            }
             None => {
                 // No more waypoints but not at goal - replan
+                log::debug!("NAV: No waypoints available, requesting replan");
                 nav_state.request_replan();
                 return NavUpdate::stop().with_state_change();
             }
@@ -345,11 +393,44 @@ impl Navigator {
         let dy = waypoint.y - pose.y;
         let dist_to_waypoint = (dx * dx + dy * dy).sqrt();
 
+        log::debug!(
+            "NAV: Waypoint {}/{} at ({:.2},{:.2}), robot at ({:.2},{:.2},{:.1}°), dist={:.2}m, threshold={:.2}m",
+            waypoint_idx + 1,
+            total_waypoints,
+            waypoint.x,
+            waypoint.y,
+            pose.x,
+            pose.y,
+            pose.theta.to_degrees(),
+            dist_to_waypoint,
+            self.config.waypoint_reached_threshold
+        );
+
         if dist_to_waypoint < self.config.waypoint_reached_threshold {
             // Advance to next waypoint
             if !nav_state.advance_waypoint() {
                 // Was last waypoint, check goal
                 if target.is_position_reached(pose.x, pose.y) {
+                    if target.heading.is_some() && !target.is_heading_reached(pose.theta) {
+                        nav_state.nav_state = NavState::RotatingToHeading;
+                        return NavUpdate::stop().with_state_change();
+                    }
+                    return self.complete_target(nav_state);
+                }
+
+                // Path is complete but not at exact goal position.
+                // For frontiers/exploration, accept "close enough" to avoid getting stuck
+                // trying to reach goals in obstacle inflation zones.
+                let goal_dx = target.position.x - pose.x;
+                let goal_dy = target.position.y - pose.y;
+                let goal_dist = (goal_dx * goal_dx + goal_dy * goal_dy).sqrt();
+                let close_enough_threshold = 0.4; // 40cm tolerance for path-complete
+
+                if goal_dist < close_enough_threshold {
+                    log::info!(
+                        "Path complete, accepting position as 'close enough' ({:.2}m from goal)",
+                        goal_dist
+                    );
                     if target.heading.is_some() && !target.is_heading_reached(pose.theta) {
                         nav_state.nav_state = NavState::RotatingToHeading;
                         return NavUpdate::stop().with_state_change();
@@ -395,6 +476,41 @@ impl Navigator {
 
         // Compute velocity to waypoint
         self.compute_velocity_to_waypoint(pose, &waypoint, &target)
+    }
+
+    /// Handle the Escaping state.
+    ///
+    /// Robot backs away from obstacle for a duration before replanning.
+    fn handle_escaping(&mut self, nav_state: &mut NavigationState, pose: &Pose2D) -> NavUpdate {
+        let elapsed = nav_state.escape_elapsed_secs();
+
+        // Check if escape complete (duration elapsed)
+        if elapsed >= self.config.escape_duration_s {
+            log::info!(
+                "Escape complete (elapsed={:.1}s), transitioning to replan",
+                elapsed
+            );
+            nav_state.finish_escape_and_replan();
+
+            // Reset stuck detection for the replan
+            self.last_position = Some((pose.x, pose.y));
+            self.last_progress_time = Instant::now();
+
+            return NavUpdate::stop().with_state_change();
+        }
+
+        // Continue backing up
+        log::debug!(
+            "Escaping: {:.1}s / {:.1}s",
+            elapsed,
+            self.config.escape_duration_s
+        );
+
+        NavUpdate {
+            linear_vel: self.config.escape_velocity,
+            angular_vel: 0.0,
+            state_changed: false,
+        }
     }
 
     /// Handle the RotatingToHeading state.
@@ -487,6 +603,18 @@ impl Navigator {
         if adjusted_angle_error.abs() > self.config.heading_threshold {
             // Need to rotate first
             let angular_vel = adjusted_angle_error.signum() * self.config.angular_vel;
+            log::debug!(
+                "NAV: Rotating to align - pose=({:.2},{:.2},{:.1}°) waypoint=({:.2},{:.2}) dist={:.2}m angle_err={:.1}° threshold={:.1}° -> angular={:.2}",
+                pose.x,
+                pose.y,
+                pose.theta.to_degrees(),
+                waypoint.x,
+                waypoint.y,
+                distance,
+                adjusted_angle_error.to_degrees(),
+                self.config.heading_threshold.to_degrees(),
+                angular_vel
+            );
             return NavUpdate {
                 linear_vel: 0.0,
                 angular_vel: angular_vel
@@ -499,6 +627,18 @@ impl Navigator {
         let linear_vel = (distance * 0.5).min(self.config.linear_vel) * direction_sign;
         let angular_vel =
             (adjusted_angle_error * 0.5).clamp(-self.config.angular_vel, self.config.angular_vel);
+
+        log::debug!(
+            "NAV: Moving forward - pose=({:.2},{:.2},{:.1}°) waypoint=({:.2},{:.2}) dist={:.2}m -> linear={:.2} angular={:.2}",
+            pose.x,
+            pose.y,
+            pose.theta.to_degrees(),
+            waypoint.x,
+            waypoint.y,
+            distance,
+            linear_vel,
+            angular_vel
+        );
 
         NavUpdate {
             linear_vel: linear_vel.clamp(-self.config.max_linear_vel, self.config.max_linear_vel),
@@ -587,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn test_navigator_hazard_stops() {
+    fn test_navigator_hazard_triggers_escape() {
         let mut navigator = Navigator::new(NavigatorConfig::default());
         let mut nav_state = NavigationState::new();
         let pose = Pose2D::new(0.0, 0.0, 0.0);
@@ -596,13 +736,14 @@ mod tests {
         nav_state.push_target(make_test_target(1.0, 1.0, None));
         nav_state.nav_state = NavState::Navigating;
 
-        // Hazard detected
+        // Hazard detected - should trigger escape (backing up)
         let update = navigator.update(&mut nav_state, &pose, None, true);
 
-        assert_eq!(update.linear_vel, 0.0);
+        // Robot should back up (negative velocity) and enter Escaping state
+        assert_eq!(update.linear_vel, navigator.config.escape_velocity);
         assert_eq!(update.angular_vel, 0.0);
         assert!(update.state_changed);
-        assert!(nav_state.needs_replan());
+        assert_eq!(nav_state.nav_state, NavState::Escaping);
     }
 
     #[test]

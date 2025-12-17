@@ -177,7 +177,7 @@ fn run_navigation_loop(
         }
 
         // Read current state
-        let (pose, map, hazard, nav_active, is_charging, lidar_scan, current_target) = {
+        let (pose, map, hazard, nav_active, is_charging, lidar_scan, current_target, slam_mapping) = {
             match shared_state.read() {
                 Ok(state) => {
                     let pose = state.robot_status.pose;
@@ -187,6 +187,9 @@ fn run_navigation_loop(
                         || state.sensor_status.cliff.any_triggered();
                     let nav_active = state.navigation_state.is_active();
                     let is_charging = state.robot_status.is_charging;
+                    // Check if SLAM is in mapping mode (set by StartMapping command)
+                    let slam_mapping =
+                        state.robot_status.state == crate::state::RobotState::Mapping;
 
                     // Create LaserScan from sensor status if available
                     let lidar_scan = if !state.sensor_status.lidar_ranges.is_empty() {
@@ -213,6 +216,7 @@ fn run_navigation_loop(
                         is_charging,
                         lidar_scan,
                         current_target,
+                        slam_mapping,
                     )
                 }
                 Err(e) => {
@@ -226,8 +230,9 @@ fn run_navigation_loop(
         // Check if mapping feature is active
         let mapping_active = mapping_feature.is_active();
 
-        // Handle motor/lidar enabling when navigation or mapping becomes active
-        if (nav_active || mapping_active) && motion_available {
+        // Handle motor/lidar enabling when navigation, mapping, or SLAM mapping becomes active
+        // slam_mapping is true when SLAM thread received StartMapping command (even without MappingFeature)
+        if (nav_active || mapping_active || slam_mapping) && motion_available {
             // Clear inactive timer
             inactive_since = None;
 
@@ -272,17 +277,28 @@ fn run_navigation_loop(
         }
 
         // Handle disabling when navigation becomes inactive
-        if !nav_active && !mapping_active && was_active {
+        // IMPORTANT: slam_mapping keeps motors enabled during SLAM mapping even without active navigation
+        if !nav_active && !mapping_active && !slam_mapping && was_active {
             // Start the inactive timer
             if inactive_since.is_none() {
                 inactive_since = Some(Instant::now());
-                log::debug!("Navigation became inactive, starting disable timer");
+                log::debug!(
+                    "Navigation became inactive, starting disable timer (nav={}, mapping={}, slam={})",
+                    nav_active,
+                    mapping_active,
+                    slam_mapping
+                );
             }
+        } else if slam_mapping && inactive_since.is_some() {
+            // Clear inactive timer if slam_mapping is active
+            log::debug!("Clearing inactive timer - SLAM mapping is active");
+            inactive_since = None;
         }
 
         // Disable motors/lidar after being inactive for a while
         if !nav_active
             && !mapping_active
+            && !slam_mapping
             && motion_available
             && let Some(since) = inactive_since
             && since.elapsed() >= IDLE_DISABLE_DELAY
@@ -292,14 +308,20 @@ fn run_navigation_loop(
                     log::warn!("Navigation: Failed to disable motors: {}", e);
                 } else {
                     motors_enabled = false;
-                    log::info!("Navigation: Motors disabled after idle timeout");
+                    log::info!(
+                        "Navigation: Motors disabled after idle timeout (nav={}, mapping={}, slam={})",
+                        nav_active,
+                        mapping_active,
+                        slam_mapping
+                    );
                 }
             }
             // Note: Keep lidar enabled - SLAM needs it for localization
             inactive_since = None;
         }
 
-        was_active = nav_active || mapping_active;
+        // Include slam_mapping in was_active to properly track activity during SLAM mapping
+        was_active = nav_active || mapping_active || slam_mapping;
 
         // Process mapping feature state machine
         if mapping_active {

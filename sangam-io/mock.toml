@@ -7,11 +7,12 @@ name = "Mock CRL-200S Simulator"
 
 [device.simulation]
 # Map file (YAML file that references PGM image)
-map_file = "maps/large_room.yaml"
+# Using large_room_obstacles for testing exploration with obstacles
+map_file = "maps/large_room_obstacles.yaml"
 
-# Initial robot pose (corner of 5m x 5m room - requires movement to explore)
-start_x = 1.0    # meters (near left wall)
-start_y = 1.0    # meters (near bottom wall)
+# Initial robot pose (5m x 5m room - map is 100x100 at 0.05m/pixel)
+start_x = 2.5    # meters (center of room)
+start_y = 2.5    # meters (center of room)
 start_theta = 0.0  # radians (0 = facing +X)
 
 # Simulation parameters
@@ -26,7 +27,7 @@ ticks_per_meter = 4464.0   # Encoder ticks per meter
 max_linear_speed = 0.3     # Maximum linear velocity (m/s)
 max_angular_speed = 1.0    # Maximum angular velocity (rad/s)
 robot_radius = 0.17        # Collision radius (meters)
-collision_mode = "passthrough"    # "stop", "slide", "passthrough" - passthrough for testing
+collision_mode = "stop"           # "stop", "slide", "passthrough" - stop for realistic testing
 slide_friction = 0.3       # Used when collision_mode = "slide"
 
 # Lidar configuration (Delta-2D specifications)
@@ -121,6 +122,7 @@ is_charging = false
 log_state_changes = true
 
 # Network configuration
-# Both TCP (commands) and UDP (sensor streaming) use the same port
+# TCP and UDP on same port (5555) - unified architecture
 [network]
 bind_address = "0.0.0.0:5555"
+udp_client_port = 5555

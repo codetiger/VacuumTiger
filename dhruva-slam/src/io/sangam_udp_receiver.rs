@@ -44,8 +44,9 @@
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use prost::Message as ProstMessage;
+use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -149,7 +150,23 @@ impl SangamUdpReceiver {
         config: ReceiverConfig,
         running: Arc<AtomicBool>,
     ) -> Result<(Self, Receiver<SensorStatusData>, Receiver<LidarData>)> {
-        let socket = UdpSocket::bind(&config.bind_addr)?;
+        // Use socket2 to set SO_REUSEADDR before binding
+        // This is needed for localhost testing where TCP and UDP share the same port
+        let addr: SocketAddr = config.bind_addr.parse().map_err(|e| {
+            ReceiverError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid bind address: {}", e),
+            ))
+        })?;
+
+        let socket2 = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        socket2.set_reuse_address(true)?;
+        #[cfg(target_os = "macos")]
+        socket2.set_reuse_port(true)?;
+        socket2.bind(&addr.into())?;
+
+        // Convert to std UdpSocket
+        let socket: UdpSocket = socket2.into();
 
         // Set non-blocking with short timeout for shutdown checks
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
@@ -158,7 +175,10 @@ impl SangamUdpReceiver {
         let (sensor_tx, sensor_rx) = bounded(SENSOR_CHANNEL_CAPACITY);
         let (lidar_tx, lidar_rx) = bounded(LIDAR_CHANNEL_CAPACITY);
 
-        log::info!("UDP receiver bound to {}", config.bind_addr);
+        log::info!(
+            "UDP receiver bound to {} (SO_REUSEADDR enabled)",
+            config.bind_addr
+        );
 
         Ok((
             Self {
@@ -179,6 +199,8 @@ impl SangamUdpReceiver {
         log::info!("UDP receiver started");
 
         let mut buffer = vec![0u8; MAX_DATAGRAM_SIZE];
+        let mut packet_count: u64 = 0;
+        let mut last_log_time = std::time::Instant::now();
 
         while self.running.load(Ordering::Relaxed) {
             // Receive UDP datagram
@@ -191,6 +213,18 @@ impl SangamUdpReceiver {
                     continue;
                 }
             };
+
+            // Track reception rate
+            packet_count += 1;
+            if last_log_time.elapsed().as_secs() >= 5 {
+                log::info!(
+                    "UDP receiver: {} packets in last 5s ({})",
+                    packet_count,
+                    _src
+                );
+                packet_count = 0;
+                last_log_time = std::time::Instant::now();
+            }
 
             // Parse length-prefixed message
             if len < 4 {
@@ -233,12 +267,15 @@ impl SangamUdpReceiver {
                 }
                 "lidar" => {
                     if let Some(data) = Self::parse_lidar(&sensor_group) {
+                        log::info!("Lidar scan received: {} points", data.points.len());
                         // Non-blocking send - drop if channel full
                         self.lidar_tx.try_send(data).ok();
+                    } else {
+                        log::warn!("Failed to parse lidar data from sensor group");
                     }
                 }
                 other => {
-                    log::trace!("Ignoring unknown group_id: {}", other);
+                    log::debug!("Ignoring unknown group_id: {}", other);
                 }
             }
         }

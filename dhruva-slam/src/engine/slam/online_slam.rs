@@ -153,6 +153,24 @@ pub struct OnlineSlamConfig {
 
     /// Loop closure configuration.
     pub loop_closure: LoopClosureConfig,
+
+    /// Maximum allowed rotation deviation between scan match and odometry (radians).
+    ///
+    /// If the scan matcher returns a rotation that differs from odometry by more
+    /// than this threshold, the match is rejected and odometry is used instead.
+    /// This prevents false positive matches in symmetric environments (e.g.,
+    /// rectangular rooms where walls can match at 90° intervals).
+    ///
+    /// Default: 0.35 radians (~20 degrees)
+    pub max_theta_deviation: f32,
+
+    /// Maximum allowed translation deviation between scan match and odometry (meters).
+    ///
+    /// If the scan matcher returns a translation that differs from odometry by more
+    /// than this threshold, the match is rejected and odometry is used instead.
+    ///
+    /// Default: 0.5 meters
+    pub max_translation_deviation: f32,
 }
 
 impl Default for OnlineSlamConfig {
@@ -172,6 +190,9 @@ impl Default for OnlineSlamConfig {
             use_submap_matching: false,
             min_scan_points: 50,
             loop_closure: LoopClosureConfig::default(),
+            // Sanity check thresholds to reject false positive matches
+            max_theta_deviation: 0.35,      // ~20 degrees
+            max_translation_deviation: 0.5, // 50cm
         }
     }
 }
@@ -576,6 +597,37 @@ impl OnlineSlam {
     /// fast rotation where the matcher finds wrong local minima.
     fn apply_scan_match(&mut self, match_result: &ScanMatchResult, odom_delta: &Pose2D) -> Pose2D {
         let odom_pose = self.current_pose.compose(odom_delta);
+
+        // Sanity check: reject matches that deviate too much from odometry.
+        // This prevents false positive matches in symmetric environments where
+        // the correlative matcher might find high-scoring matches at wrong orientations
+        // (e.g., 90° off in a rectangular room where walls match walls).
+        let theta_diff =
+            crate::core::math::normalize_angle(match_result.transform.theta - odom_delta.theta)
+                .abs();
+        let translation_diff = ((match_result.transform.x - odom_delta.x).powi(2)
+            + (match_result.transform.y - odom_delta.y).powi(2))
+        .sqrt();
+
+        if theta_diff > self.config.max_theta_deviation {
+            log::warn!(
+                "Rejecting scan match: rotation deviation {:.1}° exceeds threshold {:.1}° (score={:.3})",
+                theta_diff.to_degrees(),
+                self.config.max_theta_deviation.to_degrees(),
+                match_result.score
+            );
+            return odom_pose;
+        }
+
+        if translation_diff > self.config.max_translation_deviation {
+            log::warn!(
+                "Rejecting scan match: translation deviation {:.3}m exceeds threshold {:.3}m (score={:.3})",
+                translation_diff,
+                self.config.max_translation_deviation,
+                match_result.score
+            );
+            return odom_pose;
+        }
 
         // Compute scan-match-corrected pose:
         // match_result.transform is the robot motion from previous to current.

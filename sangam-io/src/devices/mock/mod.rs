@@ -597,6 +597,13 @@ fn simulation_loop(
                 let scan = lidar_sim.generate_scan(&map, physics.x(), physics.y(), physics.theta());
 
                 if let Ok(mut lidar) = lidar_data.lock() {
+                    log::info!(
+                        "Generated lidar scan: {} points at ({:.2}, {:.2}, {:.2}°)",
+                        scan.len(),
+                        physics.x(),
+                        physics.y(),
+                        physics.theta().to_degrees()
+                    );
                     lidar.set("scan", SensorValue::PointCloud2D(scan));
                     lidar.touch();
                 }

@@ -84,9 +84,16 @@ impl HazardEvent {
 /// Result of exploration planning.
 #[derive(Debug, Clone)]
 pub enum ExplorationAction {
-    /// Move toward target pose.
+    /// Move toward target pose (direct line motion, for hazard recovery).
     MoveTo {
         /// Target pose to navigate to.
+        target: Pose2D,
+        /// Human-readable reason for this target.
+        reason: &'static str,
+    },
+    /// Navigate to target using A* path planning (for frontier exploration).
+    NavigateTo {
+        /// Target pose to navigate to via planned path.
         target: Pose2D,
         /// Human-readable reason for this target.
         reason: &'static str,
@@ -141,5 +148,17 @@ pub trait ExplorationStrategy: Send + Sync {
     /// Get estimated completion percentage (0-100).
     fn completion_percent(&self) -> f32 {
         0.0
+    }
+
+    /// Mark a target location as blocked (navigation failed to reach it).
+    /// This allows the strategy to avoid selecting this location again.
+    fn mark_target_blocked(&mut self, _x: f32, _y: f32) {
+        // Default implementation does nothing
+    }
+
+    /// Mark current target as successfully reached.
+    /// Called when navigation completes successfully to clear internal target state.
+    fn mark_target_reached(&mut self) {
+        // Default implementation does nothing
     }
 }

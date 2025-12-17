@@ -18,6 +18,8 @@ use crate::exploration::{
 use crate::io::motion_controller::{
     MotionConfig, SharedMotionController, compute_velocity_to_target,
 };
+use crate::navigation::NavState;
+use crate::navigation::NavTarget;
 use crate::state::{CliffState, ExplorationMode, SharedStateHandle};
 
 /// State for initial scanning behavior when no map exists yet.
@@ -207,17 +209,67 @@ fn run_exploration_loop(
         }
 
         // Check if navigation has active targets - yield to navigation
-        let nav_has_targets = {
+        let (nav_has_targets, nav_state, current_target_pos) = {
             match shared_state.read() {
-                Ok(s) => s.navigation_state.has_targets(),
-                Err(_) => false,
+                Ok(s) => {
+                    let target_pos = s
+                        .navigation_state
+                        .current_target()
+                        .map(|t| (t.position.x, t.position.y));
+                    (
+                        s.navigation_state.has_targets(),
+                        s.navigation_state.nav_state,
+                        target_pos,
+                    )
+                }
+                Err(_) => (false, NavState::Idle, None),
             }
         };
 
+        // Handle navigation failure - clear target and notify strategy
+        if nav_state == NavState::Failed && nav_has_targets {
+            log::warn!("Navigation failed for frontier target, clearing and marking blocked");
+
+            // Get and notify strategy about blocked target before clearing
+            if let Some((tx, ty)) = current_target_pos {
+                strategy.mark_target_blocked(tx, ty);
+            }
+
+            // Clear the failed target from navigation state
+            if let Ok(mut state) = shared_state.write() {
+                state.navigation_state.clear_targets();
+                state.exploration_state.status = "Frontier blocked, finding new target".to_string();
+            }
+
+            // Continue to next iteration - exploration will pick a new frontier
+            thread::sleep(loop_duration);
+            continue;
+        }
+
+        // Handle navigation success - notify strategy that target was reached
+        // This happens when navigation completed but we still yielded last iteration
+        if nav_state == NavState::TargetReached && !nav_has_targets {
+            log::info!("Navigation completed successfully, notifying exploration strategy");
+
+            // Notify strategy that target was reached (clears internal state)
+            strategy.mark_target_reached();
+
+            // Clear the TargetReached state
+            if let Ok(mut state) = shared_state.write() {
+                state.navigation_state.nav_state = NavState::Idle;
+                state.exploration_state.status = "Frontier reached, scanning...".to_string();
+            }
+
+            // Continue to next iteration - exploration will pick a new frontier
+            thread::sleep(loop_duration);
+            continue;
+        }
+
         // Only explore if in exploration mode AND navigation is not active
         if exploration_mode != ExplorationMode::Exploring || nav_has_targets {
-            // Disable motors and lidar if we were exploring
-            if motion_enabled || lidar_enabled {
+            // Only disable motors/lidar if exploration mode changed to Disabled
+            // When yielding to navigation (nav_has_targets), keep motors enabled!
+            if exploration_mode == ExplorationMode::Disabled && (motion_enabled || lidar_enabled) {
                 let mut mc = motion_controller.lock().unwrap();
                 if motion_enabled {
                     if let Err(e) = mc.disable() {
@@ -231,16 +283,12 @@ fn run_exploration_loop(
                     }
                     lidar_enabled = false;
                 }
-            }
-
-            // Check if we need to reset strategy (mode changed)
-            if exploration_mode == ExplorationMode::Disabled {
                 strategy.reset();
                 // Reset initial scan state for next exploration session
                 initial_scan_state = InitialScanState::NotStarted;
             }
 
-            // If yielding to navigation, update status
+            // If yielding to navigation, update status (but keep motors enabled!)
             if nav_has_targets
                 && exploration_mode == ExplorationMode::Exploring
                 && let Ok(mut state) = shared_state.write()
@@ -377,7 +425,13 @@ fn run_exploration_loop(
         // Execute action
         match action {
             ExplorationAction::MoveTo { target, reason } => {
-                log::debug!("Moving to ({:.2}, {:.2}) - {}", target.x, target.y, reason);
+                // Direct motion - used for hazard recovery (backing up, etc.)
+                log::debug!(
+                    "Direct move to ({:.2}, {:.2}) - {}",
+                    target.x,
+                    target.y,
+                    reason
+                );
 
                 // Compute velocity to reach target
                 let (linear, angular) = compute_velocity_to_target(
@@ -400,7 +454,36 @@ fn run_exploration_loop(
                 // Update shared state
                 if let Ok(mut state) = shared_state.write() {
                     state.exploration_state.current_target = Some(target);
-                    state.exploration_state.status = format!("Exploring: {}", reason);
+                    state.exploration_state.status = format!("Recovery: {}", reason);
+                }
+            }
+
+            ExplorationAction::NavigateTo { target, reason } => {
+                // Path-planned navigation - delegate to navigation system
+                log::info!(
+                    "Navigating to frontier at ({:.2}, {:.2}) - {}",
+                    target.x,
+                    target.y,
+                    reason
+                );
+
+                // Create a frontier target for the navigation system
+                let nav_target = NavTarget::frontier(target.x, target.y);
+
+                // Push target to navigation state (navigation thread will handle path planning)
+                if let Ok(mut state) = shared_state.write() {
+                    // Clear any existing targets first to prevent stale targets
+                    state.navigation_state.clear_targets();
+                    state.navigation_state.push_target(nav_target);
+
+                    state.exploration_state.current_target = Some(target);
+                    state.exploration_state.status = format!("Navigating: {}", reason);
+                }
+
+                // Set zero velocity - navigation thread will take over control
+                // DON'T use emergency_stop() as it disables motors
+                if let Err(e) = motion_controller.lock().unwrap().set_velocity(0.0, 0.0) {
+                    log::warn!("Failed to stop before navigation handoff: {}", e);
                 }
             }
 

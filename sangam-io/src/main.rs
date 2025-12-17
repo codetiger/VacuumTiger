@@ -101,17 +101,25 @@ fn main() -> Result<()> {
     // =========================================================================
     // UDP Unicast Setup (sensor streaming to registered clients)
     // =========================================================================
-    // UDP streaming uses the same port as TCP (extracted from bind_address)
-    let udp_streaming_port = config.network.port();
+    // UDP streaming port (may be different from TCP for localhost testing)
+    let udp_streaming_port = config.network.udp_port();
 
     // Bind UDP socket to any available port (we only send, not receive)
     let udp_socket = UdpSocket::bind("0.0.0.0:0")
         .map_err(|e| error::Error::Other(format!("Failed to create UDP socket: {}", e)))?;
 
-    log::info!(
-        "UDP unicast streaming enabled (port {} - same as TCP)",
-        udp_streaming_port
-    );
+    if udp_streaming_port == config.network.port() {
+        log::info!(
+            "UDP unicast streaming enabled (port {} - same as TCP)",
+            udp_streaming_port
+        );
+    } else {
+        log::info!(
+            "UDP unicast streaming enabled (port {} - different from TCP:{})",
+            udp_streaming_port,
+            config.network.port()
+        );
+    }
 
     // Client registry: tracks which IP to send UDP sensor data to
     // Updated when TCP clients connect/disconnect

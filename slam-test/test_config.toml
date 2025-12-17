@@ -11,15 +11,15 @@ coverage_target = 0.8
 # All paths relative to VacuumTiger root
 sangamio_config = "sangam-io/mock.toml"
 dhruva_config = "slam-test/dhruva-test.toml"
-ground_truth_map = "sangam-io/maps/example.pgm"
-ground_truth_yaml = "sangam-io/maps/example.yaml"
+ground_truth_map = "sangam-io/maps/large_room_obstacles.pgm"
+ground_truth_yaml = "sangam-io/maps/large_room_obstacles.yaml"
 
 [ground_truth]
-# Map resolution in meters per pixel (from example.yaml)
+# Map resolution in meters per pixel (from large_room.yaml)
 resolution = 0.05
 # Robot start position in world coordinates (from mock.toml)
-robot_start_x = 1.5
-robot_start_y = 3.5
+robot_start_x = 2.5
+robot_start_y = 2.5
 robot_start_theta = 0.0
 
 [network]

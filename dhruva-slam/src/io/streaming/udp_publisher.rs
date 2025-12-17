@@ -112,6 +112,18 @@ impl DhruvaUdpPublisher {
         log::info!("UDP client registered: {}", client_addr);
     }
 
+    /// Check if a client is already registered for UDP streaming.
+    pub fn has_client(registry: &UdpClientRegistry) -> bool {
+        let guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+        guard.is_some()
+    }
+
+    /// Get the currently registered client address.
+    pub fn get_registered_client(registry: &UdpClientRegistry) -> Option<SocketAddr> {
+        let guard = registry.lock().unwrap_or_else(|e| e.into_inner());
+        *guard
+    }
+
     /// Unregister the current client.
     ///
     /// Called when TCP client disconnects.
@@ -302,6 +314,7 @@ fn build_navigation_status_message(
         NavState::Idle => ProtoNavState::Idle,
         NavState::Planning => ProtoNavState::Planning,
         NavState::Navigating => ProtoNavState::Navigating,
+        NavState::Escaping => ProtoNavState::Escaping,
         NavState::RotatingToHeading => ProtoNavState::RotatingToHeading,
         NavState::TargetReached => ProtoNavState::Reached,
         NavState::Failed => ProtoNavState::Failed,

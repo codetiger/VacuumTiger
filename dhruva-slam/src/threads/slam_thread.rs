@@ -47,6 +47,10 @@ pub struct SlamThreadConfig {
     /// Format: "host:port" (e.g., "192.168.68.101:5555").
     /// Both TCP and UDP use the same port.
     pub sangam_address: String,
+    /// UDP port override for sensor streaming (optional).
+    /// If specified, UDP receiver will bind to this port instead of the TCP port.
+    /// Useful for localhost testing where TCP and UDP need different ports.
+    pub udp_port: Option<u16>,
     /// SLAM engine configuration.
     pub slam_config: OnlineSlamConfig,
     /// Odometry algorithm type.
@@ -108,22 +112,31 @@ fn run_live_loop(
 ) {
     log::info!("SLAM thread starting (live mode - UDP)");
 
-    // Extract port from sangam_address (same port for TCP commands and UDP sensors)
-    let udp_port = config
+    // Get UDP port: use explicit udp_port if set, otherwise extract from sangam_address
+    let tcp_port = config
         .sangam_address
         .rsplit(':')
         .next()
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(5555);
+    let udp_port = config.udp_port.unwrap_or(tcp_port);
 
     let receiver_config = ReceiverConfig {
         bind_addr: format!("0.0.0.0:{}", udp_port),
     };
 
-    log::info!(
-        "  Starting UDP receiver on port {} (same as TCP)...",
-        udp_port
-    );
+    if udp_port == tcp_port {
+        log::info!(
+            "  Starting UDP receiver on port {} (same as TCP)...",
+            udp_port
+        );
+    } else {
+        log::info!(
+            "  Starting UDP receiver on port {} (TCP on {})...",
+            udp_port,
+            tcp_port
+        );
+    }
 
     // Create UDP receiver
     let (receiver, sensor_rx, lidar_rx) =
@@ -562,7 +575,22 @@ impl SlamContext {
 
         // Skip sparse scans
         if scan_cloud.len() < 50 {
+            log::debug!("Skipping sparse scan: {} points", scan_cloud.len());
             return;
+        }
+
+        // Log scan processing decision
+        if !self.is_mapping && !self.is_localizing {
+            static SKIP_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let count = SKIP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count < 5 || count.is_multiple_of(50) {
+                log::info!(
+                    "Skipping scan (not mapping/localizing): is_mapping={}, is_localizing={}, skip#{}",
+                    self.is_mapping,
+                    self.is_localizing,
+                    count
+                );
+            }
         }
 
         // Compute odometry delta since last scan
@@ -575,6 +603,23 @@ impl SlamContext {
             let result = self
                 .slam
                 .process_scan(&scan_cloud, &odom_delta, timestamp_us);
+
+            // Log first few pose updates
+            static POSE_LOG_COUNT: std::sync::atomic::AtomicU32 =
+                std::sync::atomic::AtomicU32::new(0);
+            let log_count = POSE_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if log_count < 5 || log_count.is_multiple_of(50) {
+                log::info!(
+                    "SLAM result: pose=({:.3}, {:.3}, {:.1}°), score={:.3}, odom_delta=({:.3}, {:.3}, {:.1}°)",
+                    result.pose.x,
+                    result.pose.y,
+                    result.pose.theta.to_degrees(),
+                    result.match_score,
+                    odom_delta.x,
+                    odom_delta.y,
+                    odom_delta.theta.to_degrees()
+                );
+            }
 
             // Update shared state
             if let Ok(mut state) = shared_state.write() {
@@ -699,6 +744,19 @@ impl SlamContext {
     /// Process lidar data from UDP receiver.
     fn process_udp_lidar(&mut self, data: &LidarData, shared_state: &SharedStateHandle) {
         let timestamp_us = data.timestamp_us;
+
+        // Log first few scans to trace processing
+        static SCAN_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let count = SCAN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count < 5 || count.is_multiple_of(50) {
+            log::info!(
+                "Processing UDP lidar: {} points, is_mapping={}, is_localizing={}, scan#{}",
+                data.points.len(),
+                self.is_mapping,
+                self.is_localizing,
+                count
+            );
+        }
 
         // Convert UDP LidarData to LidarScan format expected by process_lidar
         let lidar_scan: crate::io::LidarScan = data

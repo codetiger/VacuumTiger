@@ -164,9 +164,9 @@ sleep 2
 echo ""
 echo "[6/7] Collecting outputs..."
 
-# Copy ground truth (use the map from mock.toml - currently large_room)
-cp "$PROJECT_ROOT/sangam-io/maps/large_room.pgm" "$OUTPUT_DIR/ground_truth.pgm"
-cp "$PROJECT_ROOT/sangam-io/maps/large_room.yaml" "$OUTPUT_DIR/ground_truth.yaml"
+# Copy ground truth (use the map from mock.toml - large_room_obstacles)
+cp "$PROJECT_ROOT/sangam-io/maps/large_room_obstacles.pgm" "$OUTPUT_DIR/ground_truth.pgm"
+cp "$PROJECT_ROOT/sangam-io/maps/large_room_obstacles.yaml" "$OUTPUT_DIR/ground_truth.yaml"
 echo "  Copied ground truth map"
 
 # Find and copy SLAM output
@@ -202,7 +202,7 @@ if [[ -f "$OUTPUT_DIR/slam_output.pgm" ]]; then
     $PYTHON "$SCRIPT_DIR/scripts/analyze_map.py" \
         --ground-truth "$OUTPUT_DIR/ground_truth.pgm" \
         --slam-output "$OUTPUT_DIR/slam_output.pgm" \
-        --start-pose 1.0,1.0,0 \
+        --start-pose 2.5,2.5,0 \
         --resolution 0.05 \
         --output-dir "$OUTPUT_DIR"
 else

@@ -47,6 +47,9 @@ lost_threshold = 0.1
 min_scan_points = 50
 encoder_weight = 0.8
 use_submap_matching = false
+# Sanity check thresholds to reject false positive matches in symmetric environments
+max_theta_deviation = 0.35       # ~20 degrees - reject if rotation differs too much from odometry
+max_translation_deviation = 0.5  # 50cm - reject if translation differs too much from odometry
 
 [matcher]
 algorithm = "hybrid_p2l"
@@ -120,11 +123,11 @@ strategy = "frontier"
 loop_rate_hz = 10.0
 
 [exploration.motion]
-max_linear_vel = 0.3
-max_angular_vel = 0.5
+max_linear_vel = 0.4
+max_angular_vel = 0.8
 obstacle_clearance = 0.15
-linear_vel = 0.2
-angular_vel = 0.3
+linear_vel = 0.3
+angular_vel = 0.5
 
 [exploration.frontier]
 min_frontier_size = 3       # Smaller frontiers still worth exploring
@@ -136,11 +139,11 @@ clustering_threshold = 0.5
 enabled = true
 update_rate_hz = 10.0
 robot_radius = 0.18
-max_linear_vel = 0.3
-max_angular_vel = 0.5
+max_linear_vel = 0.4
+max_angular_vel = 0.8
 waypoint_threshold = 0.15
 goal_threshold = 0.08
-heading_threshold = 0.15
+heading_threshold = 0.35  # ~20 degrees - allow more angular error before rotating
 
 [session]
 state_path = "/tmp/dhruva_test_session.json"

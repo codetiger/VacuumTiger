@@ -24,6 +24,12 @@ pub struct AStarConfig {
     /// can pass through without collision.
     pub robot_radius: f32,
 
+    /// Additional safety margin beyond robot radius (meters).
+    ///
+    /// Adds extra clearance to prevent getting too close to walls.
+    /// Total inflation = robot_radius + safety_margin.
+    pub safety_margin: f32,
+
     /// Allow diagonal movement (8-connected vs 4-connected grid).
     pub allow_diagonal: bool,
 
@@ -48,7 +54,8 @@ pub struct AStarConfig {
 impl Default for AStarConfig {
     fn default() -> Self {
         Self {
-            robot_radius: 0.18, // CRL-200S robot radius
+            robot_radius: 0.18,  // CRL-200S robot radius
+            safety_margin: 0.05, // 5cm extra clearance from walls
             allow_diagonal: true,
             max_iterations: 100_000,
             simplification_tolerance: 0.05, // 5cm
@@ -260,8 +267,9 @@ impl AStarPlanner {
         self.origin_x = map.origin_x;
         self.origin_y = map.origin_y;
 
-        // Calculate inflation in cells
-        self.inflation_cells = (self.config.robot_radius / map.resolution).ceil() as i32;
+        // Calculate inflation in cells (robot_radius + safety_margin)
+        let total_inflation = self.config.robot_radius + self.config.safety_margin;
+        self.inflation_cells = (total_inflation / map.resolution).ceil() as i32;
 
         // Start with all cells free
         let total_cells = self.grid_width * self.grid_height;
@@ -275,8 +283,11 @@ impl AStarPlanner {
                 let cell_value = map.cells[idx];
 
                 // Check if obstacle or unknown (depending on config)
-                let is_obstacle =
-                    cell_value >= 100 || (self.config.unknown_is_obstacle && cell_value == 255);
+                // Note: occupied = 100, unknown = 255, free = 0
+                // Cell is occupied if value >= 100 BUT NOT if it's unknown (255)
+                let is_occupied = cell_value >= 100 && cell_value != 255;
+                let is_unknown_obstacle = cell_value == 255 && self.config.unknown_is_obstacle;
+                let is_obstacle = is_occupied || is_unknown_obstacle;
 
                 if is_obstacle {
                     // Inflate: mark surrounding cells as blocked

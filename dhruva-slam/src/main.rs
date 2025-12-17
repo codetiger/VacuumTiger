@@ -174,12 +174,17 @@ struct SourceConfig {
     /// Format: "host:port" (e.g., "192.168.68.101:5555")
     /// Both TCP and UDP use the same port for simpler configuration.
     sangam_address: String,
+    /// UDP port override for sensor streaming (optional).
+    /// If specified, UDP receiver will bind to this port instead of the TCP port.
+    /// Useful for localhost testing where TCP and UDP need different ports.
+    udp_port: Option<u16>,
 }
 
 impl Default for SourceConfig {
     fn default() -> Self {
         Self {
             sangam_address: "192.168.68.101:5555".to_string(),
+            udp_port: None,
         }
     }
 }
@@ -276,6 +281,10 @@ struct SlamConfig {
     min_scan_points: usize,
     encoder_weight: f32,
     use_submap_matching: bool,
+    /// Maximum rotation deviation from odometry before rejecting scan match (radians)
+    max_theta_deviation: f32,
+    /// Maximum translation deviation from odometry before rejecting scan match (meters)
+    max_translation_deviation: f32,
 }
 
 impl Default for SlamConfig {
@@ -286,6 +295,8 @@ impl Default for SlamConfig {
             min_scan_points: 50,
             encoder_weight: 0.8,
             use_submap_matching: false,
+            max_theta_deviation: 0.35,      // ~20 degrees
+            max_translation_deviation: 0.5, // 50cm
         }
     }
 }
@@ -642,6 +653,9 @@ struct NavigationConfig {
     goal_threshold: f32,
     /// Heading threshold (rad).
     heading_threshold: f32,
+    /// Treat unknown cells as obstacles for path planning.
+    /// Set to false to allow navigation through unexplored areas.
+    unknown_is_obstacle: bool,
 }
 
 impl Default for NavigationConfig {
@@ -655,6 +669,7 @@ impl Default for NavigationConfig {
             waypoint_threshold: 0.15,
             goal_threshold: 0.08,
             heading_threshold: 0.15,
+            unknown_is_obstacle: true,
         }
     }
 }
@@ -867,6 +882,8 @@ fn build_slam_config(config: &Config) -> OnlineSlamConfig {
         lost_threshold: config.slam.lost_threshold,
         use_submap_matching: config.slam.use_submap_matching,
         min_scan_points: config.slam.min_scan_points,
+        max_theta_deviation: config.slam.max_theta_deviation,
+        max_translation_deviation: config.slam.max_translation_deviation,
         loop_closure: SlamLoopClosureConfig {
             enabled: config.loop_closure.enabled,
             detection_interval: config.loop_closure.detection_interval,
@@ -1040,6 +1057,7 @@ fn run_threaded_mode(
 
     let slam_thread_config = SlamThreadConfig {
         sangam_address: config.source.sangam_address.clone(),
+        udp_port: config.source.udp_port,
         slam_config,
         odometry_type: config.odometry.algorithm_type(),
         odometry_config,
@@ -1108,6 +1126,7 @@ fn run_threaded_mode(
             navigator: NavigatorConfig {
                 planner: AStarConfig {
                     robot_radius: config.navigation.robot_radius,
+                    unknown_is_obstacle: config.navigation.unknown_is_obstacle,
                     ..Default::default()
                 },
                 waypoint_reached_threshold: config.navigation.waypoint_threshold,
@@ -1172,7 +1191,7 @@ fn run_threaded_mode(
                 frontier_detection_range: config.exploration.frontier.detection_range,
                 blocked_radius: config.exploration.frontier.blocked_radius,
                 clustering_threshold: config.exploration.frontier.clustering_threshold,
-                max_stuck_count: 10, // Increased to allow more exploration attempts
+                ..FrontierConfig::default()
             },
             loop_rate_hz: config.exploration.loop_rate_hz,
         };

@@ -8,6 +8,7 @@
 use super::{NavTarget, NavTargetSource, Path};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::time::Instant;
 
 /// Navigation execution state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -21,6 +22,10 @@ pub enum NavState {
 
     /// Following path to target.
     Navigating,
+
+    /// Escaping from obstacle before replanning.
+    /// Robot backs away from wall/obstacle to get clearance.
+    Escaping,
 
     /// Rotating to final heading at target.
     RotatingToHeading,
@@ -40,7 +45,10 @@ impl NavState {
     pub fn is_active(&self) -> bool {
         matches!(
             self,
-            NavState::Planning | NavState::Navigating | NavState::RotatingToHeading
+            NavState::Planning
+                | NavState::Navigating
+                | NavState::Escaping
+                | NavState::RotatingToHeading
         )
     }
 
@@ -50,6 +58,7 @@ impl NavState {
             NavState::Idle => "IDLE",
             NavState::Planning => "PLANNING",
             NavState::Navigating => "NAVIGATING",
+            NavState::Escaping => "ESCAPING",
             NavState::RotatingToHeading => "ROTATING_TO_HEADING",
             NavState::TargetReached => "TARGET_REACHED",
             NavState::Failed => "FAILED",
@@ -150,6 +159,12 @@ pub struct NavigationState {
 
     /// Flag indicating a replan is needed.
     needs_replan: bool,
+
+    /// Time when escape maneuver started (for timeout).
+    pub escape_start_time: Option<Instant>,
+
+    /// Direction to escape (radians, in world frame).
+    pub escape_direction: f32,
 }
 
 impl NavigationState {
@@ -365,6 +380,48 @@ impl NavigationState {
     }
 
     // ========================================================================
+    // Escape Operations
+    // ========================================================================
+
+    /// Start an escape maneuver (backing away from obstacle).
+    ///
+    /// Called when hazard is detected during navigation.
+    /// Robot will back away before attempting to replan.
+    pub fn start_escape(&mut self, direction: f32) {
+        self.nav_state = NavState::Escaping;
+        self.escape_start_time = Some(Instant::now());
+        self.escape_direction = direction;
+        self.status_message = "Escaping from obstacle".to_string();
+        log::info!("Starting escape maneuver, direction={:.2} rad", direction);
+    }
+
+    /// Complete escape and transition to replanning.
+    ///
+    /// Called when escape timeout or clearance achieved.
+    pub fn finish_escape_and_replan(&mut self) {
+        self.escape_start_time = None;
+        self.replan_attempts += 1;
+        self.needs_replan = true;
+        self.nav_state = NavState::Planning;
+        log::info!(
+            "Escape complete, transitioning to replan (attempt {})",
+            self.replan_attempts
+        );
+    }
+
+    /// Check if currently escaping.
+    pub fn is_escaping(&self) -> bool {
+        self.nav_state == NavState::Escaping
+    }
+
+    /// Get elapsed time since escape started.
+    pub fn escape_elapsed_secs(&self) -> f32 {
+        self.escape_start_time
+            .map(|t| t.elapsed().as_secs_f32())
+            .unwrap_or(0.0)
+    }
+
+    // ========================================================================
     // Dirty Flag Operations
     // ========================================================================
 
@@ -456,6 +513,8 @@ impl NavigationState {
         self.targets_completed = 0;
         self.replan_attempts = 0;
         self.needs_replan = false;
+        self.escape_start_time = None;
+        self.escape_direction = 0.0;
         self.targets_dirty = true;
         self.path_dirty = true;
     }
@@ -694,6 +753,7 @@ mod tests {
         assert!(!NavState::Idle.is_active());
         assert!(NavState::Planning.is_active());
         assert!(NavState::Navigating.is_active());
+        assert!(NavState::Escaping.is_active());
         assert!(NavState::RotatingToHeading.is_active());
         assert!(!NavState::TargetReached.is_active());
         assert!(!NavState::Failed.is_active());

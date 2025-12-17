@@ -121,7 +121,8 @@ impl Client {
                 // Would block - client is slow, skip this message
                 true
             }
-            Err(_) => {
+            Err(e) => {
+                log::info!("TCP client {} write error: {}", self.addr, e);
                 self.failed = true;
                 false
             }
@@ -147,18 +148,24 @@ impl Client {
                 }
                 Ok(0) => {
                     // Connection closed
+                    log::info!(
+                        "TCP client {} connection closed (read header returned 0)",
+                        self.addr
+                    );
                     self.failed = true;
                     return None;
                 }
-                Ok(_) => {
+                Ok(n) => {
                     // Partial read of length - shouldn't happen with TCP
+                    log::debug!("TCP client {} partial header read: {} bytes", self.addr, n);
                     return None;
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     // No data available
                     return None;
                 }
-                Err(_) => {
+                Err(e) => {
+                    log::info!("TCP client {} read error: {}", self.addr, e);
                     self.failed = true;
                     return None;
                 }
@@ -172,6 +179,10 @@ impl Client {
             match self.stream.read(&mut buf) {
                 Ok(0) => {
                     // Connection closed
+                    log::info!(
+                        "TCP client {} connection closed (read body returned 0)",
+                        self.addr
+                    );
                     self.failed = true;
                     return None;
                 }
@@ -182,7 +193,8 @@ impl Client {
                     // No data available
                     return None;
                 }
-                Err(_) => {
+                Err(e) => {
+                    log::info!("TCP client {} body read error: {}", self.addr, e);
                     self.failed = true;
                     return None;
                 }
@@ -284,14 +296,21 @@ fn run_publisher_loop(
     while running.load(Ordering::Relaxed) {
         // Accept new TCP clients (non-blocking)
         while let Ok((stream, addr)) = listener.accept() {
-            log::info!(
-                "TCP client connected: {} - registering for UDP streaming",
-                addr
-            );
-
-            // Register client for UDP streaming (single client model)
-            // Note: New client replaces any existing UDP registration
-            DhruvaUdpPublisher::register_client(&udp_registry, addr);
+            // Only register for UDP streaming if no client is currently registered
+            // This prevents command-only TCP connections from stealing the UDP stream
+            // from an existing pose monitor client
+            if DhruvaUdpPublisher::has_client(&udp_registry) {
+                log::info!(
+                    "TCP client connected: {} (UDP already registered, not replacing)",
+                    addr
+                );
+            } else {
+                log::info!(
+                    "TCP client connected: {} - registering for UDP streaming",
+                    addr
+                );
+                DhruvaUdpPublisher::register_client(&udp_registry, addr);
+            }
 
             clients.push(Client::new(stream, addr));
         }
@@ -406,7 +425,7 @@ fn run_publisher_loop(
             publish_to_clients(&mut clients, &msg);
         }
 
-        // Remove disconnected/failed clients and unregister from UDP
+        // Remove disconnected/failed clients
         let client_count_before = clients.len();
         let failed_clients: Vec<_> = clients
             .iter()
@@ -417,14 +436,28 @@ fn run_publisher_loop(
         clients.retain(|c| !c.failed);
 
         if clients.len() < client_count_before {
-            // Unregister UDP for disconnected clients
-            for _addr in &failed_clients {
-                DhruvaUdpPublisher::unregister_client(&udp_registry);
+            // Check if the registered UDP client was one of the failed clients
+            let registered_udp_client = DhruvaUdpPublisher::get_registered_client(&udp_registry);
+            let mut udp_unregistered = false;
+
+            if let Some(registered_addr) = registered_udp_client {
+                // Only unregister if the registered client failed
+                if failed_clients.contains(&registered_addr) {
+                    DhruvaUdpPublisher::unregister_client(&udp_registry);
+                    udp_unregistered = true;
+                }
             }
+
             log::info!(
-                "Removed {} disconnected TCP clients, {} remaining (UDP unregistered)",
+                "Removed {} disconnected TCP clients ({:?}), {} remaining{}",
                 client_count_before - clients.len(),
-                clients.len()
+                failed_clients,
+                clients.len(),
+                if udp_unregistered {
+                    " (UDP unregistered)"
+                } else {
+                    ""
+                }
             );
         }
 

@@ -2,11 +2,14 @@
 //!
 //! Finds boundaries between known-free and unknown cells (frontiers),
 //! selects the closest reachable frontier, and navigates toward it.
+//!
+//! Uses A* path planning to verify frontier reachability before selection.
 
+use crate::algorithms::planning::{AStarConfig, AStarPlanner};
 use crate::core::types::Pose2D;
 use crate::state::CurrentMapData;
 
-use super::strategy::{ExplorationAction, ExplorationStrategy, HazardEvent, HazardType};
+use super::strategy::{ExplorationAction, ExplorationStrategy, HazardEvent};
 
 /// Configuration for frontier exploration.
 #[derive(Debug, Clone)]
@@ -19,8 +22,14 @@ pub struct FrontierConfig {
     pub blocked_radius: f32,
     /// Distance threshold for grouping frontier cells (meters).
     pub clustering_threshold: f32,
-    /// Maximum number of consecutive stuck detections before giving up on a frontier.
-    pub max_stuck_count: u32,
+    /// Distance to backup when bumper is hit (meters).
+    pub backup_distance: f32,
+    /// Rotation angle after backup (radians). Robot rotates this much after each recovery.
+    pub recovery_rotation_rad: f32,
+    /// Number of directions to check for surrounded detection.
+    pub surrounded_check_directions: usize,
+    /// Minimum clearance required in a direction to not be considered blocked (meters).
+    pub min_clearance_m: f32,
 }
 
 impl Default for FrontierConfig {
@@ -30,7 +39,10 @@ impl Default for FrontierConfig {
             frontier_detection_range: 10.0,
             blocked_radius: 0.3,
             clustering_threshold: 0.5,
-            max_stuck_count: 3,
+            backup_distance: 0.1,
+            recovery_rotation_rad: 0.175,   // ~10 degrees
+            surrounded_check_directions: 8, // Check 8 directions (every 45°)
+            min_clearance_m: 0.25,          // Need at least 25cm clearance
         }
     }
 }
@@ -44,40 +56,218 @@ pub struct Frontier {
     pub size: usize,
     /// Distance from robot to frontier centroid.
     pub distance: f32,
+    /// Original frontier cell positions (for edge-point fallback).
+    pub cells: Vec<(f32, f32)>,
+}
+
+/// Recovery state after a hazard event.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RecoveryPhase {
+    /// No recovery in progress.
+    None,
+    /// Backing up along the path we came from.
+    BackingUp,
+    /// Rotating after backup to try a new approach.
+    Rotating,
 }
 
 /// Frontier-based exploration strategy.
 ///
 /// Finds boundaries between known-free and unknown cells,
-/// selects the closest frontier, and navigates toward it.
+/// selects the closest reachable frontier, and navigates toward it.
+/// Uses A* path planning to verify frontiers are reachable before selecting them.
 pub struct FrontierExploration {
     config: FrontierConfig,
+    /// A* planner for reachability checking.
+    planner: AStarPlanner,
     /// Frontiers from last computation.
     last_frontiers: Vec<Frontier>,
     /// Locations blocked by bumper (world coordinates).
     blocked_locations: Vec<(f32, f32)>,
     /// Current target frontier (if any).
     current_target: Option<Frontier>,
-    /// Number of times we got stuck trying to reach current target.
-    stuck_count: u32,
+    /// Current navigation target point (may differ from centroid if edge-point fallback used).
+    current_target_point: Option<(f32, f32)>,
+    /// Path history for reverse direction calculation (recent positions).
+    path_history: Vec<(f32, f32)>,
+    /// Maximum path history size.
+    max_path_history: usize,
+    /// Current recovery phase.
+    recovery_phase: RecoveryPhase,
+    /// Target pose for current recovery action.
+    recovery_target: Option<Pose2D>,
+    /// Number of recovery attempts on current target.
+    recovery_attempts: u32,
+    /// Number of successfully reached frontiers (for blocked cleanup).
+    successful_visits: u32,
     /// Initial explored area (for completion tracking).
     initial_explored_area: Option<f32>,
     /// Peak explored area seen.
     peak_explored_area: f32,
+    /// Last map data for surrounded detection.
+    last_map: Option<CurrentMapData>,
 }
 
 impl FrontierExploration {
     /// Create a new frontier exploration strategy.
     pub fn new(config: FrontierConfig) -> Self {
+        // Configure A* for exploration: allow routing through unknown space
+        let planner_config = AStarConfig {
+            robot_radius: 0.18,  // CRL-200S robot radius
+            safety_margin: 0.05, // 5cm extra clearance from walls
+            allow_diagonal: true,
+            max_iterations: 50_000, // Lower limit for quick reachability check
+            simplification_tolerance: 0.0, // Don't need simplified paths for reachability check
+            unknown_is_obstacle: false, // Allow planning through unknown (we're exploring!)
+        };
+
         Self {
             config,
+            planner: AStarPlanner::new(planner_config),
             last_frontiers: Vec::new(),
             blocked_locations: Vec::new(),
             current_target: None,
-            stuck_count: 0,
+            current_target_point: None,
+            path_history: Vec::with_capacity(100),
+            max_path_history: 100,
+            recovery_phase: RecoveryPhase::None,
+            recovery_target: None,
+            recovery_attempts: 0,
+            successful_visits: 0,
             initial_explored_area: None,
             peak_explored_area: 0.0,
+            last_map: None,
         }
+    }
+
+    /// Record current position in path history.
+    fn record_position(&mut self, x: f32, y: f32) {
+        // Only record if significantly different from last position
+        if let Some(&(last_x, last_y)) = self.path_history.last() {
+            let dx = x - last_x;
+            let dy = y - last_y;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq < 0.01 * 0.01 {
+                // Less than 1cm, don't record
+                return;
+            }
+        }
+
+        self.path_history.push((x, y));
+
+        // Keep history bounded
+        if self.path_history.len() > self.max_path_history {
+            self.path_history.remove(0);
+        }
+    }
+
+    /// Get the direction to back up (reverse along path we came from).
+    /// Returns the angle in radians pointing back along our path.
+    fn get_reverse_direction(&self, current_x: f32, current_y: f32) -> Option<f32> {
+        // Find a position in our history that's at least backup_distance away
+        let min_dist = self.config.backup_distance * 2.0; // Look for point 2x backup distance away
+
+        for &(hx, hy) in self.path_history.iter().rev() {
+            let dx = hx - current_x;
+            let dy = hy - current_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+
+            if dist >= min_dist {
+                // Return angle pointing toward this historical position
+                return Some(dy.atan2(dx));
+            }
+        }
+
+        // If no suitable history point, try the oldest point we have
+        if let Some(&(hx, hy)) = self.path_history.first() {
+            let dx = hx - current_x;
+            let dy = hy - current_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist > 0.02 {
+                // At least 2cm away
+                return Some(dy.atan2(dx));
+            }
+        }
+
+        None
+    }
+
+    /// Check if robot is surrounded by obstacles in all directions.
+    /// Returns true if there's no clear direction to escape.
+    fn is_surrounded(&self, map: &CurrentMapData, robot_pose: &Pose2D) -> bool {
+        let num_directions = self.config.surrounded_check_directions;
+        let angle_step = 2.0 * std::f32::consts::PI / num_directions as f32;
+        let check_distance = self.config.min_clearance_m;
+
+        let mut blocked_count = 0;
+
+        for i in 0..num_directions {
+            let angle = i as f32 * angle_step;
+            let check_x = robot_pose.x + check_distance * angle.cos();
+            let check_y = robot_pose.y + check_distance * angle.sin();
+
+            if self.is_point_blocked(map, check_x, check_y) {
+                blocked_count += 1;
+            }
+        }
+
+        // Surrounded if ALL directions are blocked
+        blocked_count >= num_directions
+    }
+
+    /// Check if a point is blocked (obstacle or out of bounds).
+    fn is_point_blocked(&self, map: &CurrentMapData, x: f32, y: f32) -> bool {
+        let cx = ((x - map.origin_x) / map.resolution) as i32;
+        let cy = ((y - map.origin_y) / map.resolution) as i32;
+
+        if cx < 0 || cy < 0 || cx >= map.width as i32 || cy >= map.height as i32 {
+            return true; // Out of bounds = blocked
+        }
+
+        let idx = (cy as usize) * (map.width as usize) + (cx as usize);
+        if idx >= map.cells.len() {
+            return true;
+        }
+
+        // Occupied if value >= 100 (but not unknown 255 for exploration purposes)
+        let cell_value = map.cells[idx];
+        cell_value >= 100 && cell_value != 255
+    }
+
+    /// Find the direction with most clearance from obstacles.
+    fn find_best_escape_direction(&self, map: &CurrentMapData, robot_pose: &Pose2D) -> f32 {
+        let num_directions = 16; // Check every 22.5 degrees
+        let angle_step = 2.0 * std::f32::consts::PI / num_directions as f32;
+        let max_check_distance = 1.0; // Check up to 1m away
+        let step_size = 0.05; // 5cm steps
+
+        let mut best_angle = robot_pose.theta + std::f32::consts::PI; // Default: opposite of current heading
+        let mut best_clearance = 0.0f32;
+
+        for i in 0..num_directions {
+            let angle = i as f32 * angle_step;
+            let mut clearance = 0.0f32;
+
+            // Ray-cast in this direction to find clearance
+            let mut dist = step_size;
+            while dist <= max_check_distance {
+                let check_x = robot_pose.x + dist * angle.cos();
+                let check_y = robot_pose.y + dist * angle.sin();
+
+                if self.is_point_blocked(map, check_x, check_y) {
+                    break;
+                }
+                clearance = dist;
+                dist += step_size;
+            }
+
+            if clearance > best_clearance {
+                best_clearance = clearance;
+                best_angle = angle;
+            }
+        }
+
+        best_angle
     }
 
     /// Find all frontier cells in the map.
@@ -113,12 +303,13 @@ impl FrontierExploration {
                     let wx = map.origin_x + (cx as f32 + 0.5) * resolution;
                     let wy = map.origin_y + (cy as f32 + 0.5) * resolution;
 
-                    // Filter by detection range
+                    // Soft range filter: collect all frontiers within extended range
+                    // Use 3x the configured range to catch more frontiers without going infinite
                     let dx = wx - robot_pose.x;
                     let dy = wy - robot_pose.y;
                     let dist = (dx * dx + dy * dy).sqrt();
 
-                    if dist <= self.config.frontier_detection_range {
+                    if dist <= self.config.frontier_detection_range * 3.0 {
                         frontier_cells.push((wx, wy));
                     }
                 }
@@ -187,10 +378,11 @@ impl FrontierExploration {
             }
         }
 
-        // Convert clusters to Frontiers
+        // Convert clusters to Frontiers (keep small min_size filter for noise reduction)
+        let min_size = self.config.min_frontier_size.max(2); // At least 2 cells
         clusters
             .into_iter()
-            .filter(|c| c.len() >= self.config.min_frontier_size)
+            .filter(|c| c.len() >= min_size)
             .map(|cluster| {
                 let (cx, cy) = self.compute_centroid(&cluster);
                 let dx = cx - robot_pose.x;
@@ -201,6 +393,7 @@ impl FrontierExploration {
                     centroid: Pose2D::new(cx, cy, 0.0),
                     size: cluster.len(),
                     distance,
+                    cells: cluster, // Preserve cells for edge-point fallback
                 }
             })
             .collect()
@@ -217,27 +410,254 @@ impl FrontierExploration {
         (sum_x / n, sum_y / n)
     }
 
-    /// Check if a frontier is blocked (bumper triggered nearby).
+    /// Check if a frontier is blocked (bumper triggered nearby or navigation failed).
     fn is_frontier_blocked(&self, frontier: &Frontier) -> bool {
-        let radius_sq = self.config.blocked_radius * self.config.blocked_radius;
-        self.blocked_locations.iter().any(|(bx, by)| {
+        // Use a larger radius for blocking (0.5m) to account for centroid drift
+        // The config.blocked_radius is for bumper obstacles, but navigation failures
+        // need more margin since centroids shift as map updates
+        let blocked_radius = self.config.blocked_radius.max(0.5);
+        let radius_sq = blocked_radius * blocked_radius;
+
+        let is_blocked = self.blocked_locations.iter().any(|(bx, by)| {
             let dx = frontier.centroid.x - bx;
             let dy = frontier.centroid.y - by;
             (dx * dx + dy * dy) < radius_sq
+        });
+
+        if is_blocked {
+            log::debug!(
+                "Frontier at ({:.2}, {:.2}) is BLOCKED (within {:.2}m of a blocked location, {} blocked total)",
+                frontier.centroid.x,
+                frontier.centroid.y,
+                blocked_radius,
+                self.blocked_locations.len()
+            );
+        }
+
+        is_blocked
+    }
+
+    /// Check if a specific point is reachable via A* path planning.
+    fn is_point_reachable(
+        &mut self,
+        x: f32,
+        y: f32,
+        robot_pose: &Pose2D,
+        map: &CurrentMapData,
+    ) -> bool {
+        let start = (robot_pose.x, robot_pose.y);
+        let goal = (x, y);
+        self.planner.plan(map, start, goal, 0).is_ok()
+    }
+
+    /// Score a frontier for selection priority.
+    /// Higher score = better candidate.
+    fn score_frontier(&self, frontier: &Frontier) -> f32 {
+        // Distance score: closer is better (inverse relationship)
+        // Range: approaches 1.0 for very close, approaches 0 for very far
+        let distance_score = 1.0 / (1.0 + frontier.distance);
+
+        // Size score: larger frontiers are slightly better (capped at 1.0)
+        // This prevents huge distant frontiers from overriding close small ones
+        let size_score = ((frontier.size as f32).sqrt() / 10.0).min(1.0);
+
+        // Heavily prioritize distance (80%) with slight size preference (20%)
+        // This ensures we explore systematically from close to far
+        distance_score * 0.8 + size_score * 0.2
+    }
+
+    /// Find a reachable point on a frontier (centroid first, then edge points).
+    fn find_reachable_point_on_frontier(
+        &mut self,
+        frontier: &Frontier,
+        robot_pose: &Pose2D,
+        map: &CurrentMapData,
+    ) -> Option<(f32, f32)> {
+        // 1. Try centroid first (most common case)
+        if self.is_point_reachable(frontier.centroid.x, frontier.centroid.y, robot_pose, map) {
+            return Some((frontier.centroid.x, frontier.centroid.y));
+        }
+
+        // 2. Try edge points sorted by distance to robot
+        let mut edge_points: Vec<(f32, f32, f32)> = frontier
+            .cells
+            .iter()
+            .map(|(x, y)| {
+                let dx = x - robot_pose.x;
+                let dy = y - robot_pose.y;
+                (*x, *y, dx * dx + dy * dy)
+            })
+            .collect();
+
+        edge_points.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Try up to 5 closest edge points
+        for (x, y, _) in edge_points.iter().take(5) {
+            if self.is_point_reachable(*x, *y, robot_pose, map) {
+                log::debug!(
+                    "Using edge point ({:.2}, {:.2}) instead of centroid ({:.2}, {:.2})",
+                    x,
+                    y,
+                    frontier.centroid.x,
+                    frontier.centroid.y
+                );
+                return Some((*x, *y));
+            }
+        }
+
+        None
+    }
+
+    /// Attempt breakthrough when all frontiers are blocked/unreachable.
+    /// Finds the nearest unknown cell adjacent to free space that IS reachable.
+    fn attempt_breakthrough(
+        &mut self,
+        map: &CurrentMapData,
+        robot_pose: &Pose2D,
+    ) -> Option<ExplorationAction> {
+        let nearest = self.find_nearest_reachable_unknown(map, robot_pose)?;
+
+        log::info!(
+            "Attempting breakthrough to nearest unknown at ({:.2}, {:.2})",
+            nearest.0,
+            nearest.1
+        );
+
+        Some(ExplorationAction::NavigateTo {
+            target: Pose2D::new(nearest.0, nearest.1, 0.0),
+            reason: "breakthrough to unknown area",
         })
     }
 
-    /// Select the best frontier to explore.
-    fn select_frontier<'a>(&self, frontiers: &'a [Frontier]) -> Option<&'a Frontier> {
-        // Filter out blocked frontiers and select closest valid frontier
-        frontiers
+    /// BFS to find nearest unknown cell adjacent to free space that is reachable.
+    fn find_nearest_reachable_unknown(
+        &mut self,
+        map: &CurrentMapData,
+        robot_pose: &Pose2D,
+    ) -> Option<(f32, f32)> {
+        use std::collections::VecDeque;
+
+        let width = map.width as usize;
+        let height = map.height as usize;
+        let resolution = map.resolution;
+
+        // Convert robot position to cell coordinates
+        let robot_cx = ((robot_pose.x - map.origin_x) / resolution) as i32;
+        let robot_cy = ((robot_pose.y - map.origin_y) / resolution) as i32;
+
+        if robot_cx < 0 || robot_cy < 0 || robot_cx >= width as i32 || robot_cy >= height as i32 {
+            return None;
+        }
+
+        let mut visited = vec![false; width * height];
+        let mut queue = VecDeque::new();
+
+        queue.push_back((robot_cx as usize, robot_cy as usize, 0));
+        visited[robot_cy as usize * width + robot_cx as usize] = true;
+
+        // BFS to find nearest unknown cell adjacent to free space
+        while let Some((cx, cy, dist)) = queue.pop_front() {
+            // Limit search radius
+            if dist > 200 {
+                break;
+            }
+
+            let idx = cy * width + cx;
+            let cell_value = map.cells[idx];
+
+            // Check if this is an unknown cell adjacent to free space
+            if cell_value == 255 && self.has_free_neighbor(map, cx, cy, width) {
+                // Verify it's actually reachable (find a nearby free cell to navigate to)
+                // Navigate to the free cell adjacent to this unknown, not the unknown itself
+                if let Some((target_x, target_y)) =
+                    self.find_adjacent_free_cell(map, cx, cy, width, resolution)
+                    && self.is_point_reachable(target_x, target_y, robot_pose, map)
+                {
+                    return Some((target_x, target_y));
+                }
+            }
+
+            // Add neighbors to queue
+            for (dx, dy) in [(0, 1), (1, 0), (0, -1), (-1, 0)] {
+                let nx = cx as i32 + dx;
+                let ny = cy as i32 + dy;
+
+                if nx >= 0 && ny >= 0 && (nx as usize) < width && (ny as usize) < height {
+                    let nidx = ny as usize * width + nx as usize;
+                    if !visited[nidx] {
+                        visited[nidx] = true;
+                        // Only traverse through free or unknown cells
+                        let nval = map.cells[nidx];
+                        if nval == 0 || nval == 255 {
+                            queue.push_back((nx as usize, ny as usize, dist + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Find an adjacent free cell to navigate to.
+    fn find_adjacent_free_cell(
+        &self,
+        map: &CurrentMapData,
+        cx: usize,
+        cy: usize,
+        width: usize,
+        resolution: f32,
+    ) -> Option<(f32, f32)> {
+        let height = map.height as usize;
+        for (dx, dy) in [(0, 1), (1, 0), (0, -1), (-1, 0)] {
+            let nx = cx as i32 + dx;
+            let ny = cy as i32 + dy;
+
+            if nx >= 0 && ny >= 0 && (nx as usize) < width && (ny as usize) < height {
+                let nidx = ny as usize * width + nx as usize;
+                if map.cells[nidx] == 0 {
+                    // Free cell
+                    let wx = map.origin_x + (nx as f32 + 0.5) * resolution;
+                    let wy = map.origin_y + (ny as f32 + 0.5) * resolution;
+                    return Some((wx, wy));
+                }
+            }
+        }
+        None
+    }
+
+    /// Select the best frontier to explore using distance priority and edge-point fallback.
+    ///
+    /// Returns the frontier and the specific point to navigate to (may be edge point).
+    fn select_frontier<'a>(
+        &mut self,
+        frontiers: &'a [Frontier],
+        robot_pose: &Pose2D,
+        map: &CurrentMapData,
+    ) -> Option<(&'a Frontier, (f32, f32))> {
+        // Filter non-blocked frontiers and sort by distance (closest first)
+        let mut candidates: Vec<&Frontier> = frontiers
             .iter()
             .filter(|f| !self.is_frontier_blocked(f))
-            .min_by(|a, b| {
-                a.distance
-                    .partial_cmp(&b.distance)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .collect();
+
+        // Sort by distance (ascending - closest first)
+        candidates.sort_by(|a, b| {
+            a.distance
+                .partial_cmp(&b.distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Try to find a reachable point on each frontier in distance order
+        for frontier in candidates {
+            if let Some(target_point) =
+                self.find_reachable_point_on_frontier(frontier, robot_pose, map)
+            {
+                return Some((frontier, target_point));
+            }
+        }
+
+        None
     }
 }
 
@@ -252,6 +672,9 @@ impl ExplorationStrategy for FrontierExploration {
         current_pose: &Pose2D,
         hazard: Option<&HazardEvent>,
     ) -> ExplorationAction {
+        // Store map for surrounded detection
+        self.last_map = Some(map.clone());
+
         // Track explored area for completion estimation
         if self.initial_explored_area.is_none() && map.explored_area_m2 > 0.0 {
             self.initial_explored_area = Some(map.explored_area_m2);
@@ -260,7 +683,69 @@ impl ExplorationStrategy for FrontierExploration {
             self.peak_explored_area = map.explored_area_m2;
         }
 
-        // Handle hazard events (bumper or cliff)
+        // Record position in path history (only when not in recovery)
+        if self.recovery_phase == RecoveryPhase::None {
+            self.record_position(current_pose.x, current_pose.y);
+        }
+
+        // Handle ongoing recovery phases
+        match self.recovery_phase {
+            RecoveryPhase::BackingUp => {
+                // Check if we've reached the backup target
+                if let Some(ref target) = self.recovery_target {
+                    let dx = target.x - current_pose.x;
+                    let dy = target.y - current_pose.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+
+                    if dist < 0.05 {
+                        // Reached backup position, now rotate
+                        log::info!(
+                            "Backup complete, rotating {} degrees before re-routing",
+                            (self.config.recovery_rotation_rad * 180.0 / std::f32::consts::PI)
+                                as i32
+                        );
+                        self.recovery_phase = RecoveryPhase::Rotating;
+
+                        // Alternate rotation direction based on recovery attempts
+                        let rotation_sign = if self.recovery_attempts.is_multiple_of(2) {
+                            1.0
+                        } else {
+                            -1.0
+                        };
+                        return ExplorationAction::RotateInPlace {
+                            angle_rad: self.config.recovery_rotation_rad * rotation_sign,
+                        };
+                    }
+
+                    // Continue moving to backup target
+                    return ExplorationAction::MoveTo {
+                        target: *target,
+                        reason: "backing up along path",
+                    };
+                }
+            }
+
+            RecoveryPhase::Rotating => {
+                // Rotation is a single action, transition to re-routing
+                log::info!(
+                    "Recovery attempt {} complete, re-routing to target",
+                    self.recovery_attempts
+                );
+                self.recovery_phase = RecoveryPhase::None;
+                self.recovery_target = None;
+
+                // Clear path history after recovery to build fresh path
+                self.path_history.clear();
+
+                // Will fall through to normal frontier selection below
+            }
+
+            RecoveryPhase::None => {
+                // No recovery in progress
+            }
+        }
+
+        // Handle new hazard events (bumper or cliff)
         if let Some(event) = hazard {
             // Mark the hazard location as blocked (using world position calculated from sensor offset)
             self.blocked_locations
@@ -272,136 +757,109 @@ impl ExplorationStrategy for FrontierExploration {
                 "Bumper"
             };
 
+            self.recovery_attempts += 1;
+
             log::info!(
-                "{} {:?} triggered at robot ({:.2}, {:.2}), hazard at ({:.2}, {:.2}) - marking as blocked",
+                "{} {:?} triggered at robot ({:.2}, {:.2}), hazard at ({:.2}, {:.2}) - recovery attempt {}",
                 hazard_name,
                 event.hazard_type,
                 current_pose.x,
                 current_pose.y,
                 event.world_position.x,
-                event.world_position.y
+                event.world_position.y,
+                self.recovery_attempts
             );
 
-            // Increment stuck counter
-            self.stuck_count += 1;
+            // Check if robot is surrounded - only then give up on this target
+            if self.is_surrounded(map, current_pose) {
+                log::warn!(
+                    "Robot is surrounded by obstacles after {} recovery attempts - abandoning target",
+                    self.recovery_attempts
+                );
 
-            // If we've been stuck too many times on this target, abandon it
-            if self.stuck_count >= self.config.max_stuck_count {
                 if let Some(ref target) = self.current_target {
                     self.blocked_locations
                         .push((target.centroid.x, target.centroid.y));
                     log::info!(
-                        "Abandoning frontier at ({:.2}, {:.2}) after {} hazard events",
+                        "Marking frontier at ({:.2}, {:.2}) as blocked",
                         target.centroid.x,
-                        target.centroid.y,
-                        self.stuck_count
+                        target.centroid.y
                     );
                 }
+
                 self.current_target = None;
-                self.stuck_count = 0;
+                self.current_target_point = None;
+                self.recovery_attempts = 0;
+                self.recovery_phase = RecoveryPhase::None;
+                self.path_history.clear();
+
+                // Try to find best escape direction
+                let escape_angle = self.find_best_escape_direction(map, current_pose);
+                return ExplorationAction::RotateInPlace {
+                    angle_rad: escape_angle - current_pose.theta,
+                };
             }
 
-            // Handle bumper/cliff response:
-            // - Left bumper hit: turn RIGHT (positive angle in robot frame = CCW, but we want CW away from left obstacle)
-            // - Right bumper hit: turn LEFT (negative angle = CW, but we want CCW away from right obstacle)
-            // - Both bumpers: back up 0.1m, then turn 90°
-            //
-            // Note: In standard robot convention, positive theta = CCW rotation when viewed from above.
-            // To turn away from a left-side obstacle, we need to turn RIGHT (CW) = negative rotation.
-            // To turn away from a right-side obstacle, we need to turn LEFT (CCW) = positive rotation.
+            // Start recovery: backup along the path we came from
+            self.recovery_phase = RecoveryPhase::BackingUp;
 
-            match event.hazard_type {
-                // Left bumper hit - back up and turn RIGHT (away from left obstacle)
-                HazardType::BumperLeft => {
-                    // Back up 0.1m and rotate RIGHT (clockwise = negative angle)
-                    let backup_distance = 0.1;
-                    let turn_angle = -0.35; // ~20° right (negative = clockwise)
-                    let back_x = current_pose.x - backup_distance * current_pose.theta.cos();
-                    let back_y = current_pose.y - backup_distance * current_pose.theta.sin();
-                    return ExplorationAction::MoveTo {
-                        target: Pose2D::new(back_x, back_y, current_pose.theta + turn_angle),
-                        reason: "backing up from left bumper, turning right",
-                    };
-                }
+            // Calculate backup direction - reverse along our path
+            let backup_angle = if let Some(reverse_angle) =
+                self.get_reverse_direction(current_pose.x, current_pose.y)
+            {
+                reverse_angle
+            } else {
+                // No path history - use best escape direction from map analysis
+                self.find_best_escape_direction(map, current_pose)
+            };
 
-                // Right bumper hit - back up and turn LEFT (away from right obstacle)
-                HazardType::BumperRight => {
-                    // Back up 0.1m and rotate LEFT (counter-clockwise = positive angle)
-                    let backup_distance = 0.1;
-                    let turn_angle = 0.35; // ~20° left (positive = counter-clockwise)
-                    let back_x = current_pose.x - backup_distance * current_pose.theta.cos();
-                    let back_y = current_pose.y - backup_distance * current_pose.theta.sin();
-                    return ExplorationAction::MoveTo {
-                        target: Pose2D::new(back_x, back_y, current_pose.theta + turn_angle),
-                        reason: "backing up from right bumper, turning left",
-                    };
-                }
+            // Calculate backup position
+            let backup_distance = self.config.backup_distance;
+            let back_x = current_pose.x + backup_distance * backup_angle.cos();
+            let back_y = current_pose.y + backup_distance * backup_angle.sin();
 
-                // Both bumpers hit - back up 0.1m and turn 90°
-                HazardType::BumperBoth => {
-                    // Back up 0.1m and rotate 90° (pick a direction, prefer right)
-                    let backup_distance = 0.1;
-                    let turn_angle = -std::f32::consts::FRAC_PI_2; // 90° right
-                    let back_x = current_pose.x - backup_distance * current_pose.theta.cos();
-                    let back_y = current_pose.y - backup_distance * current_pose.theta.sin();
-                    return ExplorationAction::MoveTo {
-                        target: Pose2D::new(back_x, back_y, current_pose.theta + turn_angle),
-                        reason: "backing up from both bumpers, turning 90°",
-                    };
-                }
+            // Store recovery target
+            self.recovery_target = Some(Pose2D::new(back_x, back_y, current_pose.theta));
 
-                // Cliff sensors - back away from the edge
-                HazardType::CliffLeftSide => {
-                    // Side cliff - rotate in place away from edge (turn right)
-                    return ExplorationAction::RotateInPlace {
-                        angle_rad: -0.8, // ~45° right
-                    };
-                }
+            log::info!(
+                "Starting recovery: backing up to ({:.2}, {:.2}) along path direction {:.1}°",
+                back_x,
+                back_y,
+                backup_angle * 180.0 / std::f32::consts::PI
+            );
 
-                HazardType::CliffLeftFront => {
-                    // Front-left cliff - back up and turn right
-                    let backup_distance = 0.1;
-                    let turn_angle = -0.5; // ~30° right
-                    let back_x = current_pose.x - backup_distance * current_pose.theta.cos();
-                    let back_y = current_pose.y - backup_distance * current_pose.theta.sin();
-                    return ExplorationAction::MoveTo {
-                        target: Pose2D::new(back_x, back_y, current_pose.theta + turn_angle),
-                        reason: "backing up from left-front cliff",
-                    };
-                }
-
-                HazardType::CliffRightFront => {
-                    // Front-right cliff - back up and turn left
-                    let backup_distance = 0.1;
-                    let turn_angle = 0.5; // ~30° left
-                    let back_x = current_pose.x - backup_distance * current_pose.theta.cos();
-                    let back_y = current_pose.y - backup_distance * current_pose.theta.sin();
-                    return ExplorationAction::MoveTo {
-                        target: Pose2D::new(back_x, back_y, current_pose.theta + turn_angle),
-                        reason: "backing up from right-front cliff",
-                    };
-                }
-
-                HazardType::CliffRightSide => {
-                    // Side cliff - rotate in place away from edge (turn left)
-                    return ExplorationAction::RotateInPlace {
-                        angle_rad: 0.8, // ~45° left
-                    };
-                }
-            }
+            return ExplorationAction::MoveTo {
+                target: Pose2D::new(back_x, back_y, current_pose.theta),
+                reason: "backing up along path after hazard",
+            };
         }
 
-        // Check if we've reached current target
-        if let Some(ref target) = self.current_target {
-            let dx = target.centroid.x - current_pose.x;
-            let dy = target.centroid.y - current_pose.y;
+        // Check if we've reached current target point
+        if let Some((tx, ty)) = self.current_target_point {
+            let dx = tx - current_pose.x;
+            let dy = ty - current_pose.y;
             let dist = (dx * dx + dy * dy).sqrt();
 
             if dist < 0.3 {
                 // Reached target, rotate to scan area
-                log::debug!("Reached frontier, rotating to scan");
+                log::debug!("Reached frontier target, rotating to scan");
                 self.current_target = None;
-                self.stuck_count = 0;
+                self.current_target_point = None;
+                self.recovery_attempts = 0; // Reset recovery counter on success
+                self.successful_visits += 1;
+
+                // Periodically clean up old blocked locations after successful visits
+                if self.successful_visits.is_multiple_of(3) && self.blocked_locations.len() > 5 {
+                    let keep_count = self.blocked_locations.len() / 2;
+                    let removed = self.blocked_locations.len() - keep_count;
+                    self.blocked_locations = self.blocked_locations.split_off(keep_count);
+                    log::info!(
+                        "Cleared {} old blocked locations (keeping {})",
+                        removed,
+                        self.blocked_locations.len()
+                    );
+                }
+
                 return ExplorationAction::RotateInPlace {
                     angle_rad: std::f32::consts::PI / 2.0,
                 };
@@ -412,34 +870,50 @@ impl ExplorationStrategy for FrontierExploration {
         let frontiers = self.find_frontiers(map, current_pose);
         self.last_frontiers = frontiers.clone();
 
-        // Select best frontier
-        if let Some(frontier) = self.select_frontier(&frontiers) {
+        // Select best reachable frontier (with edge-point fallback)
+        if let Some((frontier, target_point)) = self.select_frontier(&frontiers, current_pose, map)
+        {
             let target = frontier.clone();
             log::debug!(
-                "Selected frontier at ({:.2}, {:.2}), distance: {:.2}m, size: {}",
+                "Selected frontier at ({:.2}, {:.2}), target point: ({:.2}, {:.2}), distance: {:.2}m, size: {}, score: {:.3}",
                 target.centroid.x,
                 target.centroid.y,
+                target_point.0,
+                target_point.1,
                 target.distance,
-                target.size
+                target.size,
+                self.score_frontier(&target)
             );
-            self.current_target = Some(target.clone());
+            self.current_target = Some(target);
+            self.current_target_point = Some(target_point);
 
-            ExplorationAction::MoveTo {
-                target: target.centroid,
-                reason: "nearest frontier",
+            // Use NavigateTo for path-planned navigation to frontier
+            ExplorationAction::NavigateTo {
+                target: Pose2D::new(target_point.0, target_point.1, 0.0),
+                reason: "reachable frontier",
             }
         } else if frontiers.is_empty() {
             // No frontiers found - exploration complete
             log::info!("No frontiers remaining - exploration complete!");
             ExplorationAction::Complete
         } else {
-            // All frontiers are blocked
+            // All frontiers are blocked or unreachable - try breakthrough
             log::warn!(
-                "All {} frontiers are blocked - exploration stuck",
+                "All {} frontiers blocked/unreachable - attempting breakthrough",
                 frontiers.len()
             );
+
+            if let Some(action) = self.attempt_breakthrough(map, current_pose) {
+                return action;
+            }
+
+            // Truly stuck - no reachable unknown cells
+            log::warn!("Breakthrough failed - exploration stuck");
             ExplorationAction::Stuck {
-                reason: format!("All {} frontiers blocked by obstacles", frontiers.len()),
+                reason: format!(
+                    "All {} frontiers blocked, breakthrough failed",
+                    frontiers.len()
+                ),
             }
         }
     }
@@ -448,9 +922,15 @@ impl ExplorationStrategy for FrontierExploration {
         self.last_frontiers.clear();
         self.blocked_locations.clear();
         self.current_target = None;
-        self.stuck_count = 0;
+        self.current_target_point = None;
+        self.path_history.clear();
+        self.recovery_phase = RecoveryPhase::None;
+        self.recovery_target = None;
+        self.recovery_attempts = 0;
+        self.successful_visits = 0;
         self.initial_explored_area = None;
         self.peak_explored_area = 0.0;
+        self.last_map = None;
     }
 
     fn frontier_count(&self) -> usize {
@@ -470,11 +950,55 @@ impl ExplorationStrategy for FrontierExploration {
             percent.clamp(0.0, 99.0) // Never 100% until truly complete
         }
     }
+
+    fn mark_target_blocked(&mut self, x: f32, y: f32) {
+        log::info!(
+            "Marking failed navigation target as blocked: ({:.2}, {:.2})",
+            x,
+            y
+        );
+        self.blocked_locations.push((x, y));
+
+        // Clear current target since it failed
+        self.current_target = None;
+        self.current_target_point = None;
+    }
+
+    fn mark_target_reached(&mut self) {
+        if let Some(ref target) = self.current_target {
+            log::info!(
+                "Frontier target reached successfully at ({:.2}, {:.2})",
+                target.centroid.x,
+                target.centroid.y
+            );
+        }
+
+        // Clear current target - navigation completed
+        self.current_target = None;
+        self.current_target_point = None;
+        self.recovery_attempts = 0;
+        self.successful_visits += 1;
+
+        // Periodically clean up old blocked locations after successful visits
+        if self.successful_visits.is_multiple_of(3) && self.blocked_locations.len() > 5 {
+            let keep_count = self.blocked_locations.len() / 2;
+            let removed = self.blocked_locations.len() - keep_count;
+            self.blocked_locations = self.blocked_locations.split_off(keep_count);
+            log::info!(
+                "Cleared {} old blocked locations (keeping {})",
+                removed,
+                self.blocked_locations.len()
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::exploration::strategy;
+
     use super::*;
+    use strategy::HazardType;
 
     fn create_test_map(width: u32, height: u32) -> CurrentMapData {
         let size = (width * height) as usize;
@@ -593,11 +1117,79 @@ mod tests {
         // Add some blocked locations
         strategy.blocked_locations.push((1.0, 1.0));
         strategy.blocked_locations.push((2.0, 2.0));
+        strategy.path_history.push((0.0, 0.0));
+        strategy.recovery_attempts = 5;
 
         strategy.reset();
 
         assert!(strategy.blocked_locations.is_empty());
         assert!(strategy.last_frontiers.is_empty());
         assert!(strategy.current_target.is_none());
+        assert!(strategy.path_history.is_empty());
+        assert_eq!(strategy.recovery_attempts, 0);
+        assert_eq!(strategy.recovery_phase, RecoveryPhase::None);
+    }
+
+    #[test]
+    fn test_path_history_recording() {
+        let config = FrontierConfig::default();
+        let mut strategy = FrontierExploration::new(config);
+
+        // Record positions
+        strategy.record_position(0.0, 0.0);
+        strategy.record_position(0.1, 0.0);
+        strategy.record_position(0.2, 0.0);
+        strategy.record_position(0.3, 0.0);
+
+        assert_eq!(strategy.path_history.len(), 4);
+
+        // Recording same position should not add
+        strategy.record_position(0.3, 0.0);
+        assert_eq!(strategy.path_history.len(), 4);
+    }
+
+    #[test]
+    fn test_reverse_direction_calculation() {
+        let config = FrontierConfig::default();
+        let mut strategy = FrontierExploration::new(config);
+
+        // Build a path history going forward along X axis
+        strategy.record_position(0.0, 0.0);
+        strategy.record_position(0.1, 0.0);
+        strategy.record_position(0.2, 0.0);
+        strategy.record_position(0.3, 0.0);
+
+        // Get reverse direction from current position (0.4, 0.0)
+        let reverse_angle = strategy.get_reverse_direction(0.4, 0.0);
+
+        assert!(reverse_angle.is_some());
+        // Should point back along the negative X direction (approximately PI radians)
+        let angle = reverse_angle.unwrap();
+        assert!(
+            (angle - std::f32::consts::PI).abs() < 0.1
+                || (angle + std::f32::consts::PI).abs() < 0.1
+        );
+    }
+
+    #[test]
+    fn test_is_point_blocked() {
+        let config = FrontierConfig::default();
+        let strategy = FrontierExploration::new(config);
+
+        // Create a map with an obstacle
+        let mut map = create_test_map(20, 20);
+        // Mark center cell as obstacle
+        let center_idx = 10 * 20 + 10;
+        map.cells[center_idx] = 100;
+
+        // Point at obstacle should be blocked
+        let obstacle_x = map.origin_x + 10.5 * map.resolution;
+        let obstacle_y = map.origin_y + 10.5 * map.resolution;
+        assert!(strategy.is_point_blocked(&map, obstacle_x, obstacle_y));
+
+        // Point at free cell should not be blocked
+        let free_x = map.origin_x + 5.5 * map.resolution;
+        let free_y = map.origin_y + 5.5 * map.resolution;
+        assert!(!strategy.is_point_blocked(&map, free_x, free_y));
     }
 }
