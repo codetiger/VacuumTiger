@@ -246,8 +246,8 @@ dhruva-slam/
 │   │
 │   ├── algorithms/           # Core algorithms
 │   │   ├── matching/         # ICP, P2L-ICP, Correlative, Multi-Resolution
-│   │   ├── mapping/          # OccupancyGrid, RayTracer, FeatureExtractor
-│   │   ├── localization/     # SensorModel, MotionModel (MCL)
+│   │   ├── mapping/          # OccupancyGrid, RayTracer, MapIntegrator
+│   │   ├── planning/         # A* path planning
 │   │   └── descriptors/      # LiDAR-IRIS for loop closure
 │   │
 │   ├── engine/               # SLAM orchestration
@@ -255,13 +255,32 @@ dhruva-slam/
 │   │   └── graph/            # PoseGraph, LoopDetector, SparseCG Optimizer
 │   │
 │   ├── io/                   # I/O infrastructure
-│   │   ├── sangam_client.rs  # SangamIO TCP client
-│   │   ├── bag/              # BagRecorder, BagPlayer, SimulatedClient
-│   │   └── streaming/        # OdometryPublisher, message types
+│   │   ├── sangam_client.rs  # SangamIO TCP/UDP client
+│   │   ├── bag/              # BagRecorder, BagPlayer
+│   │   ├── streaming/        # TCP/UDP publishers
+│   │   ├── map_manager.rs    # Map persistence
+│   │   └── motion_controller.rs  # Velocity commands
 │   │
-│   └── metrics/              # Quality metrics
-│       ├── scan_match_error.rs
-│       └── map_noise.rs
+│   ├── state/                # Multi-threaded state management
+│   │   ├── shared.rs         # Shared atomic state
+│   │   └── commands.rs       # Command processing
+│   │
+│   ├── threads/              # Multi-threaded daemon architecture
+│   │   ├── slam_thread.rs    # Real-time SLAM processor
+│   │   ├── publisher_thread.rs   # Data stream publisher
+│   │   ├── exploration_thread.rs # Autonomous exploration
+│   │   └── navigation_thread.rs  # Goal-based navigation
+│   │
+│   ├── exploration/          # Frontier-based exploration
+│   │   ├── frontier.rs       # Frontier detection
+│   │   └── strategy.rs       # Selection strategies
+│   │
+│   └── navigation/           # Path planning and execution
+│       ├── navigator.rs      # Navigation orchestrator
+│       ├── path.rs           # Path data structures
+│       ├── state.rs          # Navigation state machine
+│       ├── target.rs         # Goal management
+│       └── features/         # Frontier, clearance, mapping features
 │
 ├── proto/                    # Protobuf schemas
 │   └── dhruva.proto          # Output message definitions
@@ -398,8 +417,7 @@ cargo test -- --nocapture
 ### Known Limitations
 
 - Loop closure detection is implemented but not fully integrated into pose correction
-- No multi-session mapping (map not persisted between runs)
-- Single-threaded (no background optimization thread yet)
+- Background graph optimization runs in publisher thread (could be separate thread for large maps)
 
 ### Future Work
 

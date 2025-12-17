@@ -159,10 +159,19 @@ VacuumTiger/
 │   ├── sangamio.toml       # Robot configuration
 │   ├── COMMANDS.md         # GD32 command reference
 │   └── SENSORSTATUS.md     # Sensor packet documentation
+├── dhruva-slam/            # 2D SLAM daemon (Rust)
+│   ├── src/
+│   │   ├── core/           # Foundation types (Pose2D, PointCloud2D)
+│   │   ├── sensors/        # Odometry fusion, lidar preprocessing
+│   │   ├── algorithms/     # Scan matching, mapping, loop closure
+│   │   ├── engine/         # SLAM orchestration, pose graph
+│   │   └── io/             # SangamIO client, TCP streaming
+│   └── proto/              # SLAM message definitions
 ├── drishti/                # Diagnostic visualization (Python)
 │   ├── drishti_ui.py       # PyQt GUI with sensor overlays
 │   ├── drishti.py          # Console client
 │   └── ui/                 # PyQt widgets and processors
+├── slam-test/              # SLAM integration test framework
 └── protocol-mitm/          # Reverse engineering tools
 ```
 
@@ -208,7 +217,8 @@ python drishti_ui.py --robot 192.168.68.101
 | CRL-200S Driver | ✅ Verified | GD32 motor controller + Delta-2D lidar |
 | TCP Protocol | ✅ Complete | Protobuf binary streaming |
 | Drishti UI | ✅ Complete | Real-time sensor visualization |
-| SLAM Application | 📋 Planned | Navigation and mapping |
+| DhruvaSLAM | ✅ Complete | 2D SLAM with multi-algorithm support |
+| SLAM Integration Tests | ✅ Complete | Round-trip test framework |
 | Additional Platforms | 📋 Planned | Roomba, Turtlebot, etc. |
 
 ## Contributing

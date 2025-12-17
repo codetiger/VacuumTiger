@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-VacuumTiger is an open-source robotic vacuum firmware project for the CRL-200S hardware platform. The project consists of two main components:
+VacuumTiger is an open-source robotic vacuum firmware project for the CRL-200S hardware platform. The project consists of three main components:
 
-1. **SangamIO**: A daemon providing hardware abstraction and real-time control via TCP streaming
-2. **Drishti**: Python visualization and control client for monitoring and commanding the robot
+1. **SangamIO**: A daemon providing hardware abstraction and real-time control via TCP/UDP streaming
+2. **DhruvaSLAM**: A multi-threaded 2D SLAM daemon for localization and mapping
+3. **Drishti**: Python visualization and control client for monitoring and commanding the robot
 
 **Target Platform**: Embedded Linux (ARM) - Allwinner A33 running Tina Linux
 **Primary Language**: Rust (edition 2024) for SangamIO, Python 3.8+ for Drishti
@@ -225,7 +226,6 @@ VacuumTiger/
 │   │   │   │   │   ├── mod.rs        # Driver orchestration
 │   │   │   │   │   ├── protocol.rs   # RxPacket, PacketReader
 │   │   │   │   │   ├── packet.rs     # TxPacket, checksum
-│   │   │   │   │   ├── ring_buffer.rs # Zero-copy ring buffer
 │   │   │   │   │   ├── heartbeat.rs  # 20ms watchdog loop
 │   │   │   │   │   ├── reader.rs     # Status parsing
 │   │   │   │   │   ├── commands.rs   # Command handlers
@@ -255,6 +255,21 @@ VacuumTiger/
 │   │   └── mock-device-guide.md
 │   ├── sangamio.toml         # Hardware configuration
 │   └── mock.toml             # Simulation configuration
+│
+├── dhruva-slam/              # 2D SLAM daemon
+│   ├── src/
+│   │   ├── main.rs           # Entry point, multi-threaded daemon
+│   │   ├── core/             # Foundation types (Pose2D, PointCloud2D)
+│   │   ├── sensors/          # Odometry fusion, lidar preprocessing
+│   │   ├── algorithms/       # Matching, mapping, planning, descriptors
+│   │   ├── engine/           # SLAM orchestration, pose graph
+│   │   ├── io/               # SangamIO client, streaming, bags
+│   │   ├── state/            # Multi-threaded state management
+│   │   ├── threads/          # SLAM, publisher, exploration, navigation
+│   │   ├── exploration/      # Frontier-based exploration
+│   │   └── navigation/       # Path planning and execution
+│   ├── proto/                # Protobuf schema (dhruva.proto)
+│   └── dhruva-slam.toml      # Runtime configuration
 │
 └── drishti/                  # Python visualization client
     ├── drishti.py           # Console client
@@ -390,16 +405,24 @@ python drishti.py --robot 192.168.68.101 --verbose
 
 ## Version History
 
-- **v0.2.0-dev** (2024-11-14): Major cleanup, daemon architecture, performance optimizations
-- **v0.1.0** (2024-11-13): Initial release with basic functionality
+### SangamIO
+- **v0.3.0**: UDP/TCP unified port architecture, mock device simulation
+- **v0.2.0**: Daemon architecture, performance optimizations
+- **v0.1.0**: Initial release with basic functionality
+
+### DhruvaSLAM
+- **v0.1.0**: Multi-threaded SLAM daemon with exploration and navigation
 
 ## Documentation References
 
+- **sangam-io/README.md**: SangamIO daemon documentation
 - **sangam-io/COMMANDS.md**: GD32 command reference with TCP API
 - **sangam-io/SENSORSTATUS.md**: Sensor packet byte layout
+- **dhruva-slam/README.md**: SLAM daemon documentation
+- **dhruva-slam/src/*/README.md**: Module-specific documentation (core, sensors, algorithms, engine, io)
 - **drishti/README.md**: Python client documentation
 - **protocol-mitm/README.md**: MITM reverse engineering tools
-- **protocol-mitm/docs/**: Protocol discovery documentation
+- **slam-test/README.md**: SLAM integration test framework
 
 ## Future Roadmap
 
