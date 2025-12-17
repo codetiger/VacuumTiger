@@ -51,9 +51,6 @@ pub struct Submap {
     /// Current state.
     state: SubmapState,
 
-    /// Timestamp of first scan.
-    pub start_time_us: u64,
-
     /// Timestamp of last scan.
     pub end_time_us: u64,
 
@@ -89,29 +86,11 @@ impl Submap {
             num_scans: 0,
             keyframe_ids: Vec::new(),
             state: SubmapState::Active,
-            start_time_us: timestamp_us,
             end_time_us: timestamp_us,
             integrator: MapIntegrator::new(integrator_config),
             cached_pointcloud: None,
             cached_grid_dimensions: (0, 0),
             cached_at_scan_count: 0,
-        }
-    }
-
-    /// Get the occupancy grid.
-    pub fn grid(&self) -> &OccupancyGrid {
-        &self.grid
-    }
-
-    /// Get mutable grid (only valid while active).
-    ///
-    /// Note: The cached pointcloud is automatically invalidated on the next
-    /// `as_pointcloud()` call by checking the scan count.
-    pub fn grid_mut(&mut self) -> Option<&mut OccupancyGrid> {
-        if self.state == SubmapState::Active {
-            Some(&mut self.grid)
-        } else {
-            None
         }
     }
 
@@ -163,16 +142,6 @@ impl Submap {
         }
 
         self.cached_pointcloud.as_ref().unwrap()
-    }
-
-    /// Get the current state.
-    pub fn state(&self) -> SubmapState {
-        self.state
-    }
-
-    /// Check if submap is active.
-    pub fn is_active(&self) -> bool {
-        self.state == SubmapState::Active
     }
 
     /// Check if submap is finished.
@@ -233,12 +202,6 @@ impl Submap {
         inv_origin.compose(global)
     }
 
-    /// Convert a submap-local pose to global coordinates.
-    pub fn local_to_global(&self, local: &Pose2D) -> Pose2D {
-        // global = origin * local
-        self.origin.compose(local)
-    }
-
     /// Start finishing this submap.
     pub fn start_finishing(&mut self) {
         if self.state == SubmapState::Active {
@@ -249,11 +212,6 @@ impl Submap {
     /// Mark this submap as finished.
     pub fn finish(&mut self) {
         self.state = SubmapState::Finished;
-    }
-
-    /// Update the origin pose (e.g., after graph optimization).
-    pub fn update_origin(&mut self, new_origin: Pose2D) {
-        self.origin = new_origin;
     }
 
     /// Get memory usage in bytes.
@@ -279,9 +237,6 @@ pub struct SubmapManagerConfig {
     /// Number of scans to continue adding to the old submap after
     /// starting a new one.
     pub overlap_scans: u32,
-
-    /// Maximum number of active submaps (for overlap).
-    pub max_active_submaps: usize,
 }
 
 impl Default for SubmapManagerConfig {
@@ -296,7 +251,6 @@ impl Default for SubmapManagerConfig {
             integrator_config: MapIntegratorConfig::default(),
             scans_per_submap: 100,
             overlap_scans: 20,
-            max_active_submaps: 2,
         }
     }
 }
@@ -336,7 +290,8 @@ impl SubmapManager {
 
     /// Get the active submap.
     pub fn active_submap(&self) -> Option<&Submap> {
-        self.active_submap_id.and_then(|id| self.get(id))
+        let id = self.active_submap_id?;
+        self.submaps.iter().find(|s| s.id == id)
     }
 
     /// Get mutable active submap.
@@ -345,19 +300,9 @@ impl SubmapManager {
         self.submaps.iter_mut().find(|s| s.id == id)
     }
 
-    /// Get a submap by ID.
-    pub fn get(&self, id: u64) -> Option<&Submap> {
-        self.submaps.iter().find(|s| s.id == id)
-    }
-
-    /// Get mutable submap by ID.
-    pub fn get_mut(&mut self, id: u64) -> Option<&mut Submap> {
+    /// Get mutable submap by ID (private helper).
+    fn get_mut(&mut self, id: u64) -> Option<&mut Submap> {
         self.submaps.iter_mut().find(|s| s.id == id)
-    }
-
-    /// Get all submaps.
-    pub fn submaps(&self) -> &[Submap] {
-        &self.submaps
     }
 
     /// Get all finished submaps.
@@ -541,15 +486,6 @@ impl SubmapManager {
         }
     }
 
-    /// Update submap origins after graph optimization.
-    pub fn update_origins(&mut self, new_origins: &[(u64, Pose2D)]) {
-        for (id, new_origin) in new_origins {
-            if let Some(submap) = self.get_mut(*id) {
-                submap.update_origin(*new_origin);
-            }
-        }
-    }
-
     /// Get total memory usage.
     pub fn memory_usage(&self) -> usize {
         self.submaps.iter().map(|s| s.memory_usage()).sum()
@@ -560,11 +496,6 @@ impl SubmapManager {
         self.submaps.len()
     }
 
-    /// Check if empty.
-    pub fn is_empty(&self) -> bool {
-        self.submaps.is_empty()
-    }
-
     /// Clear all submaps.
     pub fn clear(&mut self) {
         self.submaps.clear();
@@ -572,11 +503,6 @@ impl SubmapManager {
         self.next_id = 0;
         self.scans_in_current = 0;
         self.overlap_submaps.clear();
-    }
-
-    /// Get configuration.
-    pub fn config(&self) -> &SubmapManagerConfig {
-        &self.config
     }
 }
 
@@ -605,7 +531,7 @@ mod tests {
         assert_eq!(submap.id, 0);
         assert_eq!(submap.origin.x, 1.0);
         assert_eq!(submap.num_scans, 0);
-        assert!(submap.is_active());
+        assert_eq!(submap.state, SubmapState::Active);
     }
 
     #[test]
@@ -646,13 +572,13 @@ mod tests {
 
         let mut submap = Submap::new(0, Pose2D::identity(), grid_config, integrator_config, 0);
 
-        assert_eq!(submap.state(), SubmapState::Active);
+        assert_eq!(submap.state, SubmapState::Active);
 
         submap.start_finishing();
-        assert_eq!(submap.state(), SubmapState::Finishing);
+        assert_eq!(submap.state, SubmapState::Finishing);
 
         submap.finish();
-        assert_eq!(submap.state(), SubmapState::Finished);
+        assert_eq!(submap.state, SubmapState::Finished);
         assert!(submap.is_finished());
     }
 

@@ -39,6 +39,8 @@
 //!     }
 //! }
 //! ```
+//!
+//! Note: Some utility methods are defined for future use.
 
 use std::f32::consts::PI;
 
@@ -126,7 +128,7 @@ impl Quaternion {
 
     /// Convert quaternion to Euler angles (ZYX convention).
     /// Returns (roll, pitch, yaw) in radians.
-    pub fn to_euler(&self) -> (f32, f32, f32) {
+    pub fn to_euler(self) -> (f32, f32, f32) {
         // Roll (X axis rotation)
         let sinr_cosp = 2.0 * (self.w * self.x + self.y * self.z);
         let cosr_cosp = 1.0 - 2.0 * (self.x * self.x + self.y * self.y);
@@ -146,25 +148,6 @@ impl Quaternion {
         let yaw = siny_cosp.atan2(cosy_cosp);
 
         (roll, pitch, yaw)
-    }
-}
-
-/// Euler angles in radians.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct EulerAngles {
-    pub roll: f32,
-    pub pitch: f32,
-    pub yaw: f32,
-}
-
-impl EulerAngles {
-    /// Convert to degrees.
-    pub fn to_degrees(&self) -> (f32, f32, f32) {
-        (
-            self.roll * 180.0 / PI,
-            self.pitch * 180.0 / PI,
-            self.yaw * 180.0 / PI,
-        )
     }
 }
 
@@ -195,37 +178,6 @@ impl RawImuData {
             tilt_x: tilt[0],
             tilt_y: tilt[1],
             tilt_z: tilt[2],
-        }
-    }
-}
-
-/// Calibrated IMU data in physical units.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CalibratedImuData {
-    /// Gyroscope X (roll rate) in rad/s
-    pub gx: f32,
-    /// Gyroscope Y (pitch rate) in rad/s
-    pub gy: f32,
-    /// Gyroscope Z (yaw rate) in rad/s
-    pub gz: f32,
-    /// Accelerometer/gravity X (normalized or m/s²)
-    pub ax: f32,
-    /// Accelerometer/gravity Y (normalized or m/s²)
-    pub ay: f32,
-    /// Accelerometer/gravity Z (normalized or m/s²)
-    pub az: f32,
-}
-
-impl CalibratedImuData {
-    /// Create new calibrated IMU data.
-    pub fn new(gyro: [f32; 3], accel: [f32; 3]) -> Self {
-        Self {
-            gx: gyro[0],
-            gy: gyro[1],
-            gz: gyro[2],
-            ax: accel[0],
-            ay: accel[1],
-            az: accel[2],
         }
     }
 }
@@ -282,20 +234,6 @@ impl BiasCalibration {
     fn get_bias(&self) -> [f32; 3] {
         self.bias
     }
-
-    /// Manually set bias (e.g., from a pre-recorded static bag).
-    fn set_bias(&mut self, bias: [f32; 3]) {
-        self.bias = bias;
-        self.calibrated = true;
-        self.samples.clear();
-        self.samples.shrink_to_fit();
-    }
-
-    fn reset(&mut self) {
-        self.samples.clear();
-        self.bias = [0.0; 3];
-        self.calibrated = false;
-    }
 }
 
 /// Mahony AHRS (Attitude and Heading Reference System) filter.
@@ -339,45 +277,6 @@ impl MahonyAhrs {
     /// Check if bias calibration is complete.
     pub fn is_calibrated(&self) -> bool {
         self.bias_cal.is_calibrated()
-    }
-
-    /// Get the current gyro bias values.
-    pub fn gyro_bias(&self) -> [f32; 3] {
-        self.bias_cal.get_bias()
-    }
-
-    /// Manually set gyro bias (skip calibration phase).
-    pub fn set_gyro_bias(&mut self, bias: [f32; 3]) {
-        self.bias_cal.set_bias(bias);
-    }
-
-    /// Get the current quaternion orientation.
-    pub fn quaternion(&self) -> Quaternion {
-        self.q
-    }
-
-    /// Get the current Euler angles.
-    pub fn euler(&self) -> EulerAngles {
-        let (roll, pitch, yaw) = self.q.to_euler();
-        EulerAngles { roll, pitch, yaw }
-    }
-
-    /// Get yaw angle in radians.
-    pub fn yaw(&self) -> f32 {
-        self.euler().yaw
-    }
-
-    /// Reset orientation to identity.
-    pub fn reset(&mut self) {
-        self.q = Quaternion::identity();
-        self.integral_error = [0.0; 3];
-        self.last_timestamp_us = None;
-    }
-
-    /// Reset and restart bias calibration.
-    pub fn recalibrate(&mut self) {
-        self.reset();
-        self.bias_cal.reset();
     }
 
     /// Update the filter with new raw IMU data.
@@ -488,69 +387,6 @@ impl MahonyAhrs {
 
         self.q.to_euler()
     }
-
-    /// Update with pre-calibrated IMU data in physical units.
-    ///
-    /// Use this if you've already applied bias correction and scaling.
-    ///
-    /// # Arguments
-    ///
-    /// * `imu` - Calibrated IMU data (gyro in rad/s, accel normalized or in m/s²)
-    /// * `dt` - Time delta in seconds
-    pub fn update_calibrated(&mut self, imu: &CalibratedImuData, dt: f32) -> (f32, f32, f32) {
-        if dt <= 0.0 || dt > 0.1 {
-            return self.q.to_euler();
-        }
-
-        let q0 = self.q.w;
-        let q1 = self.q.x;
-        let q2 = self.q.y;
-        let q3 = self.q.z;
-
-        let (mut gx, mut gy, mut gz) = (imu.gx, imu.gy, imu.gz);
-
-        // Normalize accelerometer
-        let accel_norm = (imu.ax * imu.ax + imu.ay * imu.ay + imu.az * imu.az).sqrt();
-        if accel_norm > 0.01 {
-            let ax_n = imu.ax / accel_norm;
-            let ay_n = imu.ay / accel_norm;
-            let az_n = imu.az / accel_norm;
-
-            // Estimated gravity from quaternion
-            let vx = 2.0 * (q1 * q3 - q0 * q2);
-            let vy = 2.0 * (q0 * q1 + q2 * q3);
-            let vz = q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3;
-
-            // Error (cross product)
-            let ex = ay_n * vz - az_n * vy;
-            let ey = az_n * vx - ax_n * vz;
-            let ez = ax_n * vy - ay_n * vx;
-
-            if self.config.ki > 0.0 {
-                self.integral_error[0] += ex * dt;
-                self.integral_error[1] += ey * dt;
-                self.integral_error[2] += ez * dt;
-            }
-
-            gx += self.config.kp * ex + self.config.ki * self.integral_error[0];
-            gy += self.config.kp * ey + self.config.ki * self.integral_error[1];
-            gz += self.config.kp * ez + self.config.ki * self.integral_error[2];
-        }
-
-        // Quaternion derivative
-        let dq0 = 0.5 * (-q1 * gx - q2 * gy - q3 * gz);
-        let dq1 = 0.5 * (q0 * gx + q2 * gz - q3 * gy);
-        let dq2 = 0.5 * (q0 * gy - q1 * gz + q3 * gx);
-        let dq3 = 0.5 * (q0 * gz + q1 * gy - q2 * gx);
-
-        self.q.w += dq0 * dt;
-        self.q.x += dq1 * dt;
-        self.q.y += dq2 * dt;
-        self.q.z += dq3 * dt;
-
-        self.q.normalize();
-        self.q.to_euler()
-    }
 }
 
 #[cfg(test)]
@@ -618,8 +454,6 @@ mod tests {
 
         // After calibration
         assert!(ahrs.is_calibrated());
-        let bias = ahrs.gyro_bias();
-        assert_relative_eq!(bias[0], 100.0, epsilon = 0.1);
     }
 
     #[test]
@@ -644,61 +478,5 @@ mod tests {
             assert!(pitch.abs() < 0.1);
             assert!(yaw.abs() < 0.1);
         }
-    }
-
-    #[test]
-    fn test_set_gyro_bias() {
-        let mut ahrs = MahonyAhrs::new(MahonyConfig::default());
-
-        // Set bias manually
-        ahrs.set_gyro_bias([160.0, -10.0, 20.0]);
-
-        assert!(ahrs.is_calibrated());
-        let bias = ahrs.gyro_bias();
-        assert_eq!(bias[0], 160.0);
-        assert_eq!(bias[1], -10.0);
-        assert_eq!(bias[2], 20.0);
-    }
-
-    #[test]
-    fn test_euler_to_degrees() {
-        let euler = EulerAngles {
-            roll: PI / 2.0,
-            pitch: PI / 4.0,
-            yaw: PI,
-        };
-        let (r, p, y) = euler.to_degrees();
-        assert_relative_eq!(r, 90.0, epsilon = 0.01);
-        assert_relative_eq!(p, 45.0, epsilon = 0.01);
-        assert_relative_eq!(y, 180.0, epsilon = 0.01);
-    }
-
-    #[test]
-    fn test_recalibrate() {
-        let config = MahonyConfig {
-            calibration_samples: 5,
-            ..Default::default()
-        };
-        let mut ahrs = MahonyAhrs::new(config);
-
-        // Complete calibration
-        let imu1 = RawImuData::new([100, 0, 0], [0, 0, 1000]);
-        for i in 0..5 {
-            ahrs.update(&imu1, i * 2000);
-        }
-        assert!(ahrs.is_calibrated());
-        assert_relative_eq!(ahrs.gyro_bias()[0], 100.0, epsilon = 0.1);
-
-        // Recalibrate
-        ahrs.recalibrate();
-        assert!(!ahrs.is_calibrated());
-
-        // New calibration with different bias
-        let imu2 = RawImuData::new([50, 0, 0], [0, 0, 1000]);
-        for i in 0..5 {
-            ahrs.update(&imu2, (i + 10) * 2000);
-        }
-        assert!(ahrs.is_calibrated());
-        assert_relative_eq!(ahrs.gyro_bias()[0], 50.0, epsilon = 0.1);
     }
 }

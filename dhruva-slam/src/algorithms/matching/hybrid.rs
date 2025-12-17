@@ -100,21 +100,6 @@ impl<C: ScanMatcher, F: ScanMatcher> HybridMatcher<C, F> {
             config,
         }
     }
-
-    /// Get a reference to the coarse matcher.
-    pub fn coarse(&self) -> &C {
-        &self.coarse
-    }
-
-    /// Get a reference to the fine matcher.
-    pub fn fine(&self) -> &F {
-        &self.fine
-    }
-
-    /// Get the configuration.
-    pub fn config(&self) -> &HybridConfig {
-        &self.config
-    }
 }
 
 impl<C: ScanMatcher, F: ScanMatcher> ScanMatcher for HybridMatcher<C, F> {

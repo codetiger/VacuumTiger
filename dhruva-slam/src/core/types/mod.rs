@@ -6,8 +6,6 @@
 //! - [`Timestamped<T>`]: Generic timestamp wrapper
 //!
 //! Phase 2 types (Odometry):
-//! - [`Twist2D`]: 2D velocity (linear and angular)
-//! - [`ImuReading`]: Raw IMU sensor data
 //! - [`Covariance2D`]: 3x3 covariance matrix for pose uncertainty
 //!
 //! Tracking types:
@@ -28,7 +26,7 @@ pub use pose::{Point2D, Pose2D};
 pub use timestamped::Timestamped;
 
 // Phase 2 types
-pub use odometry::{Covariance2D, ImuReading, Twist2D};
+pub use odometry::Covariance2D;
 
 // Tracking types
 pub use pose_tracker::PoseTracker;

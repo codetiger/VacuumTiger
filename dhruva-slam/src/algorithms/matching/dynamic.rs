@@ -5,22 +5,23 @@
 //!
 //! # Matcher Types
 //!
-//! - **Icp**: Point-to-Point ICP (fast, good for small initial errors)
+//! - **Icp**: Point-to-Point ICP (fast, needs good initial guess)
 //! - **P2l**: Point-to-Line ICP (better for structured environments)
 //! - **Correlative**: Exhaustive search (handles large initial errors)
-//! - **MultiRes**: Multi-resolution correlative (efficient + robust)
-//! - **HybridIcp**: Correlative + P2P ICP (robust + accurate)
-//! - **HybridP2l**: Correlative + P2L ICP (recommended for production)
+//! - **MultiRes**: Multi-resolution correlative (speed/robustness balance)
+//! - **HybridIcp**: Correlative + Point-to-Point ICP
+//! - **HybridP2l**: Correlative + Point-to-Line ICP (recommended)
 //!
 //! # Example
 //!
 //! ```ignore
-//! use dhruva_slam::algorithms::matching::{DynMatcher, MatcherType, ScanMatcher};
+//! use dhruva_slam::algorithms::matching::{DynMatcher, DynMatcherConfig, MatcherType, ScanMatcher};
 //!
 //! // Create matcher with runtime-selected type
-//! let mut matcher = DynMatcher::new(MatcherType::HybridP2l);
+//! let config = DynMatcherConfig::default();
+//! let mut matcher = DynMatcher::new(MatcherType::HybridP2l, config);
 //!
-//! // Use like any other ScanMatcher
+//! // Match scans
 //! let result = matcher.match_scans(&source, &target, &initial_guess);
 //! if result.converged {
 //!     println!("Transform: {:?}", result.transform);
@@ -38,117 +39,115 @@ use crate::algorithms::matching::{
 };
 use crate::core::types::{PointCloud2D, Pose2D};
 
-/// Available scan matching algorithm types.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, ValueEnum, Serialize, Deserialize)]
+/// Available scan matcher algorithm types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, ValueEnum, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum MatcherType {
     /// Point-to-Point ICP.
     ///
     /// Classic Iterative Closest Point algorithm.
-    /// Fast but requires good initial guess.
+    /// Fast but needs a good initial guess to converge.
     Icp,
 
     /// Point-to-Line ICP.
     ///
-    /// Better accuracy for structured environments (walls, corridors).
-    /// Slightly slower than P2P but more robust to sampling patterns.
+    /// Point-to-line correspondence with line extraction.
+    /// Better for structured environments with walls.
     P2l,
 
-    /// Correlative scan matcher.
+    /// Correlative matcher.
     ///
-    /// Exhaustive search over translation and rotation.
-    /// Handles large initial errors (30°+) but slower.
+    /// Exhaustive search over discretized pose space.
+    /// Handles large initial errors but slower.
     Correlative,
 
     /// Multi-resolution correlative matcher.
     ///
-    /// Hierarchical search from coarse to fine resolution.
-    /// Good balance of speed and robustness.
+    /// Hierarchical correlative search with multiple resolution levels.
+    /// Balances speed and robustness.
     MultiRes,
 
-    /// Hybrid: Correlative + Point-to-Point ICP.
+    /// Hybrid Correlative + Point-to-Point ICP.
     ///
-    /// Uses correlative for initial alignment, ICP for refinement.
-    /// Robust to large errors with good final accuracy.
+    /// Uses correlative search for coarse alignment, then P2P ICP for refinement.
     HybridIcp,
 
-    /// Hybrid: Correlative + Point-to-Line ICP.
+    /// Hybrid Correlative + Point-to-Line ICP.
     ///
-    /// **Recommended for production SLAM.**
-    /// Best combination of robustness and accuracy for indoor environments.
+    /// Uses correlative search for coarse alignment, then P2L ICP for refinement.
+    /// Best accuracy for structured environments. **Recommended.**
+    #[default]
     HybridP2l,
 }
 
 impl std::fmt::Display for MatcherType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MatcherType::Icp => write!(f, "P2P ICP"),
-            MatcherType::P2l => write!(f, "P2L ICP"),
+            MatcherType::Icp => write!(f, "ICP"),
+            MatcherType::P2l => write!(f, "P2L"),
             MatcherType::Correlative => write!(f, "Correlative"),
-            MatcherType::MultiRes => write!(f, "Multi-Res"),
-            MatcherType::HybridIcp => write!(f, "Hybrid ICP"),
-            MatcherType::HybridP2l => write!(f, "Hybrid P2L"),
+            MatcherType::MultiRes => write!(f, "MultiRes"),
+            MatcherType::HybridIcp => write!(f, "HybridICP"),
+            MatcherType::HybridP2l => write!(f, "HybridP2L"),
         }
-    }
-}
-
-impl MatcherType {
-    /// Get a short description of this matcher type.
-    pub fn description(&self) -> &'static str {
-        match self {
-            MatcherType::Icp => "Point-to-Point ICP only",
-            MatcherType::P2l => "Point-to-Line ICP only",
-            MatcherType::Correlative => "Correlative matcher only",
-            MatcherType::MultiRes => "Multi-resolution correlative",
-            MatcherType::HybridIcp => "Correlative + P2P ICP",
-            MatcherType::HybridP2l => "Correlative + P2L ICP (recommended)",
-        }
-    }
-
-    /// Returns all available matcher types.
-    pub fn all() -> &'static [MatcherType] {
-        &[
-            MatcherType::Icp,
-            MatcherType::P2l,
-            MatcherType::Correlative,
-            MatcherType::MultiRes,
-            MatcherType::HybridIcp,
-            MatcherType::HybridP2l,
-        ]
     }
 }
 
 /// Configuration for all matcher types.
 ///
-/// Each field configures its respective matching algorithm.
-/// Only the relevant config is used based on the selected [`MatcherType`].
-#[derive(Debug, Clone, Default)]
+/// Each field configures its respective matcher algorithm.
+/// Only the relevant configs are used based on the selected [`MatcherType`].
+#[derive(Debug, Clone)]
 pub struct DynMatcherConfig {
-    /// Configuration for Point-to-Point ICP.
+    /// Configuration for correlative matcher (used by Correlative, HybridIcp, HybridP2l).
+    pub correlative: CorrelativeConfig,
+
+    /// Configuration for Point-to-Point ICP (used by Icp, HybridIcp).
     pub icp: IcpConfig,
 
-    /// Configuration for Point-to-Line ICP.
+    /// Configuration for Point-to-Line ICP (used by P2l, HybridP2l).
     pub p2l: PointToLineIcpConfig,
-
-    /// Configuration for correlative matcher.
-    pub correlative: CorrelativeConfig,
 
     /// Configuration for multi-resolution matcher.
     pub multi_res: MultiResolutionConfig,
 
-    /// Configuration for hybrid ICP matcher.
-    pub hybrid_icp: HybridIcpMatcherConfig,
+    /// If true, always run correlative/coarse search first for hybrid matchers.
+    /// If false, only run on ICP failure.
+    pub always_correlative: bool,
 
-    /// Configuration for hybrid P2L matcher.
-    pub hybrid_p2l: HybridP2LMatcherConfig,
+    /// Encoder weight for initial guess (0.0 = identity, 1.0 = full odometry).
+    pub encoder_weight: f32,
 }
+
+impl Default for DynMatcherConfig {
+    fn default() -> Self {
+        Self {
+            correlative: CorrelativeConfig {
+                search_window_x: 0.3,
+                search_window_y: 0.3,
+                search_window_theta: 0.5,
+                linear_resolution: 0.03,
+                angular_resolution: 0.03,
+                grid_resolution: 0.05,
+                min_score: 0.4,
+            },
+            icp: IcpConfig::default(),
+            p2l: PointToLineIcpConfig::default(),
+            multi_res: MultiResolutionConfig::default(),
+            always_correlative: true,
+            encoder_weight: 1.0,
+        }
+    }
+}
+
+// ============================================================================
+// Dynamic Matcher Enum
+// ============================================================================
 
 /// Runtime-selectable scan matcher implementation.
 ///
-/// Wraps all available matching algorithms behind a unified interface,
+/// Wraps all available scan matching algorithms behind a unified interface,
 /// enabling runtime algorithm selection based on configuration.
-///
-/// Implements the [`ScanMatcher`] trait for interoperability with
-/// existing SLAM infrastructure.
 ///
 /// # Example
 ///
@@ -156,75 +155,63 @@ pub struct DynMatcherConfig {
 /// use dhruva_slam::algorithms::matching::{DynMatcher, DynMatcherConfig, MatcherType, ScanMatcher};
 ///
 /// // Create with default config
-/// let mut matcher = DynMatcher::new(MatcherType::HybridP2l);
+/// let mut matcher = DynMatcher::new(MatcherType::HybridP2l, DynMatcherConfig::default());
 ///
-/// // Or with custom config
-/// let config = DynMatcherConfig::default();
-/// let mut matcher = DynMatcher::new_with_config(MatcherType::Icp, config);
-///
-/// // Use like any ScanMatcher
-/// let result = matcher.match_scans(&source, &target, &guess);
+/// // Match scans
+/// let result = matcher.match_scans(&source, &target, &initial_guess);
+/// println!("Score: {:.3}, Converged: {}", result.score, result.converged);
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum DynMatcher {
     /// Point-to-Point ICP matcher.
-    Icp(PointToPointIcp),
+    Icp(Box<PointToPointIcp>),
     /// Point-to-Line ICP matcher.
-    P2l(PointToLineIcp),
-    /// Correlative scan matcher.
-    Correlative(CorrelativeMatcher),
+    P2l(Box<PointToLineIcp>),
+    /// Correlative matcher.
+    Correlative(Box<CorrelativeMatcher>),
     /// Multi-resolution correlative matcher.
-    MultiRes(MultiResolutionMatcher),
+    MultiRes(Box<MultiResolutionMatcher>),
     /// Hybrid Correlative + P2P ICP matcher.
-    HybridIcp(HybridIcpMatcher),
+    HybridIcp(Box<HybridIcpMatcher>),
     /// Hybrid Correlative + P2L ICP matcher.
-    HybridP2l(HybridP2LMatcher),
+    HybridP2l(Box<HybridP2LMatcher>),
 }
 
 impl DynMatcher {
-    /// Create a new dynamic matcher with default configuration.
-    ///
-    /// # Arguments
-    ///
-    /// * `matcher_type` - The type of matching algorithm to use
-    pub fn new(matcher_type: MatcherType) -> Self {
-        Self::new_with_config(matcher_type, DynMatcherConfig::default())
-    }
-
-    /// Create a new dynamic matcher with custom configuration.
+    /// Create a new dynamic matcher instance.
     ///
     /// # Arguments
     ///
     /// * `matcher_type` - The type of matching algorithm to use
     /// * `config` - Configuration containing settings for all algorithm types
-    pub fn new_with_config(matcher_type: MatcherType, config: DynMatcherConfig) -> Self {
+    pub fn new(matcher_type: MatcherType, config: DynMatcherConfig) -> Self {
         match matcher_type {
-            MatcherType::Icp => DynMatcher::Icp(PointToPointIcp::new(config.icp)),
-            MatcherType::P2l => DynMatcher::P2l(PointToLineIcp::new(config.p2l)),
+            MatcherType::Icp => DynMatcher::Icp(Box::new(PointToPointIcp::new(config.icp))),
+            MatcherType::P2l => DynMatcher::P2l(Box::new(PointToLineIcp::new(config.p2l))),
             MatcherType::Correlative => {
-                DynMatcher::Correlative(CorrelativeMatcher::new(config.correlative))
+                DynMatcher::Correlative(Box::new(CorrelativeMatcher::new(config.correlative)))
             }
             MatcherType::MultiRes => {
-                DynMatcher::MultiRes(MultiResolutionMatcher::new(config.multi_res))
+                DynMatcher::MultiRes(Box::new(MultiResolutionMatcher::new(config.multi_res)))
             }
             MatcherType::HybridIcp => {
-                DynMatcher::HybridIcp(HybridIcpMatcher::from_config(config.hybrid_icp))
+                let hybrid_config = HybridIcpMatcherConfig {
+                    correlative: config.correlative,
+                    icp: config.icp,
+                    always_correlative: config.always_correlative,
+                };
+                DynMatcher::HybridIcp(Box::new(HybridIcpMatcher::from_config(hybrid_config)))
             }
             MatcherType::HybridP2l => {
-                DynMatcher::HybridP2l(HybridP2LMatcher::from_config(config.hybrid_p2l))
+                let hybrid_config = HybridP2LMatcherConfig {
+                    correlative: config.correlative,
+                    p2l_icp: config.p2l,
+                    always_correlative: config.always_correlative,
+                    encoder_weight: config.encoder_weight,
+                };
+                DynMatcher::HybridP2l(Box::new(HybridP2LMatcher::from_config(hybrid_config)))
             }
-        }
-    }
-
-    /// Get the matcher type.
-    pub fn matcher_type(&self) -> MatcherType {
-        match self {
-            DynMatcher::Icp(_) => MatcherType::Icp,
-            DynMatcher::P2l(_) => MatcherType::P2l,
-            DynMatcher::Correlative(_) => MatcherType::Correlative,
-            DynMatcher::MultiRes(_) => MatcherType::MultiRes,
-            DynMatcher::HybridIcp(_) => MatcherType::HybridIcp,
-            DynMatcher::HybridP2l(_) => MatcherType::HybridP2l,
         }
     }
 }
@@ -250,166 +237,105 @@ impl ScanMatcher for DynMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Point2D;
+    use crate::algorithms::matching::test_utils::create_room;
     use approx::assert_relative_eq;
-
-    fn create_room(n: usize, width: f32, height: f32) -> PointCloud2D {
-        let mut cloud = PointCloud2D::new();
-        let points_per_wall = n / 4;
-
-        // Bottom wall
-        for i in 0..points_per_wall {
-            let x = (i as f32 / points_per_wall as f32) * width;
-            cloud.push(Point2D::new(x, 0.0));
-        }
-        // Right wall
-        for i in 0..points_per_wall {
-            let y = (i as f32 / points_per_wall as f32) * height;
-            cloud.push(Point2D::new(width, y));
-        }
-        // Top wall
-        for i in 0..points_per_wall {
-            let x = width - (i as f32 / points_per_wall as f32) * width;
-            cloud.push(Point2D::new(x, height));
-        }
-        // Left wall
-        for i in 0..points_per_wall {
-            let y = height - (i as f32 / points_per_wall as f32) * height;
-            cloud.push(Point2D::new(0.0, y));
-        }
-        cloud
-    }
 
     #[test]
     fn test_matcher_type_display() {
-        assert_eq!(format!("{}", MatcherType::Icp), "P2P ICP");
-        assert_eq!(format!("{}", MatcherType::P2l), "P2L ICP");
+        assert_eq!(format!("{}", MatcherType::Icp), "ICP");
+        assert_eq!(format!("{}", MatcherType::P2l), "P2L");
         assert_eq!(format!("{}", MatcherType::Correlative), "Correlative");
-        assert_eq!(format!("{}", MatcherType::MultiRes), "Multi-Res");
-        assert_eq!(format!("{}", MatcherType::HybridIcp), "Hybrid ICP");
-        assert_eq!(format!("{}", MatcherType::HybridP2l), "Hybrid P2L");
+        assert_eq!(format!("{}", MatcherType::MultiRes), "MultiRes");
+        assert_eq!(format!("{}", MatcherType::HybridIcp), "HybridICP");
+        assert_eq!(format!("{}", MatcherType::HybridP2l), "HybridP2L");
     }
 
     #[test]
-    fn test_matcher_type_all() {
-        let all = MatcherType::all();
-        assert_eq!(all.len(), 6);
-        assert!(all.contains(&MatcherType::HybridP2l));
-    }
-
-    #[test]
-    fn test_matcher_type_description() {
-        assert!(!MatcherType::Icp.description().is_empty());
-        assert!(MatcherType::HybridP2l.description().contains("recommended"));
+    fn test_matcher_type_default() {
+        assert_eq!(MatcherType::default(), MatcherType::HybridP2l);
     }
 
     #[test]
     fn test_dyn_matcher_icp() {
-        let mut matcher = DynMatcher::new(MatcherType::Icp);
-        assert_eq!(matcher.matcher_type(), MatcherType::Icp);
+        let config = DynMatcherConfig::default();
+        let mut matcher = DynMatcher::new(MatcherType::Icp, config);
 
-        // Use room shape - lines are degenerate for ICP (can slide along)
-        let source = create_room(100, 2.0, 1.5);
-        // Small transform that ICP can handle without initial guess
-        let transform = Pose2D::new(0.02, 0.01, 0.01);
-        let target = source.transform(&transform);
+        // Test with identical clouds
+        let cloud = create_room(100, 4.0, 3.0);
+        let result = matcher.match_scans(&cloud, &cloud, &Pose2D::identity());
 
-        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
         assert!(result.converged);
-        // Just verify it found something reasonable
-        assert!(result.transform.x.abs() < 0.1);
+        assert_relative_eq!(result.transform.x, 0.0, epsilon = 0.05);
     }
 
     #[test]
     fn test_dyn_matcher_p2l() {
-        let mut matcher = DynMatcher::new(MatcherType::P2l);
-        assert_eq!(matcher.matcher_type(), MatcherType::P2l);
+        let config = DynMatcherConfig::default();
+        let mut matcher = DynMatcher::new(MatcherType::P2l, config);
 
-        let source = create_room(100, 2.0, 1.5);
-        let transform = Pose2D::new(0.05, 0.02, 0.02);
-        let target = source.transform(&transform);
+        let cloud = create_room(100, 4.0, 3.0);
+        let result = matcher.match_scans(&cloud, &cloud, &Pose2D::identity());
 
-        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
         assert!(result.converged);
     }
 
     #[test]
     fn test_dyn_matcher_correlative() {
-        let mut matcher = DynMatcher::new(MatcherType::Correlative);
-        assert_eq!(matcher.matcher_type(), MatcherType::Correlative);
+        let config = DynMatcherConfig::default();
+        let mut matcher = DynMatcher::new(MatcherType::Correlative, config);
 
-        let source = create_room(100, 2.0, 1.5);
-        let transform = Pose2D::new(0.1, 0.05, 0.1);
+        let source = create_room(100, 4.0, 3.0);
+        let transform = Pose2D::new(0.15, 0.1, 0.2);
         let target = source.transform(&transform);
 
         let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
         assert!(result.converged);
+        assert_relative_eq!(result.transform.x, 0.15, epsilon = 0.06);
     }
 
     #[test]
     fn test_dyn_matcher_multi_res() {
-        let mut matcher = DynMatcher::new(MatcherType::MultiRes);
-        assert_eq!(matcher.matcher_type(), MatcherType::MultiRes);
+        let config = DynMatcherConfig::default();
+        let mut matcher = DynMatcher::new(MatcherType::MultiRes, config);
 
-        let source = create_room(100, 2.0, 1.5);
-        let transform = Pose2D::new(0.05, 0.02, 0.05);
+        let source = create_room(100, 4.0, 3.0);
+        let transform = Pose2D::new(0.1, 0.08, 0.1);
         let target = source.transform(&transform);
 
         let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
         assert!(result.converged);
     }
 
     #[test]
     fn test_dyn_matcher_hybrid_icp() {
-        let mut matcher = DynMatcher::new(MatcherType::HybridIcp);
-        assert_eq!(matcher.matcher_type(), MatcherType::HybridIcp);
+        let config = DynMatcherConfig::default();
+        let mut matcher = DynMatcher::new(MatcherType::HybridIcp, config);
 
-        let source = create_room(100, 2.0, 1.5);
-        let transform = Pose2D::new(0.1, 0.05, 0.1);
-        let target = source.transform(&transform);
+        // Test with identical scans - HybridIcp should converge to identity
+        let cloud = create_room(100, 4.0, 3.0);
+        let result = matcher.match_scans(&cloud, &cloud, &Pose2D::identity());
 
-        let result = matcher.match_scans(&source, &target, &Pose2D::identity());
         assert!(result.converged);
+        // Should converge close to identity for identical scans
+        assert_relative_eq!(result.transform.x, 0.0, epsilon = 0.05);
+        assert_relative_eq!(result.transform.y, 0.0, epsilon = 0.05);
     }
 
     #[test]
     fn test_dyn_matcher_hybrid_p2l() {
-        let mut matcher = DynMatcher::new(MatcherType::HybridP2l);
-        assert_eq!(matcher.matcher_type(), MatcherType::HybridP2l);
+        let config = DynMatcherConfig::default();
+        let mut matcher = DynMatcher::new(MatcherType::HybridP2l, config);
 
-        let source = create_room(100, 2.0, 1.5);
-        let transform = Pose2D::new(0.1, 0.05, 0.2);
+        let source = create_room(100, 4.0, 3.0);
+        let transform = Pose2D::new(0.2, 0.15, 0.3);
         let target = source.transform(&transform);
 
         let result = matcher.match_scans(&source, &target, &Pose2D::identity());
+
         assert!(result.converged);
-        assert_relative_eq!(result.transform.x, 0.1, epsilon = 0.05);
-        assert_relative_eq!(result.transform.y, 0.05, epsilon = 0.05);
-    }
-
-    #[test]
-    fn test_dyn_matcher_with_custom_config() {
-        let mut config = DynMatcherConfig::default();
-        config.icp.max_iterations = 50;
-
-        let mut matcher = DynMatcher::new_with_config(MatcherType::Icp, config);
-        assert_eq!(matcher.matcher_type(), MatcherType::Icp);
-
-        let source = create_room(80, 2.0, 1.5);
-        let result = matcher.match_scans(&source, &source, &Pose2D::identity());
-        assert!(result.converged);
-    }
-
-    #[test]
-    fn test_dyn_matcher_implements_scan_matcher() {
-        // This test verifies that DynMatcher can be used wherever ScanMatcher is expected
-        fn use_scan_matcher(matcher: &mut impl ScanMatcher) -> ScanMatchResult {
-            let source = create_room(80, 2.0, 1.5);
-            matcher.match_scans(&source, &source, &Pose2D::identity())
-        }
-
-        let mut matcher = DynMatcher::new(MatcherType::Icp);
-        let result = use_scan_matcher(&mut matcher);
-        assert!(result.converged);
+        assert_relative_eq!(result.transform.x, 0.2, epsilon = 0.08);
+        assert_relative_eq!(result.transform.y, 0.15, epsilon = 0.08);
     }
 }

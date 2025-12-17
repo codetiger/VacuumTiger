@@ -1,23 +1,78 @@
 # Sensors Module
 
-Raw sensor data processing and fusion. This module transforms noisy sensor inputs into clean estimates suitable for SLAM algorithms.
+Sensor data processing: odometry estimation and lidar preprocessing.
 
 ## Overview
 
 The sensors module provides:
-- **Odometry** - Wheel encoder and gyroscope fusion for pose estimation
-- **Preprocessing** - Lidar scan filtering and conversion
+- **Odometry** - Wheel encoder and IMU fusion for pose estimation
+- **Preprocessing** - LiDAR scan filtering and conversion
+- **Calibration** - Gyroscope bias estimation
+
+## Module Structure
+
+```
+sensors/
+├── mod.rs              # Module exports
+├── calibration.rs      # Gyro bias estimation
+├── odometry/
+│   ├── mod.rs          # Exports
+│   ├── wheel_odometry.rs   # Encoder-only odometry
+│   ├── complementary.rs    # Complementary filter (encoder + gyro)
+│   ├── eskf.rs             # Error-State Kalman Filter
+│   ├── mahony.rs           # Mahony AHRS (recommended)
+│   ├── dynamic.rs          # Runtime algorithm selection
+│   ├── fused_tracker.rs    # SLAM + odometry fusion
+│   ├── imu_analysis.rs     # IMU analysis utilities
+│   ├── calibration.rs      # Odometry calibration
+│   └── evaluator.rs        # Drift metrics
+└── preprocessing/
+    ├── mod.rs              # Exports, ScanPreprocessor
+    ├── range_filter.rs     # Min/max range filtering
+    ├── outlier_filter.rs   # Statistical outlier removal
+    ├── downsampler.rs      # Angular downsampling
+    ├── converter.rs        # Polar to Cartesian
+    └── dynamic.rs          # Runtime filter selection
+```
 
 ## Odometry
 
-Combines wheel encoders with IMU gyroscope to estimate robot motion.
+Convert wheel encoders and IMU readings into pose estimates.
+
+### DynOdometry (Runtime Selection)
+
+The `DynOdometry` type allows selecting the algorithm at runtime:
+
+```rust
+use crate::sensors::odometry::{DynOdometry, DynOdometryConfig, OdometryType};
+
+let config = DynOdometryConfig {
+    algorithm: OdometryType::Mahony,  // From config
+    ticks_per_meter: 4464.0,
+    wheel_base: 0.233,
+    // ... other parameters
+};
+
+let mut odom = DynOdometry::new(config);
+
+// Process sensor readings
+if let Some(delta) = odom.process(left_ticks, right_ticks, gyro_z, timestamp_us) {
+    // delta is pose change since last output
+}
+```
+
+Available algorithms:
+- `OdometryType::Wheel` - Encoders only
+- `OdometryType::Complementary` - Simple encoder + gyro fusion
+- `OdometryType::Eskf` - Error-State Kalman Filter
+- `OdometryType::Mahony` - **Recommended** - AHRS with auto gyro calibration
 
 ### WheelOdometry
 
 Converts encoder tick deltas to pose deltas using differential drive kinematics.
 
 ```rust
-use dhruva_slam::sensors::odometry::WheelOdometry;
+use crate::sensors::odometry::{WheelOdometry, WheelOdometryConfig};
 
 let config = WheelOdometryConfig {
     ticks_per_meter: 4464.0,  // Encoder calibration
@@ -26,35 +81,46 @@ let config = WheelOdometryConfig {
 
 let mut odom = WheelOdometry::new(config);
 
-// Process encoder readings
-if let Some(delta) = odom.update(left_ticks, right_ticks, timestamp_us) {
-    // delta is the Pose2D change since last update
+// First call initializes state
+odom.update(left_ticks, right_ticks);
+
+// Subsequent calls return pose delta
+if let Some(delta) = odom.update(left_ticks, right_ticks) {
+    println!("Moved: x={:.3}m, y={:.3}m, theta={:.3}rad",
+        delta.x, delta.y, delta.theta);
 }
 ```
 
-**Parameters:**
-| Parameter | Description | Typical Value |
-|-----------|-------------|---------------|
-| `ticks_per_meter` | Encoder ticks per meter traveled | 4464 (CRL-200S) |
-| `wheel_base` | Distance between wheel centers | 0.233m |
+**Differential drive model:**
+```
+v_left = (left_ticks - prev_left) / ticks_per_meter
+v_right = (right_ticks - prev_right) / ticks_per_meter
+
+v_linear = (v_left + v_right) / 2
+v_angular = (v_right - v_left) / wheel_base
+
+dx = v_linear * cos(theta)
+dy = v_linear * sin(theta)
+dtheta = v_angular
+```
 
 ### ComplementaryFilter
 
 Fuses wheel encoder heading with gyroscope for improved angular estimation.
 
 ```rust
-use dhruva_slam::sensors::odometry::ComplementaryFilter;
+use crate::sensors::odometry::{ComplementaryFilter, ComplementaryConfig};
 
-let config = ComplementaryFilterConfig {
+let config = ComplementaryConfig {
     alpha: 0.8,              // Gyro weight (0-1)
     gyro_scale: 0.0001745,   // Raw units to rad/s
-    gyro_bias_z: 0.0,        // Z-axis bias
+    gyro_bias_z: 0.0,        // Z-axis bias (auto-calibrated)
 };
 
 let mut filter = ComplementaryFilter::new(config);
 
-// Process with gyro reading
-let fused_delta = filter.update(&encoder_delta, gyro_z_raw, dt);
+// Fuse encoder delta with gyro reading
+let fused_delta = filter.update(&encoder_delta, gyro_z_raw, dt_secs);
 ```
 
 **Filter equation:**
@@ -62,19 +128,45 @@ let fused_delta = filter.update(&encoder_delta, gyro_z_raw, dt);
 theta = alpha * gyro_theta + (1 - alpha) * encoder_theta
 ```
 
-**Parameters:**
-| Parameter | Description | Typical Value |
-|-----------|-------------|---------------|
-| `alpha` | Gyro weight (higher = trust gyro more) | 0.8 |
-| `gyro_scale` | Conversion from raw to rad/s | 0.0001745 |
-| `gyro_bias_z` | Static gyro offset (auto-calibrated) | 0.0 |
+### MahonyAhrs
 
-### ESKF (Error-State Kalman Filter)
-
-Production-quality sensor fusion with uncertainty estimation.
+Mahony Attitude and Heading Reference System with automatic gyroscope bias calibration.
 
 ```rust
-use dhruva_slam::sensors::odometry::Eskf;
+use crate::sensors::odometry::{MahonyAhrs, MahonyConfig, RawImuData};
+
+let config = MahonyConfig {
+    kp: 2.0,                        // Proportional gain
+    ki: 0.005,                      // Integral gain
+    gyro_scale: 0.0001745,          // Raw to rad/s
+    gyro_bias_calibration_samples: 1500,  // Samples for auto-calibration
+};
+
+let mut ahrs = MahonyAhrs::new(config);
+
+// Create IMU reading (gyro_z for yaw, optional tilt)
+let imu = RawImuData::new(gyro_raw, tilt_raw);
+
+// Update returns (roll, pitch, yaw) in radians
+let (roll, pitch, yaw) = ahrs.update(&imu, timestamp_us);
+
+// Check calibration status
+if ahrs.is_calibrated() {
+    println!("Gyro bias: {:.4} rad/s", ahrs.gyro_bias());
+}
+```
+
+**Advantages:**
+- Automatic gyro bias calibration at startup
+- Adaptive gain based on motion
+- Low CPU overhead
+
+### Eskf
+
+Error-State Kalman Filter for production-quality sensor fusion with uncertainty estimation.
+
+```rust
+use crate::sensors::odometry::{Eskf, EskfConfig};
 
 let config = EskfConfig {
     process_noise_xy: 0.01,
@@ -86,41 +178,46 @@ let config = EskfConfig {
 let mut eskf = Eskf::new(config);
 
 // Predict step (from encoders)
-eskf.predict(&encoder_delta, dt);
+eskf.predict(&encoder_delta, dt_secs);
 
 // Update step (from gyro)
-eskf.update_gyro(gyro_z, dt);
+eskf.update_gyro(gyro_z, dt_secs);
 
+// Get pose with covariance
 let pose = eskf.pose();
 let covariance = eskf.covariance();
 ```
 
 **State vector:** `[x, y, theta, v_left, v_right]`
 
-### OdometryEvaluator
-
-Calibration and validation tool for odometry parameters.
-
-```rust
-use dhruva_slam::sensors::odometry::OdometryEvaluator;
-
-let evaluator = OdometryEvaluator::new();
-
-// Run evaluation on test scenario
-let result = evaluator.evaluate(&scenario, &config);
-
-println!("Distance error: {}%", result.distance_error_percent);
-println!("Angular error: {} rad", result.angular_error);
-```
-
 ## Preprocessing
 
-Lidar scan filtering pipeline to prepare data for scan matching.
+Filter and convert LiDAR scans for SLAM.
 
-### Processing Pipeline
+### ScanPreprocessor
+
+Complete preprocessing pipeline:
+
+```rust
+use crate::sensors::preprocessing::{ScanPreprocessor, PreprocessorConfig};
+
+let config = PreprocessorConfig {
+    min_range: 0.15,          // Robot radius
+    max_range: 8.0,           // Lidar spec
+    target_points: 180,       // Downsample target
+    outlier_threshold: 2.0,   // Std dev for outlier removal
+};
+
+let preprocessor = ScanPreprocessor::new(config);
+
+// Full pipeline: range filter → outlier filter → downsample → convert
+let cloud = preprocessor.process(&laser_scan);
+```
+
+### Pipeline Stages
 
 ```
-LaserScan (polar)
+LaserScan (polar, 360+ points)
     │
     ▼
 ┌───────────────┐
@@ -132,22 +229,22 @@ LaserScan (polar)
 └───────┬───────┘
         ▼
 ┌─────────────────────┐
-│ AngularDownsampler  │  Reduce point count
+│ AngularDownsampler  │  Reduce to target point count
 └───────┬─────────────┘
         ▼
 ┌───────────────┐
 │ ScanConverter │  Polar to Cartesian
 └───────┬───────┘
         ▼
-PointCloud2D (Cartesian)
+PointCloud2D (Cartesian, ~180 points)
 ```
 
 ### RangeFilter
 
-Removes points with invalid or out-of-range distances.
+Removes points with invalid or out-of-range distances:
 
 ```rust
-use dhruva_slam::sensors::preprocessing::RangeFilter;
+use crate::sensors::preprocessing::{RangeFilter, RangeFilterConfig};
 
 let config = RangeFilterConfig {
     min_range: 0.15,       // Minimum valid distance (m)
@@ -161,10 +258,10 @@ let filtered = filter.filter(&scan);
 
 ### OutlierFilter
 
-Statistical outlier removal based on range distribution.
+Statistical outlier removal based on range distribution:
 
 ```rust
-use dhruva_slam::sensors::preprocessing::OutlierFilter;
+use crate::sensors::preprocessing::{OutlierFilter, OutlierFilterConfig};
 
 let config = OutlierFilterConfig {
     outlier_threshold: 2.0,  // Standard deviations
@@ -176,13 +273,13 @@ let cleaned = filter.filter(&scan);
 
 ### AngularDownsampler
 
-Reduces point count while preserving scan structure.
+Reduces point count while preserving scan structure:
 
 ```rust
-use dhruva_slam::sensors::preprocessing::{AngularDownsampler, DownsampleMethod};
+use crate::sensors::preprocessing::{AngularDownsampler, DownsamplerConfig, DownsampleMethod};
 
-let config = AngularDownsamplerConfig {
-    target_points: 180,                    // Output point count
+let config = DownsamplerConfig {
+    target_points: 180,
     method: DownsampleMethod::AngularBinning,
 };
 
@@ -191,111 +288,36 @@ let reduced = downsampler.downsample(&scan);
 ```
 
 **Methods:**
-- `AngularBinning` - Groups points into angular bins, keeps one per bin
+- `AngularBinning` - Groups points into angular bins, keeps mean per bin
 - `MaxRange` - Keeps point with maximum range in each bin
 
 ### ScanConverter
 
-Converts polar LaserScan to Cartesian PointCloud2D.
+Converts polar LaserScan to Cartesian PointCloud2D with optional radial offset:
 
 ```rust
-use dhruva_slam::sensors::preprocessing::ScanConverter;
+use crate::sensors::preprocessing::ScanConverter;
 
-let cloud = ScanConverter::to_point_cloud(&scan);
+let cloud = ScanConverter::to_point_cloud_with_offset(&laser_scan, 0.0);
 ```
 
-### ScanPreprocessor
+## Calibration
 
-Complete pipeline orchestrator.
+### GyroCalibrator
+
+Estimates gyroscope bias during stationary periods:
 
 ```rust
-use dhruva_slam::sensors::preprocessing::ScanPreprocessor;
+use crate::sensors::calibration::GyroCalibrator;
 
-let config = ScanPreprocessorConfig {
-    range_filter: RangeFilterConfig { ... },
-    outlier_filter: Some(OutlierFilterConfig { ... }),
-    downsampler: Some(AngularDownsamplerConfig { ... }),
-};
+let mut calibrator = GyroCalibrator::new(1500);  // Samples needed
 
-let preprocessor = ScanPreprocessor::new(config);
+// Feed samples while robot is stationary
+calibrator.add_sample(gyro_z_raw);
 
-// Full pipeline with downsampling
-let cloud = preprocessor.process(&scan);
-
-// Without downsampling (for mapping)
-let full_cloud = preprocessor.process_full_resolution(&scan);
-
-// Minimal processing (range filter only)
-let minimal = preprocessor.process_minimal(&scan);
-```
-
-### DynamicFilter
-
-Adaptive filtering with runtime statistics.
-
-```rust
-use dhruva_slam::sensors::preprocessing::DynamicFilter;
-
-let filter = DynamicFilter::new(config);
-let (cloud, stats) = filter.filter(&scan);
-
-println!("Points before: {}", stats.input_count);
-println!("Points after: {}", stats.output_count);
-println!("Rejection rate: {}%", stats.rejection_rate * 100.0);
-```
-
-## File Structure
-
-```
-sensors/
-├── mod.rs              # Module exports
-├── odometry/
-│   ├── mod.rs          # Odometry exports
-│   ├── wheel.rs        # WheelOdometry
-│   ├── complementary.rs # ComplementaryFilter
-│   ├── eskf.rs         # Error-State Kalman Filter
-│   └── evaluator.rs    # OdometryEvaluator
-└── preprocessing/
-    ├── mod.rs          # Preprocessing exports
-    ├── range_filter.rs
-    ├── outlier_filter.rs
-    ├── downsampler.rs
-    ├── converter.rs
-    ├── preprocessor.rs
-    └── dynamic.rs
-```
-
-## Usage Example
-
-Complete odometry pipeline:
-
-```rust
-use dhruva_slam::sensors::odometry::{WheelOdometry, ComplementaryFilter};
-use dhruva_slam::sensors::preprocessing::ScanPreprocessor;
-
-// Setup odometry
-let mut wheel_odom = WheelOdometry::new(wheel_config);
-let mut filter = ComplementaryFilter::new(filter_config);
-
-// Setup preprocessing
-let preprocessor = ScanPreprocessor::new(preprocess_config);
-
-// Process sensor data
-fn process_sensors(
-    left_ticks: u16,
-    right_ticks: u16,
-    gyro_z: i16,
-    scan: &LaserScan,
-    timestamp_us: u64,
-) -> (Option<Pose2D>, PointCloud2D) {
-    // Compute odometry
-    let odom_delta = wheel_odom.update(left_ticks, right_ticks, timestamp_us)
-        .map(|delta| filter.update(&delta, gyro_z, dt));
-
-    // Preprocess lidar
-    let cloud = preprocessor.process(scan);
-
-    (odom_delta, cloud)
+if calibrator.is_calibrated() {
+    let bias = calibrator.bias();
+    println!("Gyro bias: {:.4} units", bias);
 }
 ```
 
@@ -305,11 +327,10 @@ Calibrated values for the CRL-200S robot:
 
 ```toml
 [odometry]
+algorithm = "mahony"
 ticks_per_meter = 4464.0
 wheel_base = 0.233
-alpha = 0.8
 gyro_scale = 0.0001745  # 0.01°/s per unit → rad/s
-gyro_bias_z = 0.0       # Auto-calibrated at startup
 
 [preprocessing]
 min_range = 0.15        # 15cm minimum (robot radius)
@@ -317,11 +338,21 @@ max_range = 8.0         # 8m maximum (lidar spec)
 target_points = 180     # Downsample to 180 points
 ```
 
+## Algorithm Selection
+
+| Algorithm | Use Case | CPU | Notes |
+|-----------|----------|-----|-------|
+| `Wheel` | Testing/baseline | Very Low | No gyro needed |
+| `Complementary` | Simple fusion | Low | Requires gyro bias |
+| `Eskf` | Uncertainty tracking | Medium | Full covariance |
+| `Mahony` | **Production** | Low | Auto gyro calibration |
+
 ## Performance
 
 | Operation | Time | Notes |
 |-----------|------|-------|
 | WheelOdometry.update | <1μs | Single tick processing |
 | ComplementaryFilter.update | <1μs | Simple fusion |
-| ESKF.predict + update | ~5μs | Full Kalman filter |
+| MahonyAhrs.update | ~2μs | AHRS with bias tracking |
+| Eskf.predict + update | ~5μs | Full Kalman filter |
 | ScanPreprocessor.process | ~50μs | 360→180 points |

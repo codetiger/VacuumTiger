@@ -56,11 +56,6 @@ impl AngularDownsampler {
         Self { config }
     }
 
-    /// Get the current configuration.
-    pub fn config(&self) -> &AngularDownsamplerConfig {
-        &self.config
-    }
-
     /// Apply angular-binned downsampling to a laser scan.
     ///
     /// Divides the angular range into fixed bins and selects the point
@@ -173,14 +168,6 @@ impl AngularDownsampler {
             },
         }
     }
-
-    /// Calculate the approximate number of output points for a given input.
-    pub fn calculate_skip(&self, input_count: usize) -> usize {
-        if input_count <= self.config.target_points {
-            return 1;
-        }
-        (input_count as f32 / self.config.target_points as f32).ceil() as usize
-    }
 }
 
 impl Default for AngularDownsampler {
@@ -222,21 +209,6 @@ mod tests {
         // Should be approximately 200 points (500 / 3 skip = 167, or 500 / 2.5 = 200)
         assert!(result.len() >= 150);
         assert!(result.len() <= 250);
-    }
-
-    #[test]
-    fn test_downsampler_skip_factor() {
-        let config = AngularDownsamplerConfig {
-            target_points: 100,
-            min_angle_step: 0.0,
-        };
-        let downsampler = AngularDownsampler::new(config);
-
-        // 500 points, target 100 → skip = 5
-        assert_eq!(downsampler.calculate_skip(500), 5);
-
-        // 50 points, target 100 → skip = 1 (no downsampling needed)
-        assert_eq!(downsampler.calculate_skip(50), 1);
     }
 
     #[test]
@@ -416,47 +388,11 @@ mod tests {
     }
 
     #[test]
-    fn test_config_accessor() {
-        let config = AngularDownsamplerConfig {
-            target_points: 150,
-            min_angle_step: 0.02,
-        };
-        let downsampler = AngularDownsampler::new(config);
-
-        assert_eq!(downsampler.config().target_points, 150);
-        assert_eq!(downsampler.config().min_angle_step, 0.02);
-    }
-
-    #[test]
     fn test_default_config() {
         let config = AngularDownsamplerConfig::default();
         assert_eq!(config.target_points, 200);
         // 0.5 degrees in radians
         assert!((config.min_angle_step - 0.5_f32.to_radians()).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_calculate_skip_edge_cases() {
-        let config = AngularDownsamplerConfig {
-            target_points: 100,
-            min_angle_step: 0.0,
-        };
-        let downsampler = AngularDownsampler::new(config);
-
-        // Zero input
-        assert_eq!(downsampler.calculate_skip(0), 1);
-
-        // Below target
-        assert_eq!(downsampler.calculate_skip(50), 1);
-
-        // Exactly at target
-        assert_eq!(downsampler.calculate_skip(100), 1);
-
-        // Just above target
-        assert_eq!(downsampler.calculate_skip(101), 2);
-
-        // Large input
-        assert_eq!(downsampler.calculate_skip(1000), 10);
     }
 
     #[test]

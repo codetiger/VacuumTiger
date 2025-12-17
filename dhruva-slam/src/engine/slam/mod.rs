@@ -58,27 +58,20 @@
 //! // Get the map
 //! let map = slam.global_map();
 //! ```
+//!
+//! Note: Some types and utility methods are defined for future use.
 
 pub mod keyframe;
-mod kidnapped_detector;
 mod online_slam;
-mod recovery_state;
-mod submap;
+pub mod submap;
 
-pub use keyframe::{
-    Keyframe, KeyframeManager, KeyframeManagerConfig as KeyframeConfig, ScanContext,
+// Core SLAM types - used by OnlineSlam and exported for SlamEngine trait
+pub use keyframe::KeyframeManagerConfig;
+pub use online_slam::{
+    LoopClosureConfig, OnlineSlam, OnlineSlamConfig, SlamMode, SlamResult, SlamStatus,
 };
-pub use kidnapped_detector::{
-    KidnappedDetection, KidnappedDetector, KidnappedDetectorConfig, KidnappedReason,
-};
-pub use online_slam::{OnlineSlam, OnlineSlamConfig, SlamMode, SlamResult, SlamStatus};
-pub use recovery_state::{
-    RecoveryAction, RecoveryConfig, RecoveryState, RecoveryStateMachine, RecoveryStats,
-    RecoveryStrategy,
-};
-pub use submap::{Submap, SubmapManager, SubmapManagerConfig as SubmapConfig, SubmapState};
+pub use submap::SubmapManagerConfig;
 
-use crate::algorithms::mapping::OccupancyGrid;
 use crate::core::types::{PointCloud2D, Pose2D};
 
 /// Trait for SLAM engines.
@@ -106,17 +99,11 @@ pub trait SlamEngine {
     /// Get the current pose estimate.
     fn current_pose(&self) -> Pose2D;
 
-    /// Get the current map.
-    fn map(&self) -> &OccupancyGrid;
-
     /// Get SLAM status.
     fn status(&self) -> SlamStatus;
 
     /// Reset SLAM to initial state.
     fn reset(&mut self);
-
-    /// Reset SLAM to a specific pose.
-    fn reset_to(&mut self, pose: Pose2D);
 }
 
 #[cfg(test)]
@@ -124,8 +111,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_module_compiles() {
-        // Basic smoke test that the module structure is valid
-        let _ = OnlineSlamConfig::default();
+    fn test_slam_result_default() {
+        let result = SlamResult::default();
+        assert!(!result.keyframe_created);
+        assert_eq!(result.match_score, 0.0);
     }
 }

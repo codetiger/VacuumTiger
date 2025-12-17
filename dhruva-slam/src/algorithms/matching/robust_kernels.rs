@@ -107,12 +107,6 @@ impl RobustKernel {
             }
         }
     }
-
-    /// Check if this kernel provides outlier robustness.
-    #[inline]
-    pub fn is_robust(&self) -> bool {
-        !matches!(self, RobustKernel::None)
-    }
 }
 
 #[cfg(test)]
@@ -179,14 +173,6 @@ mod tests {
     #[test]
     fn test_default_is_welsch() {
         assert_eq!(RobustKernel::default(), RobustKernel::Welsch);
-    }
-
-    #[test]
-    fn test_is_robust() {
-        assert!(!RobustKernel::None.is_robust());
-        assert!(RobustKernel::Huber.is_robust());
-        assert!(RobustKernel::Cauchy.is_robust());
-        assert!(RobustKernel::Welsch.is_robust());
     }
 
     #[test]

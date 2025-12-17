@@ -49,11 +49,6 @@ impl OutlierFilter {
         Self { config }
     }
 
-    /// Get the current configuration.
-    pub fn config(&self) -> &OutlierFilterConfig {
-        &self.config
-    }
-
     /// Check if a point is an outlier based on its neighbors.
     ///
     /// Returns true if the point should be removed.
@@ -161,13 +156,6 @@ impl OutlierFilter {
                 None
             },
         }
-    }
-
-    /// Count how many points would be removed as outliers.
-    pub fn count_outliers(&self, scan: &LaserScan) -> usize {
-        (0..scan.ranges.len())
-            .filter(|&i| self.is_outlier(&scan.ranges, i))
-            .count()
     }
 }
 
@@ -302,18 +290,6 @@ mod tests {
 
         // Too few points to determine outliers
         assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn test_count_outliers() {
-        let mut scan = create_smooth_scan(100, 5.0);
-        scan.ranges[25] = 10.0;
-        scan.ranges[75] = 1.0;
-
-        let filter = OutlierFilter::default();
-        let count = filter.count_outliers(&scan);
-
-        assert_eq!(count, 2);
     }
 
     #[test]
@@ -502,18 +478,6 @@ mod tests {
 
         // Should still work - neighbor count is clamped to available neighbors
         assert_eq!(result.len(), 9);
-    }
-
-    #[test]
-    fn test_config_accessor() {
-        let config = OutlierFilterConfig {
-            neighbor_count: 5,
-            distance_threshold: 0.5,
-        };
-        let filter = OutlierFilter::new(config);
-
-        assert_eq!(filter.config().neighbor_count, 5);
-        assert_eq!(filter.config().distance_threshold, 0.5);
     }
 
     #[test]

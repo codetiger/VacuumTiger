@@ -69,6 +69,8 @@
 //!     println!("Transform: {:?}", result.transform);
 //! }
 //! ```
+//!
+//! Note: Some types and utility methods are defined for future use.
 
 mod correlative;
 mod dynamic;
@@ -80,33 +82,23 @@ mod point_to_line_icp;
 mod robust_kernels;
 #[cfg(test)]
 pub mod test_utils;
-mod validation;
 
+// Individual matcher implementations
 pub use correlative::{CorrelativeConfig, CorrelativeMatcher};
 pub use dynamic::{DynMatcher, DynMatcherConfig, MatcherType};
-pub use hybrid::{HybridConfig, HybridMatcher, weighted_initial_guess};
-pub use icp::{CachedKdTree, IcpConfig, PointToPointIcp};
-pub use icp_common::{
-    ConvergenceTracker, IcpConvergenceConfig, IdentitySnapConfig, MIN_POINTS_FOR_RELIABLE_MATCH,
-    build_kdtree, maybe_snap_to_identity, mse_to_score, thresholds, validate_scan_sizes,
-};
+pub use hybrid::{HybridConfig, HybridMatcher};
+pub use icp::{IcpConfig, PointToPointIcp};
 pub use multi_resolution::{MultiResolutionConfig, MultiResolutionMatcher};
 pub use point_to_line_icp::{PointToLineIcp, PointToLineIcpConfig};
 pub use robust_kernels::RobustKernel;
-pub use validation::{
-    RejectionReason, ScanMatchValidator, ScanMatchValidatorConfig, ValidationResult,
-};
 
-use crate::core::types::{Covariance2D, PointCloud2D, Pose2D};
+use crate::core::types::{PointCloud2D, Pose2D};
 
 /// Result of a scan matching operation.
 #[derive(Debug, Clone)]
 pub struct ScanMatchResult {
     /// Estimated transform from source to target frame.
     pub transform: Pose2D,
-
-    /// Covariance of the transform estimate (uncertainty).
-    pub covariance: Covariance2D,
 
     /// Match quality score (0.0 = bad, 1.0 = perfect).
     ///
@@ -118,20 +110,15 @@ pub struct ScanMatchResult {
 
     /// Number of iterations performed.
     pub iterations: u32,
-
-    /// Mean squared error of final correspondences.
-    pub mse: f32,
 }
 
 impl Default for ScanMatchResult {
     fn default() -> Self {
         Self {
             transform: Pose2D::identity(),
-            covariance: Covariance2D::diagonal(1.0, 1.0, 0.1),
             score: 0.0,
             converged: false,
             iterations: 0,
-            mse: f32::MAX,
         }
     }
 }
@@ -143,19 +130,12 @@ impl ScanMatchResult {
     }
 
     /// Create a successful result.
-    ///
-    /// Note: Covariance is set to zero because computing it from the ICP Hessian
-    /// requires storing the full correspondence set and recomputing the Jacobian.
-    /// For most SLAM use cases, the match score provides sufficient quality indication.
-    /// A proper covariance estimate would improve loop closure uncertainty propagation.
-    pub fn success(transform: Pose2D, score: f32, iterations: u32, mse: f32) -> Self {
+    pub fn success(transform: Pose2D, score: f32, iterations: u32) -> Self {
         Self {
             transform,
-            covariance: Covariance2D::zero(),
             score,
             converged: true,
             iterations,
-            mse,
         }
     }
 }
@@ -307,75 +287,6 @@ impl HybridP2LMatcher {
     }
 }
 
-/// Configuration for hybrid Multi-Resolution + Robust ICP matcher.
-#[derive(Debug, Clone)]
-pub struct HybridMultiResConfig {
-    pub multi_res: MultiResolutionConfig,
-    pub icp: IcpConfig,
-    pub always_multi_res: bool,
-    pub encoder_weight: f32,
-}
-
-impl Default for HybridMultiResConfig {
-    fn default() -> Self {
-        Self {
-            multi_res: MultiResolutionConfig {
-                num_levels: 3,
-                coarse_search_window_xy: 0.15,
-                coarse_search_window_theta: 0.15,
-                fine_resolution: 0.005,
-                fine_angular_resolution: 0.005,
-                fine_grid_resolution: 0.02,
-                min_score: 0.4,
-                resolution_multiplier: 2.0,
-                window_shrink_factor: 2.0,
-            },
-            icp: IcpConfig {
-                max_iterations: 30,
-                translation_epsilon: 0.001,
-                rotation_epsilon: 0.001,
-                max_correspondence_distance: 0.3,
-                min_correspondences: 10,
-                outlier_ratio: 0.1,
-                robust_kernel: RobustKernel::Welsch,
-                kernel_scale: 0.10,
-                bidirectional_check: true,
-                damping_factor: 0.8,
-            },
-            always_multi_res: true,
-            encoder_weight: 0.8,
-        }
-    }
-}
-
-impl HybridMultiResConfig {
-    /// Convert to generic HybridConfig.
-    pub fn to_hybrid_config(&self) -> HybridConfig {
-        HybridConfig {
-            always_coarse: self.always_multi_res,
-            encoder_weight: self.encoder_weight,
-        }
-    }
-}
-
-/// Combined matcher using Multi-Resolution Correlative + Robust ICP.
-///
-/// Recommended for production SLAM.
-/// This is a type alias for the generic `HybridMatcher`.
-pub type HybridMultiResMatcher = HybridMatcher<MultiResolutionMatcher, PointToPointIcp>;
-
-impl HybridMultiResMatcher {
-    /// Create a new hybrid Multi-Resolution + ICP matcher from config.
-    pub fn from_config(config: HybridMultiResConfig) -> Self {
-        let hybrid_config = config.to_hybrid_config();
-        HybridMatcher::new(
-            MultiResolutionMatcher::new(config.multi_res),
-            PointToPointIcp::new(config.icp),
-            hybrid_config,
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,7 +302,7 @@ mod tests {
     #[test]
     fn test_scan_match_result_success() {
         let transform = Pose2D::new(1.0, 2.0, 0.5);
-        let result = ScanMatchResult::success(transform, 0.95, 10, 0.001);
+        let result = ScanMatchResult::success(transform, 0.95, 10);
 
         assert!(result.converged);
         assert_eq!(result.transform.x, 1.0);
@@ -445,6 +356,7 @@ mod tests {
 mod icp_recovery_tests {
     use super::*;
     use crate::algorithms::matching::test_utils::{create_line, create_room};
+    use crate::core::types::Point2D;
     use approx::assert_relative_eq;
 
     #[test]
@@ -621,5 +533,178 @@ mod icp_recovery_tests {
                 "Sparse clouds should have lower confidence"
             );
         }
+    }
+
+    // ========================================================================
+    // Scan Overlay Accumulation Tests
+    // ========================================================================
+
+    /// Test sequential scan overlay with small rotations (simulates robot rotating in place).
+    ///
+    /// This test catches accumulated rotation errors that would cause diagonal skew
+    /// in SLAM maps.
+    ///
+    /// Transform semantics (from module docs):
+    /// - source = current scan (robot's current position)
+    /// - target = previous scan (robot's previous position)
+    /// - returned transform = robot motion from previous to current
+    ///
+    /// When robot rotates +θ CCW:
+    /// - Objects appear rotated -θ in robot's local frame (relative to previous)
+    /// - current_scan has objects at -θ relative to previous_scan
+    /// - Alignment transform to make current match previous is +θ
+    /// - So returned transform.theta = +θ = robot motion ✓
+    #[test]
+    fn test_accumulated_rotation_error() {
+        // Create a room-shaped scan (stable reference geometry)
+        // This represents what a robot at pose (0,0,0) sees
+        let reference_scan = create_room(200, 4.0, 3.0);
+
+        // Simulate 36 small rotations of 10° each = 360° total
+        let num_steps = 36;
+        let step_rotation = std::f32::consts::PI / 18.0; // 10 degrees
+
+        let mut matcher = HybridP2LMatcher::from_config(HybridP2LMatcherConfig::default());
+
+        let mut accumulated_robot_theta = 0.0f32;
+        let mut accumulated_error = 0.0f32;
+
+        for i in 0..num_steps {
+            // Robot motion: rotate by +step_rotation
+            let robot_motion = Pose2D::new(0.0, 0.0, step_rotation);
+
+            // Previous scan: what robot saw at accumulated_robot_theta
+            // Objects appear at -accumulated_robot_theta in robot frame
+            let previous_scan =
+                reference_scan.transform(&Pose2D::new(0.0, 0.0, -accumulated_robot_theta));
+
+            // Robot rotates by +step_rotation
+            accumulated_robot_theta += step_rotation;
+
+            // Current scan: what robot sees at new pose
+            // Objects appear at -accumulated_robot_theta in robot frame
+            let current_scan =
+                reference_scan.transform(&Pose2D::new(0.0, 0.0, -accumulated_robot_theta));
+
+            // Run scan matching with robot motion as initial guess
+            let result = matcher.match_scans(&current_scan, &previous_scan, &robot_motion);
+
+            assert!(
+                result.converged,
+                "Step {}: scan matching should converge",
+                i
+            );
+
+            // The returned transform should equal the robot motion
+            let rotation_error = (result.transform.theta - step_rotation).abs();
+            accumulated_error += rotation_error;
+
+            // Each step should have very small error
+            assert!(
+                rotation_error < 0.02, // ~1.1 degrees per step
+                "Step {}: rotation error {:.3} rad ({:.1}°) too large, got {:.3} rad expected {:.3} rad",
+                i,
+                rotation_error,
+                rotation_error.to_degrees(),
+                result.transform.theta,
+                step_rotation
+            );
+        }
+
+        // Total accumulated error after full rotation should be small
+        let avg_error_per_step = accumulated_error / num_steps as f32;
+        println!(
+            "Accumulated rotation error over 360°: {:.3} rad ({:.1}°), avg per step: {:.4} rad ({:.2}°)",
+            accumulated_error,
+            accumulated_error.to_degrees(),
+            avg_error_per_step,
+            avg_error_per_step.to_degrees()
+        );
+
+        // Total error should be less than 10° for 360° rotation
+        assert!(
+            accumulated_error < 0.175, // ~10 degrees
+            "Total accumulated rotation error {:.3} rad ({:.1}°) too large",
+            accumulated_error,
+            accumulated_error.to_degrees()
+        );
+    }
+
+    /// Test sequential translation with scan overlay (simulates robot driving straight).
+    #[test]
+    fn test_accumulated_translation_error() {
+        // Create a corridor-like geometry (walls on both sides)
+        // Add tiny y-variation to avoid kiddo bucket issues with collinear points
+        let mut corridor = PointCloud2D::new();
+        for i in 0..100 {
+            let x = (i as f32 / 99.0) * 10.0; // 10m corridor
+            let noise = (i as f32) * 0.0001; // Tiny variation
+            corridor.push(Point2D::new(x, noise)); // Bottom wall
+            corridor.push(Point2D::new(x, 2.0 + noise)); // Top wall
+        }
+
+        // Simulate 10 steps of 0.5m forward motion
+        let num_steps = 10;
+        let step_translation = 0.5f32;
+
+        let mut matcher = HybridP2LMatcher::from_config(HybridP2LMatcherConfig::default());
+
+        let mut accumulated_x = 0.0f32;
+        let mut accumulated_error = 0.0f32;
+
+        for i in 0..num_steps {
+            // Ground truth robot motion: move forward
+            let robot_motion = Pose2D::new(step_translation, 0.0, 0.0);
+
+            // Previous scan: what robot saw at accumulated_x position
+            // Robot at position X sees corridor shifted by -X in robot frame
+            let previous_scan = corridor.transform(&Pose2D::new(-accumulated_x, 0.0, 0.0));
+
+            // Robot moves forward
+            accumulated_x += step_translation;
+
+            // Current scan: what robot sees at new position
+            let current_scan = corridor.transform(&Pose2D::new(-accumulated_x, 0.0, 0.0));
+
+            // Run scan matching
+            let result = matcher.match_scans(&current_scan, &previous_scan, &robot_motion);
+
+            assert!(
+                result.converged,
+                "Step {}: scan matching should converge",
+                i
+            );
+
+            // Check translation error
+            let translation_error = ((result.transform.x - step_translation).powi(2)
+                + result.transform.y.powi(2))
+            .sqrt();
+            accumulated_error += translation_error;
+
+            assert!(
+                translation_error < 0.05, // 5cm per step
+                "Step {}: translation error {:.3}m too large, got ({:.3}, {:.3}) expected ({:.3}, 0)",
+                i,
+                translation_error,
+                result.transform.x,
+                result.transform.y,
+                step_translation
+            );
+        }
+
+        println!(
+            "Accumulated translation error over {}m: {:.3}m",
+            num_steps as f32 * step_translation,
+            accumulated_error
+        );
+
+        // Total error should be less than 10% of distance traveled
+        let total_distance = num_steps as f32 * step_translation;
+        assert!(
+            accumulated_error < total_distance * 0.1,
+            "Total accumulated translation error {:.3}m > 10% of {:.1}m",
+            accumulated_error,
+            total_distance
+        );
     }
 }

@@ -40,20 +40,14 @@ mod calibration;
 mod complementary;
 mod dynamic;
 mod eskf;
-mod evaluator;
-mod fused_tracker;
-mod imu_analysis;
 mod mahony;
 mod wheel_odometry;
 
-pub use calibration::{CRL200S_GYRO_SCALE, GyroBiasEstimator};
-pub use complementary::{ComplementaryConfig, ComplementaryFilter};
+// Dynamic odometry (runtime algorithm selection)
 pub use dynamic::{DynOdometry, DynOdometryConfig, OdometryType};
-pub use eskf::{Eskf, EskfConfig, MeasurementNoise, ProcessNoise};
-pub use evaluator::{EvaluationResult, OdometryEvaluator, ScenarioBounds, Stats, TestScenario};
-pub use fused_tracker::FusedPoseTracker;
-pub use imu_analysis::{GyroRotationResult, ImuAnalysisResult, ImuAnalyzer, ImuQuality};
-pub use mahony::{
-    CalibratedImuData, EulerAngles, MahonyAhrs, MahonyConfig, Quaternion, RawImuData,
-};
+
+// Individual implementations (used internally by DynOdometry)
+pub use complementary::{ComplementaryConfig, ComplementaryFilter};
+pub use eskf::{Eskf, EskfConfig};
+pub use mahony::{MahonyAhrs, MahonyConfig, RawImuData};
 pub use wheel_odometry::{WheelOdometry, WheelOdometryConfig};

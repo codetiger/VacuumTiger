@@ -1,71 +1,376 @@
-# dhruva-slam-node configuration
+# dhruva-slam configuration
 #
-# This file configures the dead reckoning odometry daemon.
+# This file configures the SLAM daemon for robotic vacuum cleaners.
+#
+# Communication Architecture:
+#
+#   SangamIO (Input):
+#     - TCP: commands only (start/stop motors, actuators)
+#     - UDP: sensor_status @ 110Hz, lidar @ 5Hz (high-frequency sensors)
+#
+#   DhruvaSLAM (Output):
+#     - TCP: CurrentMap @ 1-2Hz, MapList on-change (large/critical data)
+#     - UDP: RobotStatus @ 10Hz, SensorStatus @ 10Hz, NavigationStatus @ 5Hz
+#
+#   Both SangamIO and DhruvaSLAM use same port (5555) for TCP+UDP.
 
 [source]
-# SangamIO daemon address (robot IP:port)
-sangam_address = "192.168.68.101:5555"
+# SangamIO address for TCP commands and UDP sensor data
+# Both protocols use the same port for simpler configuration
+sangam_address = "localhost:5555"
 
 [output]
-# TCP port for visualization clients (Drishti connects here)
+# Port for visualization clients (TCP maps + UDP status)
+# Same port used for both protocols
 bind_port = 5557
 # Output rate in Hz (decimated from 110Hz input)
 odometry_rate_hz = 50
-# SLAM status/diagnostics rate (Hz)
-slam_status_rate_hz = 5.0
 # SLAM map publishing rate (Hz)
-slam_map_rate_hz = 1.0
+map_rate_hz = 5.0
+# Feature extraction/publishing rate (Hz)
+feature_rate_hz = 1.0
+
+# ============================================================================
+# Stream Configuration (DhruvaStream output)
+# ============================================================================
+
+[stream]
+# Robot status stream rate (Hz) - pose, state, progress [UDP]
+robot_status_hz = 10.0
+# Sensor status stream rate (Hz) - raw sensor data [UDP]
+sensor_status_hz = 10.0
+# Map stream rate (Hz) - occupancy grid [TCP - large payload]
+map_hz = 2.0
+# Navigation status stream rate (Hz) - path planning [UDP]
+navigation_hz = 5.0
+
+# ============================================================================
+# Map Storage Configuration
+# ============================================================================
+
+[map_storage]
+# Directory to store saved maps
+path = "/var/lib/dhruva/maps"
+
+# ============================================================================
+# Bag File Configuration (offline playback)
+# ============================================================================
+
+[bag]
+# Bag file path for offline playback (comment out for live mode)
+# file = "bags/test.bag"
+
+# Loop bag file playback continuously
+loop_playback = false
+
+# ============================================================================
+# Odometry Configuration
+# ============================================================================
 
 [odometry]
+# Odometry algorithm: "wheel", "complementary", "eskf", "mahony"
+# - wheel: Pure encoder odometry (no sensor fusion)
+# - complementary: Simple encoder + gyro complementary filter
+# - eskf: Error-State Kalman Filter (full IMU fusion)
+# - mahony: Mahony AHRS with auto gyro bias calibration (recommended)
+algorithm = "mahony"
+
 # Encoder ticks per meter of wheel travel
-# Calibrated: linear push test average = 4464 ticks/m
 ticks_per_meter = 4464.0
 
 # Distance between wheel centers in meters
-# Physical measurement: (24.8 + 21.5) / 2 = 23.15cm
 wheel_base = 0.233
 
-# Complementary filter gyro weight (0.0 to 1.0)
-# Higher values trust gyroscope more
-# 0.8 gives good balance - encoder dominates long-term, gyro smooths short-term
-alpha = 0.8
-
-# Gyroscope scale factor (raw units to rad/s)
-# CRL-200S IMU: raw units are 0.01 deg/s
-# Convert to rad/s: 0.01 × (π/180) = 0.0001745
-gyro_scale = 0.0001745
-
-# Gyroscope Z bias in raw units
-# Auto-calibrated at startup (330 samples ~3 seconds)
-gyro_bias_z = 0.0
-
-[slam]
-# Enable SLAM processing
-enabled = true
-# Initial mode: "Mapping", "Localization", or "Idle"
-initial_mode = "Mapping"
-# Lidar range filter (meters)
-min_range = 0.15
-max_range = 8.0
+# ============================================================================
+# Lidar Configuration
+# ============================================================================
 
 [lidar]
-# Lidar offset configuration (follows TF transform convention like GMapping, Cartographer)
+# Lidar offset configuration (follows TF transform convention)
 # Coordinate frame: X=forward, Y=left, Theta=CCW (ROS REP-103)
-#
-# Calibrated using Python ICP tool (tools/icp_calibration.py) on rotate_3min.bag
 
 # 1. Lidar housing mounting position relative to robot center (meters)
-#    This is robot-specific - measured from robot center to lidar housing center
-mounting_x = -0.0936  # 93.6mm behind robot center (calibrated)
+mounting_x = -0.110  # Behind robot center (calibrated)
 mounting_y = 0.0      # Centered on robot axis
 
 # 2. Optical center offset (meters) - RADIAL
-#    Distance from lidar housing geometric center to actual laser origin (rotating scanner)
-#    This is a RADIAL offset - added to each range measurement along the laser beam direction
-#    It corrects for the scanner being offset from the housing center, not a fixed X/Y translation
-optical_offset = 0.0258  # 25.8mm radial offset (calibrated)
+#    Distance from lidar housing center to actual laser origin
+optical_offset = 0.025  # Radial offset (calibrated)
 
 # 3. Angular offset (radians)
 #    Rotation of lidar's 0° relative to robot forward
-#    Positive = CCW when viewed from above
-angle_offset = 0.0
+#    12.5 degrees = 12.5 * pi / 180 = 0.2182 radians
+angle_offset = 0.2182
+
+# ============================================================================
+# Scan Preprocessing Configuration
+# ============================================================================
+
+[preprocessing]
+# Minimum valid range (meters) - filters out close obstacles/noise
+min_range = 0.15
+
+# Maximum valid range (meters) - filters out far/unreliable readings
+max_range = 5.0
+
+# Target number of points after angular downsampling
+# Higher = more accuracy, Lower = faster processing
+target_points = 180
+
+# Minimum angle step for downsampling (radians)
+# 1.0 degree = 0.0175 radians
+min_angle_step = 0.0175
+
+# ============================================================================
+# SLAM Engine Configuration
+# ============================================================================
+
+[slam]
+# Minimum match score to accept pose refinement (0.0 - 1.0)
+min_match_score = 0.3
+
+# Score threshold below which robot is considered "lost"
+lost_threshold = 0.1
+
+# Minimum points in scan to process
+min_scan_points = 50
+
+# Encoder weight for initial guess (0.0 = identity, 1.0 = full odometry)
+# Higher values trust encoder more for initial scan matching guess
+encoder_weight = 0.8
+
+# Use scan-to-submap matching (vs scan-to-scan)
+# Currently disabled due to transform semantic issues
+use_submap_matching = false
+
+# ============================================================================
+# Scan Matching Configuration
+# ============================================================================
+
+[matcher]
+# Scan matching algorithm: "icp", "p2l", "correlative", "multi_res", "hybrid_icp", "hybrid_p2l"
+# - icp: Point-to-Point ICP (fast, needs good initial guess)
+# - p2l: Point-to-Line ICP (better for structured environments)
+# - correlative: Exhaustive search (handles large initial errors)
+# - multi_res: Multi-resolution correlative (recommended for speed/robustness)
+# - hybrid_icp: Correlative + P2P ICP
+# - hybrid_p2l: Correlative + P2L ICP (best accuracy, recommended)
+algorithm = "multi_res"
+
+# Always run correlative search first (true) or only on ICP failure (false)
+always_correlative = true
+
+# Encoder weight for matcher (0.0 = identity guess, 1.0 = full odometry guess)
+encoder_weight = 1.0
+
+# --- Correlative Search Window ---
+# Search window for coarse alignment (meters and radians)
+search_window_x = 0.3
+search_window_y = 0.3
+search_window_theta = 0.5
+
+# Resolution for correlative search
+linear_resolution = 0.03
+angular_resolution = 0.03
+grid_resolution = 0.05
+
+# Minimum correlative score to accept match
+correlative_min_score = 0.4
+
+# --- ICP Configuration ---
+# Maximum ICP iterations
+icp_max_iterations = 50
+
+# Convergence thresholds
+icp_translation_epsilon = 0.001
+icp_rotation_epsilon = 0.001
+
+# Maximum correspondence distance (meters)
+icp_max_correspondence_distance = 0.5
+
+# Minimum correspondences required
+icp_min_correspondences = 10
+
+# Outlier rejection ratio (0.0 - 1.0)
+icp_outlier_ratio = 0.1
+
+# Robust kernel: "none", "huber", "cauchy", "welsch"
+# Note: Only used with P2P ICP matcher, not P2L
+icp_robust_kernel = "welsch"
+
+# Robust kernel scale parameter
+icp_kernel_scale = 0.1
+
+# ============================================================================
+# Keyframe Configuration
+# ============================================================================
+
+[keyframe]
+# Minimum translation (meters) before creating a new keyframe
+min_translation = 0.5
+
+# Minimum rotation (radians) before creating a new keyframe
+# 0.5 rad = ~30 degrees
+min_rotation = 0.5
+
+# Maximum number of keyframes to keep in memory
+max_keyframes = 1000
+
+# Minimum time between keyframes (milliseconds)
+min_interval_ms = 500
+
+# ============================================================================
+# Submap Configuration
+# ============================================================================
+
+[submap]
+# Number of scans per submap before finishing
+scans_per_submap = 100
+
+# Overlap: scans to continue adding to old submap after starting new one
+overlap_scans = 10
+
+# Maximum number of active submaps (for overlap)
+max_active_submaps = 2
+
+# ============================================================================
+# Occupancy Grid Configuration
+# ============================================================================
+
+[map]
+# Cell size in meters (smaller = more detail, more memory)
+resolution = 0.02
+
+# Initial map dimensions in meters (grows automatically)
+initial_width = 20.0
+initial_height = 20.0
+
+# Log-odds values for probabilistic updates
+log_odds_occupied = 0.9
+log_odds_free = -0.7
+log_odds_max = 50.0
+log_odds_min = -50.0
+
+# Thresholds for cell state determination
+occupied_threshold = 0.5
+free_threshold = -0.5
+
+# ============================================================================
+# Loop Closure Configuration
+# ============================================================================
+
+[loop_closure]
+# Enable loop closure detection and pose graph optimization
+enabled = true
+
+# Check for loop closures every N keyframes
+detection_interval = 5
+
+# Minimum keyframe gap before considering loop closure (in graph nodes)
+# Prevents detecting loops with recent poses
+min_keyframe_gap = 20
+
+# Number of loop closures required to trigger optimization
+optimization_threshold = 3
+
+# Maximum candidates to verify with ICP per detection
+max_candidates = 5
+
+# ============================================================================
+# LiDAR-IRIS Descriptor Configuration
+# ============================================================================
+
+[loop_closure.iris]
+# Number of radial bins (distance divisions)
+num_rows = 80
+
+# Number of angular bins (360° divisions, 1° resolution)
+num_cols = 360
+
+# Maximum range to consider (meters)
+max_range = 8.0
+
+# Number of bits in binary signature (must be multiple of 64)
+# 640 bits = 80 bytes per keyframe
+signature_bits = 640
+
+# ============================================================================
+# Loop Closure Matching Configuration
+# ============================================================================
+
+[loop_closure.matching]
+# Maximum Hamming distance for IRIS matching (out of 640 bits)
+# Lower = stricter matching. 100 = ~15% bit difference
+max_hamming_distance = 100
+
+# Minimum ICP score to accept a loop closure (0.0 - 1.0)
+min_icp_score = 0.5
+
+# ============================================================================
+# Pose Graph Optimization Configuration
+# ============================================================================
+
+[optimization]
+# Solver type: only "sparse_cg" is currently implemented
+# sparse_cg: Conjugate Gradient, O(k×nnz), handles 10,000+ poses
+solver = "sparse_cg"
+
+# Maximum optimization iterations
+max_iterations = 50
+
+# Convergence tolerance (relative residual)
+tolerance = 1e-6
+
+# ============================================================================
+# Exploration Configuration
+# ============================================================================
+
+[exploration]
+# Enable autonomous exploration thread
+enabled = true
+
+# Exploration strategy: "frontier"
+strategy = "frontier"
+
+# Loop rate for exploration thread (Hz)
+loop_rate_hz = 10.0
+
+[exploration.motion]
+# Maximum linear velocity (m/s)
+max_linear_vel = 0.3
+
+# Maximum angular velocity (rad/s)
+max_angular_vel = 0.5
+
+# Minimum safe distance from obstacles (m)
+obstacle_clearance = 0.15
+
+# Normal linear velocity for forward movement (m/s)
+linear_vel = 0.2
+
+# Normal angular velocity for rotation (rad/s)
+angular_vel = 0.3
+
+[exploration.frontier]
+# Minimum number of cells to consider a valid frontier
+min_frontier_size = 5
+
+# Maximum range to search for frontiers (m)
+detection_range = 10.0
+
+# Radius around blocked locations to avoid (m)
+blocked_radius = 0.3
+
+# Distance threshold for grouping frontier cells (m)
+clustering_threshold = 0.5
+
+# ============================================================================
+# Session Configuration
+# ============================================================================
+
+[session]
+# Path to session state file (persists last map ID)
+state_path = "/var/lib/dhruva/session.json"
+
+# Auto-load last used map on startup
+auto_load_last_map = true

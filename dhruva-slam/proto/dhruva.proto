@@ -1,72 +1,9 @@
 syntax = "proto3";
 package dhruva;
 
-// Top-level message wrapper for DhruvaSLAM TCP output (port 5557)
-message DhruvaMessage {
-  string topic = 1;
-  oneof payload {
-    OdometryPose odometry_pose = 2;
-    OdometryDiagnostics odometry_diagnostics = 3;
-    SlamStatus slam_status = 4;
-    SlamMap slam_map = 5;
-    SlamScan slam_scan = 6;
-    SlamDiagnostics slam_diagnostics = 7;
-    MapFeatures map_features = 8;
-  }
-}
-
-// Odometry pose output (50Hz) - topic: "odometry/pose"
-message OdometryPose {
-  float x = 1;           // meters
-  float y = 2;           // meters
-  float theta = 3;       // radians
-  uint64 timestamp_us = 4;
-}
-
-// Odometry diagnostics (1Hz) - topic: "odometry/diagnostics"
-message OdometryDiagnostics {
-  float drift_rate = 1;        // rad/s estimated drift
-  float tick_rate_left = 2;    // ticks/s
-  float tick_rate_right = 3;   // ticks/s
-  float distance_traveled = 4; // meters total
-  float gyro_bias = 5;         // rad/s calibrated bias
-}
-
-// SLAM status (5Hz) - topic: "slam/status"
-message SlamStatus {
-  string mode = 1;                   // "Mapping", "Localization", "Idle"
-  uint64 num_scans = 2;
-  uint32 num_keyframes = 3;
-  uint32 num_submaps = 4;
-  uint32 num_finished_submaps = 5;
-  float match_score = 6;             // 0.0 - 1.0
-  bool is_lost = 7;
-  uint64 memory_usage_bytes = 8;
-}
-
-// SLAM occupancy grid map (1Hz) - topic: "slam/map"
-message SlamMap {
-  float resolution = 1;     // meters per cell
-  uint32 width = 2;         // cells
-  uint32 height = 3;        // cells
-  float origin_x = 4;       // world X of cell (0,0)
-  float origin_y = 5;       // world Y of cell (0,0)
-  bytes cells = 6;          // occupancy grid: 0=unknown, 1-127=free, 128-255=occupied
-  uint64 timestamp_us = 7;
-}
-
-// SLAM scan in global frame (5Hz) - topic: "slam/scan"
-message SlamScan {
-  repeated Point2D points = 1;
-  Pose2D pose = 2;
-  uint64 timestamp_us = 3;
-}
-
-// Basic geometry types
-message Point2D {
-  float x = 1;
-  float y = 2;
-}
+// ============================================================================
+// BASIC GEOMETRY TYPES
+// ============================================================================
 
 message Pose2D {
   float x = 1;
@@ -74,80 +11,306 @@ message Pose2D {
   float theta = 3;
 }
 
-// SLAM diagnostics (5Hz) - topic: "slam/diagnostics"
-message SlamDiagnostics {
-  uint64 timestamp_us = 1;
-  TimingBreakdown timing = 2;
-  ScanMatchStats scan_match = 3;
-  MappingStats mapping = 4;
-  LoopClosureStats loop_closure = 5;
+// ============================================================================
+// COMMANDS (Upstream → Dhruva)
+// ============================================================================
+
+// Command wrapper for all incoming commands
+message DhruvaCommand {
+  string request_id = 1;              // For response correlation
+  oneof command {
+    StartMappingCommand start_mapping = 10;
+    StopMappingCommand stop_mapping = 11;
+    ClearMapCommand clear_map = 12;
+    RenameMapCommand rename_map = 13;
+    DeleteMapCommand delete_map = 14;
+    EnableMapCommand enable_map = 15;
+    EmergencyStopCommand emergency_stop = 16;
+    SetGoalCommand set_goal = 20;
+    CancelGoalCommand cancel_goal = 21;
+  }
 }
 
-message TimingBreakdown {
-  uint64 total_us = 1;
-  uint64 preprocessing_us = 2;
-  uint64 scan_matching_us = 3;
-  uint64 map_update_us = 4;
-  uint64 particle_filter_us = 5;
-  uint64 keyframe_check_us = 6;
-  float avg_total_us = 7;
+// Set a navigation goal (user click on map)
+message SetGoalCommand {
+  float x = 1;                        // Target X position (meters)
+  float y = 2;                        // Target Y position (meters)
+  optional float theta = 3;           // Optional target heading (radians)
+  string description = 4;             // Optional description for UI
 }
 
-message ScanMatchStats {
-  string method = 1;          // "icp", "correlative", "hybrid"
-  uint32 iterations = 2;
-  float score = 3;            // 0.0 - 1.0
-  float mse = 4;              // mean squared error
-  bool converged = 5;
-  uint32 correspondences = 6;
-  float inlier_ratio = 7;
+// Cancel active navigation
+message CancelGoalCommand {}
+
+// Start building a new map
+message StartMappingCommand {
+  string map_name = 1;                // Optional: name for the new map
 }
 
-message MappingStats {
-  uint32 cells_updated = 1;
-  uint64 map_size_bytes = 2;
-  uint32 occupied_cells = 3;
-  uint32 free_cells = 4;
-  optional uint64 active_submap_id = 5;
-  uint32 num_submaps = 6;
+// Stop mapping and optionally save
+message StopMappingCommand {
+  bool save = 1;                      // Save map before stopping
 }
 
-message LoopClosureStats {
-  uint32 candidates_evaluated = 1;
-  uint32 closures_accepted = 2;
-  float last_closure_score = 3;
-  uint32 pose_graph_nodes = 4;
-  uint32 pose_graph_edges = 5;
+// Clear current in-progress map (reset to empty)
+message ClearMapCommand {}
+
+// Rename a saved map
+message RenameMapCommand {
+  string map_id = 1;                  // ID of map to rename
+  string new_name = 2;                // New display name
+}
+
+// Delete a saved map from storage
+message DeleteMapCommand {
+  string map_id = 1;                  // ID of map to delete
+}
+
+// Enable a map for localization (set as active)
+message EnableMapCommand {
+  string map_id = 1;                  // ID of map to enable
+}
+
+// Emergency stop - disable lidar, set velocity to zero, disable motors
+message EmergencyStopCommand {}
+
+// ============================================================================
+// COMMAND RESPONSES (Dhruva → Upstream)
+// ============================================================================
+
+message DhruvaResponse {
+  string request_id = 1;              // Correlates to command
+  bool success = 2;
+  string error_message = 3;           // If success=false
+  oneof data {
+    MappingStartedResponse mapping_started = 10;
+    MappingStoppedResponse mapping_stopped = 11;
+    EmergencyStopResponse emergency_stop = 12;
+    GoalAcceptedResponse goal_accepted = 20;
+    GoalCancelledResponse goal_cancelled = 21;
+  }
+}
+
+message GoalAcceptedResponse {
+  uint32 target_id = 1;               // ID of the created target
+}
+
+message GoalCancelledResponse {}
+
+message EmergencyStopResponse {}
+
+message MappingStartedResponse {
+  string map_id = 1;                  // Assigned map ID
+}
+
+message MappingStoppedResponse {
+  bool saved = 1;                     // Whether map was saved
+  float area_m2 = 2;                  // Final map area if saved
 }
 
 // ============================================================================
-// Map Features (extracted from occupancy grid)
+// CONTINUOUS DATA STREAM (Dhruva → Upstream)
 // ============================================================================
 
-// Line segment representing a wall - topic: "slam/features"
-message LineSegment {
-  float start_x = 1;      // start point X (meters)
-  float start_y = 2;      // start point Y (meters)
-  float end_x = 3;        // end point X (meters)
-  float end_y = 4;        // end point Y (meters)
-  float length = 5;       // segment length (meters)
-  float quality = 6;      // R² fit quality (0-1)
-  uint32 point_count = 7; // number of points used to fit this line
+// Wrapper for all streamed messages
+message DhruvaStream {
+  uint64 timestamp_us = 1;            // Microseconds since epoch
+  oneof data {
+    RobotStatus robot_status = 10;
+    MapList map_list = 11;
+    CurrentMap current_map = 12;
+    SensorStatus sensor_status = 13;
+    NavigationStatus navigation_status = 14;
+    MappingProgress mapping_progress = 15;
+  }
 }
 
-// Corner where two walls meet
-message Corner {
-  float x = 1;            // corner position X (meters)
-  float y = 2;            // corner position Y (meters)
-  float angle = 3;        // angle between walls (radians, 0 to pi)
-  uint32 line1_idx = 4;   // index of first line in MapFeatures.lines
-  uint32 line2_idx = 5;   // index of second line in MapFeatures.lines
-  string corner_type = 6; // "L", "T", "X", "Acute", "Obtuse"
+// ----------------------------------------------------------------------------
+// 1. ROBOT STATUS (10Hz) - Core robot state
+// ----------------------------------------------------------------------------
+
+message RobotStatus {
+  // Current pose in map frame
+  Pose2D pose = 1;
+
+  // SLAM state
+  RobotState state = 2;
+  string active_map_id = 3;           // ID of enabled map (empty if none)
+
+  // System status
+  float battery_percent = 10;
+  bool is_charging = 11;
+  bool is_docked = 12;
+
+  // Mapping progress (when state == MAPPING)
+  float distance_traveled_m = 20;
+  uint32 keyframe_count = 21;
+  uint32 loop_closures = 22;
+  float map_area_m2 = 23;
+
+  // Localization quality (when state == LOCALIZING)
+  float localization_confidence = 30; // 0.0 - 1.0
 }
 
-// Extracted map features - topic: "slam/features"
-message MapFeatures {
-  repeated LineSegment lines = 1;
-  repeated Corner corners = 2;
-  uint64 timestamp_us = 3;
+enum RobotState {
+  ROBOT_STATE_IDLE = 0;               // No active SLAM
+  ROBOT_STATE_MAPPING = 1;            // Building new map
+  ROBOT_STATE_LOCALIZING = 2;         // Using existing map
+  ROBOT_STATE_LOST = 3;               // Lost localization
+}
+
+// ----------------------------------------------------------------------------
+// 2. MAP LIST (On change) - All saved maps
+// ----------------------------------------------------------------------------
+
+message MapList {
+  repeated MapSummary maps = 1;
+  string active_map_id = 2;           // Currently enabled map
+}
+
+message MapSummary {
+  string map_id = 1;                  // Unique identifier
+  string name = 2;                    // Display name
+  uint64 created_at_us = 3;           // Creation timestamp
+  uint64 updated_at_us = 4;           // Last update timestamp
+  float area_m2 = 5;                  // Map area
+  uint32 room_count = 6;              // Number of detected rooms
+  bool is_complete = 7;               // Mapping completed
+}
+
+// ----------------------------------------------------------------------------
+// 3. CURRENT MAP (1Hz) - Active map for visualization
+// ----------------------------------------------------------------------------
+
+message CurrentMap {
+  // Map identity
+  string map_id = 1;
+  string name = 2;
+
+  // Grid data
+  float resolution = 10;              // Cell size in meters
+  uint32 width = 11;                  // Grid width in cells
+  uint32 height = 12;                 // Grid height in cells
+  float origin_x = 13;                // World X of cell (0,0)
+  float origin_y = 14;                // World Y of cell (0,0)
+  bytes cells = 15;                   // Occupancy data (0=free, 100=occupied, 255=unknown)
+
+  // Statistics
+  float explored_area_m2 = 20;
+}
+
+// ----------------------------------------------------------------------------
+// 4. SENSOR STATUS (10Hz) - Raw sensor data for visualization
+// ----------------------------------------------------------------------------
+
+message SensorStatus {
+  // Lidar scan (in robot frame)
+  LidarScan lidar = 1;
+
+  // Wheel encoders
+  int32 left_encoder_ticks = 10;
+  int32 right_encoder_ticks = 11;
+  float left_velocity_mps = 12;
+  float right_velocity_mps = 13;
+
+  // IMU
+  float gyro_z_radps = 20;            // Yaw rate
+  float accel_x_mps2 = 21;
+  float accel_y_mps2 = 22;
+
+  // Odometry estimate (before SLAM correction)
+  Pose2D raw_odometry = 30;
+}
+
+message LidarScan {
+  float angle_min = 1;                // Start angle (radians)
+  float angle_max = 2;                // End angle (radians)
+  float angle_increment = 3;          // Angle between rays
+  repeated float ranges = 4;          // Range values (meters)
+  repeated float intensities = 5;     // Optional intensity values
+}
+
+// ----------------------------------------------------------------------------
+// 5. NAVIGATION STATUS (5Hz) - Path planning overlay
+// ----------------------------------------------------------------------------
+
+message NavigationStatus {
+  // Current navigation state
+  NavState state = 1;
+
+  // Planned path (list of waypoints)
+  repeated Pose2D path = 10;
+  uint32 current_waypoint_index = 11;
+
+  // Progress
+  float path_length_m = 20;
+  float distance_remaining_m = 21;
+  float estimated_time_remaining_s = 22;
+
+  // Current target
+  Pose2D goal = 30;
+  string goal_description = 31;       // e.g., "Room: Kitchen", "Dock"
+  uint32 target_id = 32;              // Current target ID
+
+  // Target stack info
+  uint32 targets_pending = 40;        // Number of targets in stack
+  uint32 targets_completed = 41;      // Number of targets completed
+
+  // Status messages
+  string status_message = 50;         // Human-readable status
+  string failure_reason = 51;         // If state == FAILED
+}
+
+enum NavState {
+  NAV_STATE_IDLE = 0;                 // No active navigation
+  NAV_STATE_PLANNING = 1;             // Computing path
+  NAV_STATE_NAVIGATING = 2;           // Following path
+  NAV_STATE_ROTATING_TO_HEADING = 3;  // Rotating to final heading at target
+  NAV_STATE_REACHED = 4;              // Goal reached
+  NAV_STATE_FAILED = 5;               // Navigation failed
+  NAV_STATE_CANCELLED = 6;            // Navigation cancelled by user
+}
+
+// ----------------------------------------------------------------------------
+// 6. MAPPING PROGRESS (2Hz) - Autonomous mapping exploration status
+// ----------------------------------------------------------------------------
+
+message MappingProgress {
+  // Current mapping state
+  MappingState state = 1;
+
+  // Statistics
+  uint32 frontiers_found = 10;        // Number of frontiers detected
+  uint32 frontiers_visited = 11;      // Frontiers successfully visited
+  uint32 frontiers_failed = 12;       // Frontiers that couldn't be reached
+  uint32 bumper_obstacles_marked = 13;// Obstacles marked from bumper hits
+
+  // Timing
+  uint64 elapsed_time_ms = 20;        // Time since mapping started
+  uint32 scan_count = 21;             // Number of 360° scans performed
+
+  // Current frontier (when navigating)
+  optional Pose2D current_frontier = 30;
+  optional float frontier_distance = 31;  // Distance to current frontier
+
+  // Map progress
+  float area_explored_m2 = 40;        // Total area explored
+  float exploration_percent = 41;     // Estimated completion (0-100)
+
+  // Status
+  string status_message = 50;         // Human-readable status
+  string failure_reason = 51;         // If state == FAILED
+}
+
+enum MappingState {
+  MAPPING_STATE_IDLE = 0;             // Mapping not active
+  MAPPING_STATE_INITIALIZING = 1;     // Starting hardware (lidar, motors)
+  MAPPING_STATE_ANALYZING = 2;        // Analyzing clearance for rotation
+  MAPPING_STATE_ESCAPING = 3;         // Escaping confined space (dock)
+  MAPPING_STATE_SCANNING = 4;         // Performing 360° scan
+  MAPPING_STATE_FINDING_FRONTIER = 5; // Finding next unexplored area
+  MAPPING_STATE_NAVIGATING = 6;       // Navigating to frontier
+  MAPPING_STATE_COMPLETE = 7;         // All frontiers explored
+  MAPPING_STATE_PAUSED = 8;           // Temporarily paused
+  MAPPING_STATE_FAILED = 9;           // Fatal error occurred
 }

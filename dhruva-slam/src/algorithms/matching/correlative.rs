@@ -178,11 +178,6 @@ impl CorrelativeMatcher {
         }
     }
 
-    /// Get the current configuration.
-    pub fn config(&self) -> &CorrelativeConfig {
-        &self.config
-    }
-
     /// SIMD-accelerated rotation transform of point cloud.
     ///
     /// Rotates source points by theta and stores in preallocated buffers.
@@ -420,24 +415,16 @@ impl ScanMatcher for CorrelativeMatcher {
 
             ScanMatchResult {
                 transform: final_transform,
-                covariance: crate::core::types::Covariance2D::diagonal(
-                    linear_resolution.powi(2),
-                    linear_resolution.powi(2),
-                    angular_resolution.powi(2),
-                ),
                 score: best_score,
                 converged: true,
                 iterations: num_candidates,
-                mse: (1.0 - best_score) * linear_resolution.powi(2),
             }
         } else {
             ScanMatchResult {
                 transform: best_pose,
-                covariance: crate::core::types::Covariance2D::diagonal(1.0, 1.0, 0.5),
                 score: best_score,
                 converged: false,
                 iterations: num_candidates,
-                mse: (1.0 - best_score) * linear_resolution.powi(2),
             }
         }
     }
@@ -583,17 +570,6 @@ mod tests {
         // Use larger epsilon due to coarser grid resolution (0.03)
         assert_relative_eq!(result.transform.x, 0.4, epsilon = 0.1);
         assert_relative_eq!(result.transform.y, 0.4, epsilon = 0.1);
-    }
-
-    #[test]
-    fn test_config_accessor() {
-        let config = CorrelativeConfig {
-            search_window_x: 0.5,
-            ..CorrelativeConfig::default()
-        };
-        let matcher = CorrelativeMatcher::new(config);
-
-        assert_eq!(matcher.config().search_window_x, 0.5);
     }
 
     // ========================================================================

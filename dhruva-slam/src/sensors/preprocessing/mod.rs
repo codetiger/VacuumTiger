@@ -11,18 +11,6 @@
 //! LaserScan → RangeFilter → OutlierFilter → AngularDownsampler → PointCloud2D
 //! ```
 //!
-//! # ScanFilter Trait
-//!
-//! All scan filters implement the [`ScanFilter`] trait for consistent interface:
-//!
-//! ```ignore
-//! use dhruva_slam::preprocessing::{ScanFilter, RangeFilter, RangeFilterConfig};
-//!
-//! let filter = RangeFilter::new(RangeFilterConfig::default());
-//! let filtered = filter.filter(&scan);
-//! println!("Filter '{}' applied", filter.name());
-//! ```
-//!
 //! # Example
 //!
 //! ```ignore
@@ -40,73 +28,15 @@
 
 mod converter;
 mod downsampler;
-mod dynamic_filter;
 mod outlier;
 mod range_filter;
 
 pub use converter::ScanConverter;
 pub use downsampler::{AngularDownsampler, AngularDownsamplerConfig};
-pub use dynamic_filter::{DynamicFilter, DynamicFilterConfig, DynamicFilterStats};
 pub use outlier::{OutlierFilter, OutlierFilterConfig};
 pub use range_filter::{RangeFilter, RangeFilterConfig};
 
 use crate::core::types::{LaserScan, PointCloud2D};
-
-/// Trait for scan filtering operations.
-///
-/// All scan filters implement this trait, providing a consistent interface
-/// for applying filters to laser scans.
-///
-/// # Example
-///
-/// ```ignore
-/// use dhruva_slam::preprocessing::{ScanFilter, RangeFilter};
-///
-/// fn apply_filter<F: ScanFilter>(filter: &F, scan: &LaserScan) -> LaserScan {
-///     println!("Applying filter: {}", filter.name());
-///     filter.filter(scan)
-/// }
-/// ```
-pub trait ScanFilter: Send + Sync {
-    /// Apply the filter to a laser scan, returning a filtered scan.
-    fn filter(&self, scan: &LaserScan) -> LaserScan;
-
-    /// Get the name of this filter for diagnostics.
-    fn name(&self) -> &'static str;
-}
-
-// Implement ScanFilter for RangeFilter
-impl ScanFilter for RangeFilter {
-    fn filter(&self, scan: &LaserScan) -> LaserScan {
-        self.apply(scan)
-    }
-
-    fn name(&self) -> &'static str {
-        "RangeFilter"
-    }
-}
-
-// Implement ScanFilter for OutlierFilter
-impl ScanFilter for OutlierFilter {
-    fn filter(&self, scan: &LaserScan) -> LaserScan {
-        self.apply(scan)
-    }
-
-    fn name(&self) -> &'static str {
-        "OutlierFilter"
-    }
-}
-
-// Implement ScanFilter for AngularDownsampler
-impl ScanFilter for AngularDownsampler {
-    fn filter(&self, scan: &LaserScan) -> LaserScan {
-        self.apply(scan)
-    }
-
-    fn name(&self) -> &'static str {
-        "AngularDownsampler"
-    }
-}
 
 /// Lidar mounting offset from robot center.
 ///
@@ -184,16 +114,6 @@ impl LidarOffset {
         }
     }
 
-    /// Create from simple (x, y, theta) values for backwards compatibility.
-    pub fn from_total(x: f32, y: f32, theta: f32) -> Self {
-        Self {
-            mounting_x: x,
-            mounting_y: y,
-            optical_offset: 0.0,
-            angle_offset: theta,
-        }
-    }
-
     /// Get the mounting X offset.
     #[inline]
     pub fn total_x(&self) -> f32 {
@@ -216,14 +136,6 @@ impl LidarOffset {
     #[inline]
     pub fn radial_offset(&self) -> f32 {
         self.optical_offset
-    }
-
-    /// Check if offset is effectively zero (no transform needed).
-    pub fn is_zero(&self) -> bool {
-        self.total_x().abs() < 1e-6
-            && self.total_y().abs() < 1e-6
-            && self.total_theta().abs() < 1e-6
-            && self.optical_offset.abs() < 1e-6
     }
 }
 
@@ -290,23 +202,6 @@ impl ScanPreprocessor {
         );
 
         // Step 5: Apply lidar mounting offset transform (X/Y translation + rotation)
-        self.apply_mounting_offset(cloud)
-    }
-
-    /// Process scan without downsampling (for debugging/visualization).
-    pub fn process_full_resolution(&self, scan: &LaserScan) -> PointCloud2D {
-        let filtered = self.range_filter.apply(scan);
-        let denoised = self.outlier_filter.apply(&filtered);
-        let cloud =
-            ScanConverter::to_point_cloud_with_offset(&denoised, self.lidar_offset.radial_offset());
-        self.apply_mounting_offset(cloud)
-    }
-
-    /// Apply only range filtering and conversion.
-    pub fn process_minimal(&self, scan: &LaserScan) -> PointCloud2D {
-        let filtered = self.range_filter.apply(scan);
-        let cloud =
-            ScanConverter::to_point_cloud_with_offset(&filtered, self.lidar_offset.radial_offset());
         self.apply_mounting_offset(cloud)
     }
 
@@ -395,17 +290,6 @@ mod tests {
         assert!(cloud.len() < scan.len());
         assert!(cloud.len() > 100);
         assert!(cloud.len() < 300);
-    }
-
-    #[test]
-    fn test_preprocessor_full_resolution() {
-        let scan = create_test_scan(500);
-        let preprocessor = ScanPreprocessor::default();
-
-        let cloud = preprocessor.process_full_resolution(&scan);
-
-        // Should have similar point count (minus invalid/outliers)
-        assert!(cloud.len() > 400); // Most points should survive
     }
 
     #[test]

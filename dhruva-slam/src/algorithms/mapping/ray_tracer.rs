@@ -8,6 +8,8 @@
 //!
 //! Uses Bresenham's line algorithm for efficient integer-only traversal
 //! of grid cells along a ray from robot position to scan endpoint.
+//!
+//! Note: Some utility methods are defined for future use.
 
 use super::OccupancyGrid;
 
@@ -40,11 +42,6 @@ impl Default for RayTracer {
 }
 
 impl RayTracer {
-    /// Create a ray tracer with custom max length.
-    pub fn new(max_ray_length: usize) -> Self {
-        Self { max_ray_length }
-    }
-
     /// Trace a ray from start to end, marking cells.
     ///
     /// All cells along the ray (except the endpoint) are marked as free.
@@ -130,31 +127,6 @@ impl RayTracer {
                 y += sy;
             }
         }
-    }
-
-    /// Trace a ray from start in a given direction for a given distance.
-    ///
-    /// # Arguments
-    ///
-    /// * `grid` - The occupancy grid to update
-    /// * `start_x`, `start_y` - Ray start point in world coordinates
-    /// * `angle` - Ray direction in radians
-    /// * `distance` - Ray length in meters
-    /// * `mark_endpoint` - If true, mark endpoint as occupied
-    pub fn trace_ray_polar(
-        &self,
-        grid: &mut OccupancyGrid,
-        start_x: f32,
-        start_y: f32,
-        angle: f32,
-        distance: f32,
-        mark_endpoint: bool,
-    ) {
-        let (sin_a, cos_a) = angle.sin_cos();
-        let end_x = start_x + distance * cos_a;
-        let end_y = start_y + distance * sin_a;
-
-        self.trace_ray(grid, start_x, start_y, end_x, end_y, mark_endpoint);
     }
 }
 
@@ -326,50 +298,5 @@ mod tests {
         // Endpoint should NOT be marked
         let (ex, ey) = grid.world_to_cell(2.0, 0.0).unwrap();
         assert!(grid.get_log_odds(ex, ey) == 0.0 || grid.get_log_odds(ex, ey) < 0.0);
-    }
-
-    #[test]
-    fn test_trace_ray_polar() {
-        let mut grid = create_test_grid();
-        let tracer = RayTracer::default();
-
-        use std::f32::consts::FRAC_PI_4;
-
-        // Trace ray at 45 degrees for 1.5m
-        tracer.trace_ray_polar(&mut grid, 0.0, 0.0, FRAC_PI_4, 1.5, true);
-
-        // Should have marked some cells as free
-        let (free, _, occupied) = grid.count_cells();
-        assert!(free > 0, "Should have marked free cells");
-        assert!(occupied > 0, "Should have marked endpoint");
-    }
-
-    #[test]
-    fn test_trace_multiple_rays() {
-        let mut grid = create_test_grid();
-        let tracer = RayTracer::default();
-
-        // Trace several rays from origin
-        for i in 0..8 {
-            let angle = (i as f32) * std::f32::consts::FRAC_PI_4;
-            tracer.trace_ray_polar(&mut grid, 0.0, 0.0, angle, 2.0, true);
-        }
-
-        // Should have marked a pattern of free and occupied cells
-        let (free, _, occupied) = grid.count_cells();
-        assert!(free > 10, "Should have many free cells");
-        assert!(occupied >= 8, "Should have at least 8 occupied endpoints");
-    }
-
-    #[test]
-    fn test_max_ray_length() {
-        let mut grid = create_test_grid();
-        let tracer = RayTracer::new(10); // Very short max length
-
-        // Try to trace a long ray
-        tracer.trace_ray(&mut grid, 0.0, 0.0, 100.0, 0.0, true);
-
-        // Should not crash, and should have limited effect
-        // (grid would need to resize for the full ray)
     }
 }

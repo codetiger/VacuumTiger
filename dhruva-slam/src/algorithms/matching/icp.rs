@@ -27,46 +27,6 @@ use super::robust_kernels::RobustKernel;
 use super::{ScanMatchResult, ScanMatcher};
 use crate::core::types::{Point2D, PointCloud2D, Pose2D};
 
-/// A cached k-d tree for efficient nearest neighbor queries.
-///
-/// This allows reusing the same tree across multiple scan matching operations
-/// when matching against the same target point cloud (e.g., submap matching).
-#[derive(Debug)]
-pub struct CachedKdTree {
-    tree: KdTree<f32, 2>,
-    /// Number of points in the tree (for validation).
-    point_count: usize,
-}
-
-impl CachedKdTree {
-    /// Build a k-d tree from a point cloud.
-    pub fn from_cloud(cloud: &PointCloud2D) -> Self {
-        let mut tree: KdTree<f32, 2> = KdTree::new();
-        for i in 0..cloud.len() {
-            tree.add(&[cloud.xs[i], cloud.ys[i]], i as u64);
-        }
-        Self {
-            tree,
-            point_count: cloud.len(),
-        }
-    }
-
-    /// Get a reference to the internal k-d tree.
-    pub fn tree(&self) -> &KdTree<f32, 2> {
-        &self.tree
-    }
-
-    /// Get the number of points in the tree.
-    pub fn len(&self) -> usize {
-        self.point_count
-    }
-
-    /// Check if the tree is empty.
-    pub fn is_empty(&self) -> bool {
-        self.point_count == 0
-    }
-}
-
 /// Configuration for Point-to-Point ICP.
 #[derive(Debug, Clone)]
 pub struct IcpConfig {
@@ -167,11 +127,6 @@ impl PointToPointIcp {
             correspondence_buffer: Vec::with_capacity(Self::TYPICAL_SCAN_POINTS),
             transformed_source: PointCloud2D::with_capacity(Self::TYPICAL_SCAN_POINTS),
         }
-    }
-
-    /// Get the current configuration.
-    pub fn config(&self) -> &IcpConfig {
-        &self.config
     }
 
     /// Compute robust kernel weight for a given residual.
@@ -412,8 +367,6 @@ impl ScanMatcher for PointToPointIcp {
                 score: 0.5,                // Medium confidence
                 converged: true,           // Don't count as failure
                 iterations: 0,
-                mse: f32::MAX,
-                covariance: crate::core::types::Covariance2D::diagonal(0.5, 0.5, 0.2),
             };
         }
 
@@ -453,12 +406,7 @@ impl ScanMatcher for PointToPointIcp {
                 // If we have a good previous result, return that
                 if best_mse < f32::MAX {
                     let score = self.mse_to_score(best_mse);
-                    return ScanMatchResult::success(
-                        best_transform,
-                        score,
-                        best_iterations,
-                        best_mse,
-                    );
+                    return ScanMatchResult::success(best_transform, score, best_iterations);
                 }
                 return ScanMatchResult::failed();
             }
@@ -521,7 +469,7 @@ impl ScanMatcher for PointToPointIcp {
                     current_transform
                 };
 
-                return ScanMatchResult::success(final_transform, score, iterations, mse);
+                return ScanMatchResult::success(final_transform, score, iterations);
             }
 
             // Check if MSE is diverging (consecutive check)
@@ -531,12 +479,7 @@ impl ScanMatcher for PointToPointIcp {
                 if consecutive_increases >= MAX_CONSECUTIVE_INCREASES {
                     // MSE increased 3 times in a row - return best result found
                     let score = self.mse_to_score(best_mse);
-                    return ScanMatchResult::success(
-                        best_transform,
-                        score,
-                        best_iterations,
-                        best_mse,
-                    );
+                    return ScanMatchResult::success(best_transform, score, best_iterations);
                 }
             } else {
                 consecutive_increases = 0; // Reset on any improvement
@@ -550,25 +493,21 @@ impl ScanMatcher for PointToPointIcp {
         // Consider it converged if MSE is reasonable
         // 0.04 = 4cm² = 2cm RMSE - industry standard for indoor lidar
         if best_mse < 0.04 {
-            ScanMatchResult::success(best_transform, score, best_iterations, best_mse)
+            ScanMatchResult::success(best_transform, score, best_iterations)
         } else if best_mse < 0.1 {
             // Marginal convergence - return with lower confidence
             ScanMatchResult {
                 transform: best_transform,
-                covariance: crate::core::types::Covariance2D::diagonal(0.05, 0.05, 0.02),
                 score,
                 converged: true, // Still consider converged
                 iterations: best_iterations,
-                mse: best_mse,
             }
         } else {
             ScanMatchResult {
                 transform: best_transform,
-                covariance: crate::core::types::Covariance2D::diagonal(0.1, 0.1, 0.05),
                 score,
                 converged: false,
                 iterations: best_iterations,
-                mse: best_mse,
             }
         }
     }
@@ -706,19 +645,6 @@ mod tests {
 
         let result2 = icp.match_scans(&cloud, &empty, &Pose2D::identity());
         assert!(!result2.converged);
-    }
-
-    #[test]
-    fn test_config_accessors() {
-        let config = IcpConfig {
-            max_iterations: 100,
-            translation_epsilon: 0.0001,
-            ..IcpConfig::default()
-        };
-        let icp = PointToPointIcp::new(config);
-
-        assert_eq!(icp.config().max_iterations, 100);
-        assert_eq!(icp.config().translation_epsilon, 0.0001);
     }
 
     #[test]

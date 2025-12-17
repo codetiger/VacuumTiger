@@ -1,17 +1,25 @@
 //! Online SLAM implementation.
 //!
-//! Combines scan matching, submap management, and keyframe selection into
-//! a unified real-time SLAM system.
-
-use std::time::Instant;
+//! Combines scan matching, submap management, keyframe selection, and
+//! loop closure detection into a unified real-time SLAM system.
+//!
+//! # Loop Closure Integration
+//!
+//! When loop closure is enabled, the system:
+//! 1. Builds a pose graph as keyframes are created
+//! 2. Uses LiDAR-IRIS descriptors for fast place recognition
+//! 3. Verifies candidates with ICP scan matching
+//! 4. Optimizes the pose graph when closures are detected
+//! 5. Corrects keyframe poses after optimization
 
 use crate::algorithms::mapping::{OccupancyGrid, OccupancyGridConfig};
 use crate::algorithms::matching::{
-    HybridP2LMatcher, HybridP2LMatcherConfig, ScanMatchResult, ScanMatcher,
+    DynMatcher, DynMatcherConfig, MatcherType, ScanMatchResult, ScanMatcher,
 };
 use crate::core::types::{Covariance2D, PointCloud2D, Pose2D};
-use crate::io::streaming::{
-    LoopClosureStats, MappingStats, ScanMatchStats, SlamDiagnosticsMessage, TimingBreakdown,
+use crate::engine::graph::{
+    GraphOptimizer, GraphOptimizerConfig, Information2D, LoopClosureCandidate, LoopDetector,
+    LoopDetectorConfig, PoseGraph, PoseNode,
 };
 
 use super::SlamEngine;
@@ -30,46 +38,13 @@ pub enum SlamMode {
 }
 
 /// SLAM status information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SlamStatus {
-    /// Current operating mode.
-    pub mode: SlamMode,
-
-    /// Number of scans processed.
-    pub num_scans: u64,
-
     /// Number of keyframes created.
     pub num_keyframes: usize,
 
-    /// Number of submaps.
-    pub num_submaps: usize,
-
-    /// Number of finished submaps.
-    pub num_finished_submaps: usize,
-
-    /// Last scan match quality score (0-1).
-    pub last_match_score: f32,
-
     /// Whether the robot is considered "lost" (poor localization).
     pub is_lost: bool,
-
-    /// Memory usage in bytes.
-    pub memory_usage: usize,
-}
-
-impl Default for SlamStatus {
-    fn default() -> Self {
-        Self {
-            mode: SlamMode::Idle,
-            num_scans: 0,
-            num_keyframes: 0,
-            num_submaps: 0,
-            num_finished_submaps: 0,
-            last_match_score: 0.0,
-            is_lost: false,
-            memory_usage: 0,
-        }
-    }
 }
 
 /// Result of processing a scan.
@@ -107,6 +82,37 @@ impl Default for SlamResult {
     }
 }
 
+/// Configuration for loop closure detection and optimization.
+#[derive(Debug, Clone)]
+pub struct LoopClosureConfig {
+    /// Enable loop closure detection.
+    pub enabled: bool,
+
+    /// Check for loop closures every N keyframes.
+    pub detection_interval: usize,
+
+    /// Number of loop closures required to trigger optimization.
+    pub optimization_threshold: usize,
+
+    /// Loop detector configuration.
+    pub detector: LoopDetectorConfig,
+
+    /// Graph optimizer configuration.
+    pub optimizer: GraphOptimizerConfig,
+}
+
+impl Default for LoopClosureConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            detection_interval: 5,
+            optimization_threshold: 3,
+            detector: LoopDetectorConfig::default(),
+            optimizer: GraphOptimizerConfig::default(),
+        }
+    }
+}
+
 /// Configuration for online SLAM.
 #[derive(Debug, Clone)]
 pub struct OnlineSlamConfig {
@@ -116,12 +122,11 @@ pub struct OnlineSlamConfig {
     /// Submap manager configuration.
     pub submap: SubmapManagerConfig,
 
-    /// Scan-to-scan matcher configuration (Correlative + P2L ICP).
-    /// Same as slam_benchmark for consistent results.
-    pub matcher: HybridP2LMatcherConfig,
+    /// Matcher type to use (selects algorithm at runtime).
+    pub matcher_type: MatcherType,
 
-    /// Submap matcher configuration (Correlative + P2L ICP for scan-to-submap).
-    pub submap_matcher: HybridP2LMatcherConfig,
+    /// Scan-to-scan matcher configuration.
+    pub matcher: DynMatcherConfig,
 
     /// Global map configuration.
     pub global_map: OccupancyGridConfig,
@@ -146,9 +151,8 @@ pub struct OnlineSlamConfig {
     /// Minimum points in scan to process.
     pub min_scan_points: usize,
 
-    /// Encoder weight for initial guess (0.0 = identity, 1.0 = full odometry).
-    /// Higher values trust encoder more for initial guess.
-    pub encoder_weight: f32,
+    /// Loop closure configuration.
+    pub loop_closure: LoopClosureConfig,
 }
 
 impl Default for OnlineSlamConfig {
@@ -156,9 +160,9 @@ impl Default for OnlineSlamConfig {
         Self {
             keyframe: KeyframeManagerConfig::default(),
             submap: SubmapManagerConfig::default(),
-            // Use HybridP2L (same as slam_benchmark) for consistent results
-            matcher: HybridP2LMatcherConfig::default(),
-            submap_matcher: HybridP2LMatcherConfig::default(),
+            // Use HybridP2L by default (best accuracy for structured environments)
+            matcher_type: MatcherType::HybridP2l,
+            matcher: DynMatcherConfig::default(),
             global_map: OccupancyGridConfig::default(),
             min_match_score: 0.3,
             lost_threshold: 0.1,
@@ -167,7 +171,7 @@ impl Default for OnlineSlamConfig {
             // expects relative transform
             use_submap_matching: false,
             min_scan_points: 50,
-            encoder_weight: 0.8, // Trust encoder 80% for initial guess
+            loop_closure: LoopClosureConfig::default(),
         }
     }
 }
@@ -178,6 +182,8 @@ impl Default for OnlineSlamConfig {
 /// - Scan matching for pose refinement
 /// - Submap-based local mapping
 /// - Keyframe selection for loop closure
+/// - Loop closure detection with LiDAR-IRIS descriptors
+/// - Pose graph optimization for global consistency
 pub struct OnlineSlam {
     config: OnlineSlamConfig,
 
@@ -193,12 +199,11 @@ pub struct OnlineSlam {
     /// Submap manager.
     submaps: SubmapManager,
 
-    /// Scan-to-scan matcher (Correlative + Point-to-Line ICP).
-    /// Same as slam_benchmark for consistent results.
-    matcher: HybridP2LMatcher,
+    /// Scan-to-scan matcher (runtime-selected algorithm).
+    matcher: DynMatcher,
 
-    /// Scan-to-submap matcher (Correlative + Point-to-Line ICP for rotation handling).
-    submap_matcher: HybridP2LMatcher,
+    /// Scan-to-submap matcher (runtime-selected algorithm).
+    submap_matcher: DynMatcher,
 
     /// Global map (built on demand).
     global_map: Option<OccupancyGrid>,
@@ -231,19 +236,37 @@ pub struct OnlineSlam {
     last_finished_submaps: usize,
 
     // ========================================================================
-    // Diagnostics tracking
+    // Loop Closure Components
     // ========================================================================
-    /// Last timing breakdown.
-    last_timing: TimingBreakdown,
+    /// Loop closure detector (uses LiDAR-IRIS descriptors).
+    loop_detector: Option<LoopDetector>,
 
-    /// Last scan match stats.
-    last_scan_match_stats: ScanMatchStats,
+    /// Pose graph for loop closure optimization.
+    pose_graph: PoseGraph,
 
-    /// Running average of total cycle time.
-    avg_total_time_us: f32,
+    /// Graph optimizer for pose graph.
+    graph_optimizer: GraphOptimizer,
 
-    /// Number of samples for averaging.
-    timing_sample_count: u64,
+    /// Pending loop closure candidates waiting for optimization.
+    pending_closures: Vec<LoopClosureCandidate>,
+
+    /// Previous keyframe pose (for computing odometry edges).
+    prev_keyframe_pose: Option<Pose2D>,
+
+    /// Total loop closures detected.
+    total_loop_closures: usize,
+
+    /// Total optimizations performed.
+    total_optimizations: usize,
+
+    // ========================================================================
+    // Localization Components
+    // ========================================================================
+    /// Reference map for localization mode (loaded via EnableMap command).
+    reference_map: Option<OccupancyGrid>,
+
+    /// Cached point cloud of reference map for efficient scan matching.
+    reference_pointcloud: Option<PointCloud2D>,
 }
 
 impl OnlineSlam {
@@ -252,16 +275,19 @@ impl OnlineSlam {
 
     /// Create a new online SLAM instance.
     pub fn new(config: OnlineSlamConfig) -> Self {
-        // Use Correlative + Point-to-Line ICP for scan-to-scan matching:
-        // - Same as slam_benchmark for consistent results
-        // - Correlative handles large initial errors (especially rotation)
-        // - Point-to-Line ICP provides sub-cm accuracy for structured environments
-        let matcher = HybridP2LMatcher::from_config(config.matcher.clone());
+        // Create scan-to-scan matcher with runtime-selected algorithm
+        let matcher = DynMatcher::new(config.matcher_type, config.matcher.clone());
 
-        // Use Correlative + Point-to-Line ICP for submap matching:
-        // - Correlative handles large initial errors (especially rotation)
-        // - Point-to-Line ICP provides sub-cm accuracy for structured environments
-        let submap_matcher = HybridP2LMatcher::from_config(config.submap_matcher.clone());
+        // Create scan-to-submap matcher with same algorithm
+        let submap_matcher = DynMatcher::new(config.matcher_type, config.matcher.clone());
+
+        // Initialize loop closure components if enabled
+        let loop_detector = if config.loop_closure.enabled {
+            Some(LoopDetector::new(config.loop_closure.detector.clone()))
+        } else {
+            None
+        };
+        let graph_optimizer = GraphOptimizer::new(config.loop_closure.optimizer.clone());
 
         // Pre-allocate scan buffers to avoid reallocation during hot path
         Self {
@@ -283,12 +309,18 @@ impl OnlineSlam {
             is_lost: false,
             last_match_score: 1.0,
             last_finished_submaps: 0,
+            // Loop closure fields
+            loop_detector,
+            pose_graph: PoseGraph::new(),
+            graph_optimizer,
+            pending_closures: Vec::new(),
+            prev_keyframe_pose: None,
+            total_loop_closures: 0,
+            total_optimizations: 0,
+            // Localization fields
+            reference_map: None,
+            reference_pointcloud: None,
             config,
-            // Diagnostics fields
-            last_timing: TimingBreakdown::default(),
-            last_scan_match_stats: ScanMatchStats::default(),
-            avg_total_time_us: 0.0,
-            timing_sample_count: 0,
         }
     }
 
@@ -300,6 +332,34 @@ impl OnlineSlam {
     /// Set the operating mode.
     pub fn set_mode(&mut self, mode: SlamMode) {
         self.mode = mode;
+    }
+
+    /// Set a reference map for localization mode.
+    ///
+    /// When set, the engine will match scans against this map instead of
+    /// scan-to-scan matching in Localization mode.
+    pub fn set_reference_map(&mut self, map: OccupancyGrid) {
+        // Build point cloud representation for scan matching
+        let pointcloud = map.as_pointcloud();
+        log::info!(
+            "Reference map set: {}x{} grid -> {} occupied points",
+            map.width(),
+            map.height(),
+            pointcloud.len()
+        );
+        self.reference_pointcloud = Some(pointcloud);
+        self.reference_map = Some(map);
+    }
+
+    /// Clear the reference map.
+    pub fn clear_reference_map(&mut self) {
+        self.reference_map = None;
+        self.reference_pointcloud = None;
+    }
+
+    /// Check if a reference map is loaded.
+    pub fn has_reference_map(&self) -> bool {
+        self.reference_pointcloud.is_some()
     }
 
     /// Get keyframe manager.
@@ -333,6 +393,56 @@ impl OnlineSlam {
     fn rebuild_global_map(&mut self) {
         self.last_finished_submaps = self.submaps.finished_submaps().count();
         self.global_map = Some(self.submaps.global_map(&self.config.global_map));
+    }
+
+    /// Mark a bumper obstacle in the global map.
+    ///
+    /// When a bumper is triggered, this marks cells in front of the robot as
+    /// occupied. This ensures obstacles detected by physical contact are
+    /// reflected in the map for future planning.
+    ///
+    /// Returns true if the obstacle was marked, false if mapping mode is not
+    /// active or the map hasn't been built yet.
+    pub fn mark_bumper_obstacle(
+        &mut self,
+        robot_x: f32,
+        robot_y: f32,
+        robot_theta: f32,
+        bumper_left: bool,
+        bumper_right: bool,
+        robot_radius: f32,
+    ) -> bool {
+        // Only mark obstacles when we're mapping
+        if self.mode != SlamMode::Mapping {
+            return false;
+        }
+
+        // Ensure global map exists
+        if self.global_map.is_none() {
+            self.rebuild_global_map();
+        }
+
+        if let Some(ref mut map) = self.global_map {
+            map.mark_bumper_obstacle(
+                robot_x,
+                robot_y,
+                robot_theta,
+                bumper_left,
+                bumper_right,
+                robot_radius,
+            );
+            log::debug!(
+                "Marked bumper obstacle at ({:.2}, {:.2}) theta={:.2}rad, left={}, right={}",
+                robot_x,
+                robot_y,
+                robot_theta,
+                bumper_left,
+                bumper_right
+            );
+            true
+        } else {
+            false
+        }
     }
 
     /// Match scan to current submap.
@@ -406,6 +516,50 @@ impl OnlineSlam {
         }
     }
 
+    /// Match scan to reference map for localization.
+    ///
+    /// Used in Localization mode when a reference map has been loaded via
+    /// `set_reference_map()`. The scan is matched against the cached point cloud
+    /// representation of the reference map.
+    ///
+    /// Returns the corrected pose in the map frame if matching succeeds.
+    fn match_to_reference_map(
+        &mut self,
+        scan: &PointCloud2D,
+        predicted_pose: &Pose2D,
+    ) -> Option<ScanMatchResult> {
+        let reference = self.reference_pointcloud.as_ref()?;
+
+        if reference.len() < self.config.min_scan_points {
+            log::warn!(
+                "Reference map has too few points ({} < {})",
+                reference.len(),
+                self.config.min_scan_points
+            );
+            return None;
+        }
+
+        // Transform scan to map frame using predicted pose for matching
+        let transformed_scan = scan.transform(predicted_pose);
+
+        // Match transformed scan against reference map
+        // Initial guess is identity since scan is already in map frame
+        let result = self
+            .matcher
+            .match_scans(&transformed_scan, reference, &Pose2D::identity());
+
+        if result.converged && result.score >= self.config.min_match_score {
+            // Combine predicted pose with the correction from matching
+            let corrected_pose = predicted_pose.compose(&result.transform);
+            Some(ScanMatchResult {
+                transform: corrected_pose,
+                ..result
+            })
+        } else {
+            None
+        }
+    }
+
     /// Process pose update from scan matching.
     ///
     /// The scan match result transform represents the robot motion from previous to current.
@@ -416,6 +570,10 @@ impl OnlineSlam {
     ///
     /// Uses a threshold-based approach to blend between scan match and odometry
     /// to avoid erratic pose jumps from small score variations.
+    ///
+    /// Also includes a sanity check to reject scan matches that differ too much
+    /// from odometry, which can happen in symmetric environments or during
+    /// fast rotation where the matcher finds wrong local minima.
     fn apply_scan_match(&mut self, match_result: &ScanMatchResult, odom_delta: &Pose2D) -> Pose2D {
         let odom_pose = self.current_pose.compose(odom_delta);
 
@@ -450,38 +608,172 @@ impl OnlineSlam {
         &self.config
     }
 
-    /// Get current diagnostics for visualization/debugging.
+    // ========================================================================
+    // Loop Closure Methods
+    // ========================================================================
+
+    /// Process a new keyframe for loop closure detection.
     ///
-    /// Returns a snapshot of timing breakdowns, scan matching stats,
-    /// mapping stats, and loop closure stats.
-    pub fn diagnostics(&self, timestamp_us: u64) -> SlamDiagnosticsMessage {
-        // Get mapping stats from submap manager
-        let mapping = MappingStats {
-            cells_updated: 0, // TODO: Track this in submaps
-            map_size_bytes: self.submaps.memory_usage(),
-            occupied_cells: 0, // Could compute from global map
-            free_cells: 0,
-            active_submap_id: self.submaps.active_submap().map(|s| s.id),
-            num_submaps: self.submaps.len(),
-        };
+    /// This method:
+    /// 1. Adds the keyframe to the pose graph
+    /// 2. Adds an odometry edge from the previous keyframe
+    /// 3. Adds the scan to the descriptor database
+    /// 4. Detects loop closures (every N keyframes)
+    /// 5. Triggers optimization when enough closures are found
+    fn process_keyframe_for_loop_closure(
+        &mut self,
+        kf_id: u64,
+        scan: &PointCloud2D,
+        pose: &Pose2D,
+        timestamp_us: u64,
+    ) {
+        // 1. Add node to pose graph
+        let node = PoseNode::new(kf_id, *pose, timestamp_us).with_keyframe(kf_id);
+        self.pose_graph.add_node_full(node);
 
-        // Loop closure stats (placeholder for now - will be populated when loop detector is added)
-        let loop_closure = LoopClosureStats {
-            candidates_evaluated: 0,
-            closures_accepted: 0,
-            last_closure_score: 0.0,
-            pose_graph_nodes: self.keyframes.len(),
-            pose_graph_edges: 0, // Will be populated when pose graph is integrated
-        };
-
-        SlamDiagnosticsMessage {
-            timestamp_us,
-            timing: self.last_timing.clone(),
-            scan_match: self.last_scan_match_stats.clone(),
-            particle_filter: None, // Will be populated when MCL is active
-            mapping,
-            loop_closure,
+        // 2. Add odometry edge from previous keyframe
+        if let Some(prev_pose) = self.prev_keyframe_pose {
+            let odom_delta = prev_pose.inverse().compose(pose);
+            // Use information matrix based on scan match quality
+            let info = Information2D::from_std_dev(0.05, 0.05, 0.03); // ~5cm, ~2deg
+            self.pose_graph
+                .add_odometry_edge(kf_id - 1, kf_id, odom_delta, info);
+        } else {
+            // First keyframe - fix it as anchor
+            self.pose_graph.fix_first_node();
         }
+        self.prev_keyframe_pose = Some(*pose);
+
+        // 3. Add scan to descriptor database
+        if let Some(detector) = &mut self.loop_detector {
+            detector.add_keyframe(kf_id, scan);
+        }
+
+        // 4. Detect loop closures (every detection_interval keyframes)
+        let detection_interval = self.config.loop_closure.detection_interval;
+        if kf_id > 0 && (kf_id as usize).is_multiple_of(detection_interval) {
+            self.detect_loop_closures(kf_id, scan, pose);
+        }
+
+        // 5. Trigger optimization if enough closures pending
+        let optimization_threshold = self.config.loop_closure.optimization_threshold;
+        if self.pending_closures.len() >= optimization_threshold {
+            self.optimize_pose_graph();
+        }
+    }
+
+    /// Detect loop closures for a keyframe.
+    fn detect_loop_closures(&mut self, query_id: u64, scan: &PointCloud2D, pose: &Pose2D) {
+        let keyframes = self.keyframes.keyframes();
+
+        // Use the detector to find candidates
+        if let Some(detector) = &mut self.loop_detector {
+            let candidates = detector.detect(query_id, scan, pose, keyframes);
+
+            for candidate in candidates {
+                log::info!(
+                    "Loop closure detected: {} -> {} (score: {:.2})",
+                    candidate.query_id,
+                    candidate.match_id,
+                    candidate.confidence
+                );
+
+                // Add loop closure edge to pose graph
+                self.pose_graph.add_loop_closure_edge(
+                    candidate.query_id,
+                    candidate.match_id,
+                    candidate.relative_pose,
+                    candidate.information,
+                    candidate.confidence,
+                );
+
+                self.total_loop_closures += 1;
+                self.pending_closures.push(candidate);
+            }
+        }
+    }
+
+    /// Optimize the pose graph and apply corrections.
+    fn optimize_pose_graph(&mut self) {
+        if self.pose_graph.num_nodes() < 3 {
+            return;
+        }
+
+        log::info!(
+            "Optimizing pose graph: {} nodes, {} edges ({} loop closures)",
+            self.pose_graph.num_nodes(),
+            self.pose_graph.num_edges(),
+            self.pose_graph.num_loop_closures()
+        );
+
+        let result = self.graph_optimizer.optimize(&mut self.pose_graph);
+
+        if result.converged {
+            log::info!(
+                "Optimization converged in {} iterations (error: {:.4} -> {:.4})",
+                result.iterations,
+                result.initial_error,
+                result.final_error
+            );
+
+            // Apply corrections to keyframes and current pose
+            self.apply_pose_corrections();
+            self.total_optimizations += 1;
+        } else {
+            log::warn!(
+                "Optimization did not converge: {:?}",
+                result.termination_reason
+            );
+        }
+
+        // Clear pending closures after optimization
+        self.pending_closures.clear();
+    }
+
+    /// Apply pose corrections from optimized graph to keyframes.
+    fn apply_pose_corrections(&mut self) {
+        // Update keyframe poses from optimized graph
+        for node in self.pose_graph.nodes() {
+            if let Some(kf_id) = node.keyframe_id
+                && let Some(kf) = self.keyframes.get_mut(kf_id)
+            {
+                kf.pose = node.pose;
+            }
+        }
+
+        // Update current pose if we have a latest node
+        if let Some(latest) = self.pose_graph.latest_node() {
+            self.current_pose = latest.pose;
+            self.prev_keyframe_pose = Some(latest.pose);
+        }
+
+        // Invalidate global map cache (will be rebuilt with corrected poses)
+        self.global_map = None;
+
+        log::debug!(
+            "Applied pose corrections to {} keyframes",
+            self.keyframes.len()
+        );
+    }
+
+    /// Get the pose graph (for inspection/debugging).
+    pub fn pose_graph(&self) -> &PoseGraph {
+        &self.pose_graph
+    }
+
+    /// Get total loop closures detected.
+    pub fn total_loop_closures(&self) -> usize {
+        self.total_loop_closures
+    }
+
+    /// Get total optimizations performed.
+    pub fn total_optimizations(&self) -> usize {
+        self.total_optimizations
+    }
+
+    /// Check if loop closure is enabled.
+    pub fn loop_closure_enabled(&self) -> bool {
+        self.loop_detector.is_some()
     }
 }
 
@@ -492,11 +784,7 @@ impl SlamEngine for OnlineSlam {
         odom_delta: &Pose2D,
         timestamp_us: u64,
     ) -> SlamResult {
-        let cycle_start = Instant::now();
         let mut result = SlamResult::default();
-
-        // Initialize timing breakdown
-        let mut timing = TimingBreakdown::default();
 
         if self.mode == SlamMode::Idle {
             return result;
@@ -514,43 +802,18 @@ impl SlamEngine for OnlineSlam {
         // Predict pose from odometry
         let predicted_pose = self.current_pose.compose(odom_delta);
 
-        // =========== Scan Matching (timed) ===========
-        let match_start = Instant::now();
-        let match_result =
-            if self.config.use_submap_matching && self.submaps.active_submap().is_some() {
-                self.match_to_submap(scan, &predicted_pose)
+        // Select matching strategy based on mode and available data
+        let (match_result, is_localization_match) =
+            if self.mode == SlamMode::Localization && self.reference_pointcloud.is_some() {
+                // Localization mode with reference map: match against reference
+                (self.match_to_reference_map(scan, &predicted_pose), true)
+            } else if self.config.use_submap_matching && self.submaps.active_submap().is_some() {
+                // Mapping mode with submap matching
+                (self.match_to_submap(scan, &predicted_pose), false)
             } else {
-                self.match_to_previous_scan(scan, odom_delta)
+                // Default: scan-to-scan matching
+                (self.match_to_previous_scan(scan, odom_delta), false)
             };
-        timing.scan_matching_us = match_start.elapsed().as_micros() as u64;
-
-        // Update scan match stats for diagnostics
-        // Use static strings to avoid allocation in hot path
-        const METHOD_SUBMAP_P2L: &str = "submap_p2l";
-        const METHOD_MULTI_RES: &str = "multi_res_icp";
-        const METHOD_NONE: &str = "none";
-
-        if let Some(ref mr) = match_result {
-            self.last_scan_match_stats = ScanMatchStats {
-                method: if self.config.use_submap_matching {
-                    METHOD_SUBMAP_P2L
-                } else {
-                    METHOD_MULTI_RES
-                }
-                .into(),
-                iterations: mr.iterations,
-                score: mr.score,
-                mse: mr.mse,
-                converged: mr.converged,
-                correspondences: 0, // TODO: Track this in matcher
-                inlier_ratio: 0.0,  // TODO: Track this in matcher
-            };
-        } else {
-            self.last_scan_match_stats = ScanMatchStats {
-                method: METHOD_NONE.into(),
-                ..Default::default()
-            };
-        }
 
         // Apply match result or use odometry
         let refined_pose = if let Some(ref mr) = match_result {
@@ -560,8 +823,35 @@ impl SlamEngine for OnlineSlam {
             self.is_lost = mr.score < self.config.lost_threshold;
 
             if mr.score >= self.config.min_match_score {
-                self.apply_scan_match(mr, odom_delta)
+                if is_localization_match {
+                    // Localization mode: match_to_reference_map returns absolute pose
+                    mr.transform
+                } else {
+                    // Mapping mode: apply delta transform
+                    let result_pose = self.apply_scan_match(mr, odom_delta);
+
+                    // Debug: log every 10th scan to track drift
+                    if self.num_scans.is_multiple_of(10) {
+                        let odom_theta_deg = odom_delta.theta.to_degrees();
+                        let match_theta_deg = mr.transform.theta.to_degrees();
+                        let diff_theta_deg = (mr.transform.theta - odom_delta.theta).to_degrees();
+                        log::debug!(
+                            "Scan {}: odom_dθ={:.2}° match_dθ={:.2}° diff={:.2}° score={:.2}",
+                            self.num_scans,
+                            odom_theta_deg,
+                            match_theta_deg,
+                            diff_theta_deg,
+                            mr.score
+                        );
+                    }
+                    result_pose
+                }
             } else {
+                log::debug!(
+                    "Scan {}: low score {:.2}, using odometry",
+                    self.num_scans,
+                    mr.score
+                );
                 predicted_pose
             }
         } else {
@@ -579,33 +869,39 @@ impl SlamEngine for OnlineSlam {
         self.covariance = Covariance2D::diagonal(position_var, position_var, theta_var);
         result.covariance = self.covariance;
 
-        // =========== Map Update (timed) ===========
-        let map_start = Instant::now();
+        // Map update in mapping mode
         if self.mode == SlamMode::Mapping {
             let old_submap_count = self.submaps.len();
             let submap_id = self.submaps.process_scan(scan, &refined_pose, timestamp_us);
             result.new_submap = self.submaps.len() > old_submap_count;
 
-            // =========== Keyframe Check (timed) ===========
-            let keyframe_start = Instant::now();
+            // Keyframe check
             if self
                 .keyframes
                 .should_create_keyframe(&refined_pose, timestamp_us)
             {
                 self.keyframes
                     .create_keyframe(refined_pose, scan.clone(), timestamp_us, submap_id);
-                self.submaps
-                    .add_keyframe_to_active(self.keyframes.len() as u64 - 1);
+                let kf_id = self.keyframes.len() as u64 - 1;
+                self.submaps.add_keyframe_to_active(kf_id);
                 result.keyframe_created = true;
+
+                // Loop closure integration
+                if self.loop_detector.is_some() {
+                    self.process_keyframe_for_loop_closure(
+                        kf_id,
+                        scan,
+                        &refined_pose,
+                        timestamp_us,
+                    );
+                }
             }
-            timing.keyframe_check_us = keyframe_start.elapsed().as_micros() as u64;
 
             // Invalidate cached global map
             if result.keyframe_created || result.new_submap {
                 self.global_map = None;
             }
         }
-        timing.map_update_us = map_start.elapsed().as_micros() as u64;
 
         // Store scan for next iteration using double-buffer swap
         // Copy into the current buffer slot, then swap indices
@@ -623,22 +919,6 @@ impl SlamEngine for OnlineSlam {
         self.current_scan_idx = 1 - self.current_scan_idx;
         self.has_previous_scan = true;
 
-        // =========== Finalize Timing ===========
-        timing.total_us = cycle_start.elapsed().as_micros() as u64;
-
-        // Update running average
-        self.timing_sample_count += 1;
-        let alpha = 0.1; // Exponential moving average factor
-        self.avg_total_time_us = if self.timing_sample_count == 1 {
-            timing.total_us as f32
-        } else {
-            self.avg_total_time_us * (1.0 - alpha) + timing.total_us as f32 * alpha
-        };
-        timing.avg_total_us = self.avg_total_time_us;
-
-        // Store timing for diagnostics query
-        self.last_timing = timing;
-
         result
     }
 
@@ -646,25 +926,10 @@ impl SlamEngine for OnlineSlam {
         self.current_pose
     }
 
-    fn map(&self) -> &OccupancyGrid {
-        // Return empty map if global map not built
-        // (caller should use global_map() method instead)
-        static EMPTY_MAP: std::sync::OnceLock<OccupancyGrid> = std::sync::OnceLock::new();
-        self.global_map.as_ref().unwrap_or_else(|| {
-            EMPTY_MAP.get_or_init(|| OccupancyGrid::new(OccupancyGridConfig::default()))
-        })
-    }
-
     fn status(&self) -> SlamStatus {
         SlamStatus {
-            mode: self.mode,
-            num_scans: self.num_scans,
             num_keyframes: self.keyframes.len(),
-            num_submaps: self.submaps.len(),
-            num_finished_submaps: self.submaps.finished_submaps().count(),
-            last_match_score: self.last_match_score,
             is_lost: self.is_lost,
-            memory_usage: self.submaps.memory_usage(),
         }
     }
 
@@ -682,16 +947,18 @@ impl SlamEngine for OnlineSlam {
         self.is_lost = false;
         self.last_match_score = 1.0;
         self.last_finished_submaps = 0;
-        // Reset diagnostics
-        self.last_timing = TimingBreakdown::default();
-        self.last_scan_match_stats = ScanMatchStats::default();
-        self.avg_total_time_us = 0.0;
-        self.timing_sample_count = 0;
-    }
-
-    fn reset_to(&mut self, pose: Pose2D) {
-        self.reset();
-        self.current_pose = pose;
+        // Reset loop closure state
+        if let Some(detector) = &mut self.loop_detector {
+            detector.clear();
+        }
+        self.pose_graph.clear();
+        self.pending_closures.clear();
+        self.prev_keyframe_pose = None;
+        self.total_loop_closures = 0;
+        self.total_optimizations = 0;
+        // Reset localization state
+        self.reference_map = None;
+        self.reference_pointcloud = None;
     }
 }
 
@@ -738,7 +1005,6 @@ mod tests {
         let result = slam.process_scan(&scan, &odom_delta, 0);
 
         assert!(result.pose.x > 0.0);
-        assert_eq!(slam.status().num_scans, 1);
     }
 
     #[test]
@@ -842,12 +1108,10 @@ mod tests {
         slam.process_scan(&scan, &Pose2D::new(1.0, 0.0, 0.0), 1000);
 
         assert!(slam.current_pose().x > 0.5);
-        assert!(slam.status().num_scans > 0);
 
         slam.reset();
 
         assert_eq!(slam.current_pose().x, 0.0);
-        assert_eq!(slam.status().num_scans, 0);
         assert_eq!(slam.submaps().len(), 0);
     }
 
@@ -863,7 +1127,6 @@ mod tests {
 
         // In idle mode, pose should stay at origin
         assert_eq!(result.pose.x, 0.0);
-        assert_eq!(slam.status().num_scans, 0);
     }
 
     #[test]
@@ -873,8 +1136,98 @@ mod tests {
 
         let status = slam.status();
 
-        assert_eq!(status.mode, SlamMode::Mapping);
-        assert_eq!(status.num_scans, 0);
+        assert_eq!(status.num_keyframes, 0);
         assert!(!status.is_lost);
+    }
+
+    #[test]
+    fn test_loop_closure_enabled_by_default() {
+        let config = OnlineSlamConfig::default();
+        let slam = OnlineSlam::new(config);
+
+        assert!(
+            slam.loop_closure_enabled(),
+            "Loop closure should be enabled by default"
+        );
+        assert_eq!(slam.total_loop_closures(), 0);
+        assert_eq!(slam.total_optimizations(), 0);
+    }
+
+    #[test]
+    fn test_loop_closure_disabled() {
+        let config = OnlineSlamConfig {
+            loop_closure: LoopClosureConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let slam = OnlineSlam::new(config);
+
+        assert!(!slam.loop_closure_enabled());
+    }
+
+    #[test]
+    fn test_pose_graph_builds_with_keyframes() {
+        let config = OnlineSlamConfig {
+            keyframe: KeyframeManagerConfig {
+                min_translation: 0.3,
+                min_rotation: 0.3,
+                min_interval_us: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut slam = OnlineSlam::new(config);
+
+        // Process scans to create keyframes
+        for i in 0..5 {
+            let offset = i as f32 * 0.5;
+            let scan = create_test_scan_at(offset, 0.0);
+            slam.process_scan(&scan, &Pose2D::new(0.5, 0.0, 0.0), i * 1000);
+        }
+
+        // Should have built pose graph nodes
+        let num_keyframes = slam.keyframes().len();
+        let num_graph_nodes = slam.pose_graph().num_nodes();
+
+        // When loop closure is enabled, pose graph nodes should match keyframes
+        assert_eq!(
+            num_graph_nodes, num_keyframes,
+            "Pose graph nodes ({}) should match keyframes ({})",
+            num_graph_nodes, num_keyframes
+        );
+    }
+
+    #[test]
+    fn test_reset_clears_loop_closure_state() {
+        let config = OnlineSlamConfig {
+            keyframe: KeyframeManagerConfig {
+                min_translation: 0.3,
+                min_rotation: 0.3,
+                min_interval_us: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut slam = OnlineSlam::new(config);
+
+        // Process some scans
+        for i in 0..3 {
+            let offset = i as f32 * 0.5;
+            let scan = create_test_scan_at(offset, 0.0);
+            slam.process_scan(&scan, &Pose2D::new(0.5, 0.0, 0.0), i * 1000);
+        }
+
+        // Should have some pose graph state
+        assert!(slam.pose_graph().num_nodes() > 0);
+
+        // Reset should clear everything
+        slam.reset();
+
+        assert_eq!(slam.pose_graph().num_nodes(), 0);
+        assert_eq!(slam.pose_graph().num_edges(), 0);
+        assert_eq!(slam.total_loop_closures(), 0);
+        assert_eq!(slam.total_optimizations(), 0);
     }
 }

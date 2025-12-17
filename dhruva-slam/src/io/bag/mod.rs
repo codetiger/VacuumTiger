@@ -54,20 +54,8 @@
 //! ```
 
 mod player;
-mod recorder;
-mod simulated_client;
 mod types;
 
+// Bag playback - used in main.rs
 pub use player::BagPlayer;
-pub use recorder::BagRecorder;
-pub use simulated_client::SimulatedClient;
-pub use types::{
-    BAG_MAGIC, BAG_VERSION, BagHeader, BagInfo, BagMessage, EncoderTicks, HEADER_SIZE,
-    SensorStatusMsg,
-};
-
-#[cfg(test)]
-mod test_fixtures;
-
-#[cfg(test)]
-pub use test_fixtures::BagTestFixture;
+pub use types::{BagMessage, SensorStatusMsg};

@@ -1,24 +1,29 @@
 # DhruvaSLAM
 
-Modular SLAM (Simultaneous Localization and Mapping) implementation in Rust for robotic vacuum cleaners.
+Production-ready 2D SLAM (Simultaneous Localization and Mapping) implementation in Rust for robotic vacuum cleaners, targeting the Allwinner A33 embedded platform.
 
 ## Overview
 
-DhruvaSLAM computes odometry from wheel encoders and gyroscopes, then performs online SLAM using laser scans from a 2D lidar to build maps and refine pose estimates in real-time. It connects to a [SangamIO](../sangam-io/README.md) daemon running on the robot.
+DhruvaSLAM is a standalone SLAM daemon that:
+1. Connects to [SangamIO](../sangam-io/README.md) daemon for sensor data (encoders, gyro, lidar)
+2. Computes odometry from wheel encoders with IMU fusion
+3. Performs scan-to-map matching for pose correction
+4. Builds and maintains an occupancy grid map
+5. Publishes corrected poses and maps over TCP for visualization
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    DhruvaSLAM Node                          │
+│                    DhruvaSLAM Daemon                         │
 │  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────┐ │
 │  │  Odometry   │  │    SLAM     │  │   TCP Publisher      │ │
 │  │  Pipeline   │  │   Engine    │  │   (Port 5557)        │ │
 │  │             │  │             │  │                      │ │
-│  │ Encoders ──►│  │ Lidar ─────►│  │ ──► Pose             │ │
-│  │ Gyro ──────►│  │ Odometry ──►│  │ ──► Map              │ │
-│  │             │  │             │  │ ──► Status           │ │
+│  │ Encoders ──►│  │ Lidar ─────►│  │ ──► Pose @ 50Hz      │ │
+│  │ Gyro ──────►│  │ Odometry ──►│  │ ──► Map @ 1Hz        │ │
+│  │             │  │             │  │ ──► Scan @ 5Hz       │ │
 │  └─────────────┘  └─────────────┘  └──────────────────────┘ │
 └────────────────────────┬────────────────────────────────────┘
-                         │ TCP 5555
+                         │ TCP 5555 (Protobuf)
               ┌──────────▼──────────┐
               │   SangamIO Daemon   │
               │   (Robot Hardware)  │
@@ -27,67 +32,113 @@ DhruvaSLAM computes odometry from wheel encoders and gyroscopes, then performs o
 
 ### Key Features
 
-- **Wheel Odometry** - Encoder-based dead reckoning with gyro fusion
-- **Scan Matching** - Point-to-point ICP, point-to-line ICP, correlative matching
-- **Occupancy Grid Mapping** - Log-odds 2D mapping with ray tracing
-- **Online SLAM** - Keyframe selection, submap management, loop closure
-- **Pose Graph Optimization** - Global consistency via graph optimization
-- **Bag Recording/Playback** - Record sensor data for offline testing
+- **Configurable Odometry** - Wheel-only, Complementary, ESKF, or Mahony fusion
+- **Multiple Scan Matchers** - ICP, P2L-ICP, Correlative, Multi-Resolution, Hybrid
+- **Occupancy Grid Mapping** - Log-odds representation with Bresenham ray tracing
+- **Feature Extraction** - Line and corner detection from occupancy maps
+- **Loop Closure** - LiDAR-IRIS binary descriptors with sparse CG optimization
+- **Bag Recording/Playback** - Record sensor data for offline development
 
 ### Specifications
 
 | Property | Value |
 |----------|-------|
-| Language | Rust 2021 edition |
-| Version | 0.1.0 |
-| Input Rate | 110Hz (sensors), 5Hz (lidar) |
-| Output Rate | Configurable (default 50Hz odometry) |
+| Language | Rust 2024 edition |
+| Target | ARM Cortex-A7 (Allwinner A33) |
+| Input | 110Hz sensors, 5Hz lidar |
+| Output | 50Hz pose, 1Hz map, 5Hz scan |
+| Memory | < 100MB for SLAM |
 
 ## Architecture
 
-DhruvaSLAM uses a layered architecture with clear separation of concerns:
+DhruvaSLAM is organized as a binary crate (not a library) with 5 logical layers:
 
 ```
-Layer 5: I/O          sangam_client, bag, streaming
-Layer 4: Engine       slam, graph optimization
-Layer 3: Algorithms   matching, mapping, localization
-Layer 2: Sensors      odometry, preprocessing
-Layer 1: Core         types, math primitives
+┌─────────────────────────────────────────────────────┐
+│                      main.rs                         │  ← Entry point
+└─────────────────────────────────────────────────────┘
+                         │
+┌─────────────────────────────────────────────────────┐
+│                      io/                             │  ← Infrastructure
+│         (sangam_client, bag, streaming)              │
+└─────────────────────────────────────────────────────┘
+                         │
+┌─────────────────────────────────────────────────────┐
+│                    engine/                           │  ← Orchestration
+│              (slam, graph optimization)              │
+└─────────────────────────────────────────────────────┘
+                         │
+┌─────────────────────────────────────────────────────┐
+│                  algorithms/                         │  ← Core algorithms
+│      (matching, mapping, localization, descriptors)  │
+└─────────────────────────────────────────────────────┘
+                         │
+┌─────────────────────────────────────────────────────┐
+│                   sensors/                           │  ← Sensor processing
+│         (odometry, preprocessing, calibration)       │
+└─────────────────────────────────────────────────────┘
+                         │
+┌─────────────────────────────────────────────────────┐
+│                     core/                            │  ← Foundation
+│              (types, math, simd)                     │
+└─────────────────────────────────────────────────────┘
 ```
 
 See individual module READMEs for details:
-- [core/](src/core/README.md) - Foundation types and math
-- [sensors/](src/sensors/README.md) - Odometry and scan preprocessing
-- [algorithms/](src/algorithms/README.md) - Matching, mapping, localization
-- [engine/](src/engine/README.md) - SLAM orchestration and pose graph
+- [core/](src/core/README.md) - Foundation types (Pose2D, PointCloud2D, LaserScan) and SIMD
+- [sensors/](src/sensors/README.md) - Odometry fusion and lidar preprocessing
+- [algorithms/](src/algorithms/README.md) - Matching, mapping, localization, descriptors
+- [engine/](src/engine/README.md) - SLAM orchestration, keyframes, pose graph
 - [io/](src/io/README.md) - SangamIO client, bag files, TCP streaming
 
 ## Building
 
 ```bash
-# Build
+# Build for development
+cargo build
+
+# Build optimized release
 cargo build --release
 
 # Run tests
 cargo test
 
-# Run benchmarks
-cargo bench
+# Check without building
+cargo check
+```
+
+### Cross-Compilation (ARM)
+
+```bash
+# Add ARM target
+rustup target add armv7-unknown-linux-musleabihf
+
+# Build for robot
+cargo build --release --target armv7-unknown-linux-musleabihf
 ```
 
 ## Usage
 
-### Running the SLAM Node
+### Running the SLAM Daemon
 
 ```bash
-# With configuration file
-cargo run --bin dhruva-slam-node -- --config dhruva-slam.toml
+# With default config (looks for dhruva-slam.toml)
+cargo run --release
 
-# With command-line arguments
-cargo run --bin dhruva-slam-node -- --sangam 192.168.68.101:5555 --port 5557
+# With explicit config file
+cargo run --release -- --config dhruva-slam.toml
+
+# With command-line overrides
+cargo run --release -- --sangam 192.168.68.101:5555 --port 5557
 
 # With debug logging
-RUST_LOG=debug cargo run --bin dhruva-slam-node -- --sangam 192.168.68.101:5555
+RUST_LOG=debug cargo run --release
+
+# Offline playback from bag file
+cargo run --release -- --bag bags/recording.bag
+
+# Loop bag file playback
+cargo run --release -- --bag bags/recording.bag --loop
 ```
 
 **Arguments:**
@@ -96,31 +147,8 @@ RUST_LOG=debug cargo run --bin dhruva-slam-node -- --sangam 192.168.68.101:5555
 | `-c, --config` | Configuration file | `dhruva-slam.toml` |
 | `-s, --sangam` | SangamIO address | `192.168.68.101:5555` |
 | `-p, --port` | TCP publish port | `5557` |
-
-### Recording Sensor Data
-
-```bash
-# Record for 60 seconds
-cargo run --bin bag-record -- \
-  --sangam 192.168.68.101:5555 \
-  --output recording.bag \
-  --duration 60
-
-# Record until Ctrl-C
-cargo run --bin bag-record -- \
-  --sangam 192.168.68.101:5555 \
-  --output recording.bag
-```
-
-### Inspecting Bag Files
-
-```bash
-# Show bag info
-cargo run --bin bag-info -- recording.bag
-
-# Verbose output with message counts
-cargo run --bin bag-info -- --verbose --count recording.bag
-```
+| `-b, --bag` | Bag file for offline playback | (none) |
+| `-l, --loop` | Loop bag file playback | false |
 
 ## Configuration
 
@@ -133,35 +161,53 @@ sangam_address = "192.168.68.101:5555"
 [output]
 bind_port = 5557
 odometry_rate_hz = 50.0
-slam_status_rate_hz = 5.0
-slam_map_rate_hz = 1.0
-
-[odometry]
-ticks_per_meter = 4464.0      # Encoder calibration
-wheel_base = 0.233            # Distance between wheels (m)
-alpha = 0.8                   # Gyro weight in complementary filter
-gyro_scale = 0.0001745        # Raw gyro to rad/s
-gyro_bias_z = 0.0             # Auto-calibrated at startup
+map_rate_hz = 1.0
+feature_rate_hz = 0.2
 
 [slam]
-enabled = true
-initial_mode = "Mapping"      # Mapping, Localization, or Idle
 min_range = 0.15              # Lidar min range (m)
 max_range = 8.0               # Lidar max range (m)
+
+[lidar]
+mounting_x = -0.0936          # Lidar X offset from robot center (m)
+mounting_y = 0.0
+optical_offset = 0.0258       # Optical center offset (m)
+angle_offset = 0.0            # Angular calibration (rad)
+
+[odometry]
+algorithm = "mahony"          # wheel, complementary, eskf, mahony
+ticks_per_meter = 4464.0      # Encoder calibration
+wheel_base = 0.233            # Distance between wheels (m)
+
+[matcher]
+algorithm = "multi_res"       # icp, p2l, correlative, multi_res, hybrid_icp, hybrid_p2l
+
+[loop_closure]
+enabled = true
+detection_interval = 5        # Check every N keyframes
+min_keyframe_gap = 20         # Skip recent poses
+optimization_threshold = 3    # Optimize after N loop closures
+
+[optimization]
+solver = "sparse_cg"          # dense_cholesky, sparse_cg
+max_iterations = 50
+tolerance = 1e-6
 ```
 
 ### Key Parameters
 
 | Parameter | Description | Typical Value |
 |-----------|-------------|---------------|
-| `ticks_per_meter` | Encoder ticks per meter traveled | 4464 (CRL-200S) |
-| `wheel_base` | Distance between wheel centers | 0.233m |
-| `alpha` | Gyro weight (0=encoders only, 1=gyro only) | 0.8 |
-| `gyro_scale` | Raw gyro units to rad/s | 0.0001745 |
+| `odometry.algorithm` | Fusion algorithm | `mahony` (recommended) |
+| `odometry.ticks_per_meter` | Encoder ticks per meter | 4464 (CRL-200S) |
+| `odometry.wheel_base` | Distance between wheel centers | 0.233m |
+| `matcher.algorithm` | Scan matching algorithm | `multi_res` (recommended) |
+| `slam.min_range` | Minimum valid lidar range | 0.15m |
+| `slam.max_range` | Maximum valid lidar range | 8.0m |
 
 ## TCP Output Protocol
 
-The node publishes data on the configured port (default 5557) using length-prefixed Protobuf:
+The daemon publishes data on the configured port (default 5557) using length-prefixed Protobuf:
 
 ```
 ┌──────────────────┬─────────────────────┐
@@ -172,59 +218,60 @@ The node publishes data on the configured port (default 5557) using length-prefi
 
 See `proto/dhruva.proto` for the complete schema.
 
-### Published Topics
+### Published Messages
 
-| Topic | Rate | Description |
-|-------|------|-------------|
-| `odometry/pose` | 50Hz | Current pose (x, y, theta) |
-| `odometry/diagnostics` | 1Hz | Odometry diagnostics |
-| `slam/status` | 5Hz | SLAM status (mode, keyframes, etc.) |
-| `slam/map` | 1Hz | Occupancy grid map |
-| `slam/scan` | 5Hz | Processed lidar scan |
-| `slam/diagnostics` | 5Hz | Timing and statistics |
+| Message Type | Rate | Description |
+|--------------|------|-------------|
+| `OdometryMessage` | 50Hz | Corrected pose (x, y, theta) |
+| `SlamMapMessage` | 1Hz | Occupancy grid map (base64) |
+| `SlamScanMessage` | 5Hz | Processed lidar scan with pose |
+| `FeatureMessage` | 0.2Hz | Extracted lines and corners |
 
 ## Module Structure
 
 ```
 dhruva-slam/
 ├── src/
-│   ├── lib.rs                 # Library root
-│   ├── bin/
-│   │   ├── dhruva_slam_node.rs   # Main SLAM daemon
-│   │   ├── bag_record.rs         # Recording tool
-│   │   └── bag_info.rs           # Bag inspection tool
+│   ├── main.rs               # Entry point, config, main loop
 │   │
-│   ├── core/                  # Foundation layer
-│   │   ├── types/             # Point2D, Pose2D, LaserScan, etc.
-│   │   └── math.rs            # Angle normalization, interpolation
+│   ├── core/                 # Foundation layer
+│   │   ├── types/            # Pose2D, Point2D, PointCloud2D, LaserScan
+│   │   ├── math.rs           # Angle normalization, interpolation
+│   │   └── simd/             # SIMD vector types (Float4)
 │   │
-│   ├── sensors/               # Sensor processing
-│   │   ├── odometry/          # Wheel odometry, filters
-│   │   └── preprocessing/     # Lidar scan filtering
+│   ├── sensors/              # Sensor processing
+│   │   ├── calibration.rs    # Gyro bias estimation
+│   │   ├── odometry/         # Wheel, Complementary, ESKF, Mahony
+│   │   └── preprocessing/    # Range filter, downsampler, outlier removal
 │   │
-│   ├── algorithms/            # Core algorithms
-│   │   ├── matching/          # ICP, correlative matching
-│   │   ├── mapping/           # Occupancy grid, ray tracing
-│   │   └── localization/      # Particle filter (MCL)
+│   ├── algorithms/           # Core algorithms
+│   │   ├── matching/         # ICP, P2L-ICP, Correlative, Multi-Resolution
+│   │   ├── mapping/          # OccupancyGrid, RayTracer, FeatureExtractor
+│   │   ├── localization/     # SensorModel, MotionModel (MCL)
+│   │   └── descriptors/      # LiDAR-IRIS for loop closure
 │   │
-│   ├── engine/                # SLAM orchestration
-│   │   ├── slam/              # Online SLAM, keyframes, submaps
-│   │   └── graph/             # Pose graph, loop closure
+│   ├── engine/               # SLAM orchestration
+│   │   ├── slam/             # OnlineSlam, Keyframe, Submap, Recovery
+│   │   └── graph/            # PoseGraph, LoopDetector, SparseCG Optimizer
 │   │
-│   └── io/                    # I/O infrastructure
-│       ├── sangam_client.rs   # SangamIO TCP client
-│       ├── bag/               # Recording and playback
-│       └── streaming/         # TCP publishing
+│   ├── io/                   # I/O infrastructure
+│   │   ├── sangam_client.rs  # SangamIO TCP client
+│   │   ├── bag/              # BagRecorder, BagPlayer, SimulatedClient
+│   │   └── streaming/        # OdometryPublisher, message types
+│   │
+│   └── metrics/              # Quality metrics
+│       ├── scan_match_error.rs
+│       └── map_noise.rs
 │
-├── tests/                     # Integration tests
-│   ├── dead_reckoning.rs      # Odometry tests
-│   └── sangam_integration.rs  # End-to-end tests
+├── proto/                    # Protobuf schemas
+│   └── dhruva.proto          # Output message definitions
 │
-├── benches/                   # Performance benchmarks
-│   └── milestone1.rs          # Core operations
+├── bags/                     # Recorded sensor data
+├── results/                  # Benchmark results
+├── docs/                     # Design documents
 │
-├── Cargo.toml                 # Dependencies
-└── dhruva-slam.toml           # Runtime configuration
+├── Cargo.toml                # Dependencies
+└── dhruva-slam.toml          # Runtime configuration
 ```
 
 ## Data Flow
@@ -235,29 +282,30 @@ SangamIO (110Hz sensors, 5Hz lidar)
     ▼
 ┌───────────────────────────────────────┐
 │           SangamClient                │
-│  • TCP connection to robot            │
+│  • TCP connection (Protobuf)          │
 │  • Message deserialization            │
 └───────────────────┬───────────────────┘
                     │
         ┌───────────┴───────────┐
         ▼                       ▼
 ┌───────────────┐      ┌───────────────┐
-│   Odometry    │      │    SLAM       │
-│   Pipeline    │      │   Engine      │
+│   Odometry    │      │  Preprocess   │
+│   Pipeline    │      │   + SLAM      │
 │               │      │               │
-│ • Wheel odom  │      │ • Preprocess  │
-│ • Gyro fusion │─────►│ • Match scans │
-│ • Decimation  │      │ • Update map  │
-│               │      │ • Keyframes   │
+│ • Wheel odom  │      │ • Range filter│
+│ • IMU fusion  │─────►│ • Downsample  │
+│ (Mahony/ESKF) │      │ • Match to map│
+│               │      │ • Update map  │
 └───────┬───────┘      └───────┬───────┘
         │                      │
         └──────────┬───────────┘
                    ▼
         ┌──────────────────┐
         │  TCP Publisher   │
-        │  • Pose stream   │
-        │  • Map updates   │
-        │  • Diagnostics   │
+        │  • Pose @ 50Hz   │
+        │  • Map @ 1Hz     │
+        │  • Scan @ 5Hz    │
+        │  • Features      │
         └──────────────────┘
                    │
                    ▼
@@ -268,33 +316,37 @@ SangamIO (110Hz sensors, 5Hz lidar)
 ## Testing
 
 ```bash
-# Unit tests
+# Run all tests
 cargo test
 
-# Integration tests (requires bag file or live robot)
-cargo test --test sangam_integration -- --ignored --nocapture
-
-# Specific test
+# Run specific test
 cargo test test_wheel_odometry
+
+# Run with output
+cargo test -- --nocapture
 ```
 
-## Benchmarks
+## Algorithm Selection Guide
 
-```bash
-# Run all benchmarks
-cargo bench
+### Odometry Algorithms
 
-# View HTML reports
-open target/criterion/report/index.html
-```
+| Algorithm | Use Case | CPU |
+|-----------|----------|-----|
+| `wheel` | Testing, baseline | Very Low |
+| `complementary` | Simple fusion | Low |
+| `eskf` | Production with uncertainty | Medium |
+| `mahony` | **Recommended** - auto gyro calibration | Low |
 
-Benchmarked operations:
-- Math primitives (angle normalization, interpolation)
-- Pose operations (compose, inverse, transform)
-- Wheel odometry processing
-- Complementary filter fusion
-- Scan preprocessing pipeline
-- ICP scan matching
+### Scan Matchers
+
+| Algorithm | Use Case | CPU | Accuracy |
+|-----------|----------|-----|----------|
+| `icp` | Small displacements | Low | Good |
+| `p2l` | Structured environments (walls) | Medium | Very Good |
+| `correlative` | Large initial errors | High | Good |
+| `multi_res` | **Recommended** - balanced | Medium | Good |
+| `hybrid_icp` | Correlative + ICP refinement | High | Very Good |
+| `hybrid_p2l` | Correlative + P2L refinement | High | Excellent |
 
 ## Dependencies
 
@@ -302,88 +354,65 @@ Benchmarked operations:
 |-------|---------|
 | `prost` | Protobuf serialization |
 | `serde` | Configuration serialization |
-| `postcard` | Bag file format (internal) |
+| `postcard` | Bag file format |
 | `kiddo` | K-d tree for nearest neighbor |
-| `thiserror` | Error handling |
-| `log` / `env_logger` | Logging |
+| `basic_toml` | Config parsing |
+| `env_logger` | Logging |
 | `ctrlc` | Signal handling |
-| `toml` | Configuration parsing |
+| `approx` | Floating-point comparison in tests |
 
 ## Design Notes
 
-### Design Goals
+### Design Principles
 
-| Goal | Description |
-|------|-------------|
-| **Modularity** | Each component (sensor fusion, scan matching, mapping, localization) independently replaceable |
-| **Performance** | Real-time operation on embedded ARM (Allwinner A33 quad-core Cortex-A7) |
-| **Testability** | Components unit-testable in isolation with mock/recorded data |
-| **Portability** | No platform-specific dependencies in core SLAM logic |
+| Principle | Description |
+|-----------|-------------|
+| **Binary, Not Library** | Standalone daemon, not imported as a library |
+| **Runtime Configuration** | Algorithm selection via TOML config |
+| **Embedded-First** | Optimized for Allwinner A33 (ARM Cortex-A7) |
+| **Testability** | Components unit-testable with bag file playback |
 
 ### Platform Considerations (Allwinner A33)
 
 **Target specs:** Quad-core ARM Cortex-A7 @ 1.2 GHz, 512MB RAM, NEON SIMD
 
-**Algorithm Selection for A33:**
-
-| Component | Recommended | Alternative | Avoid |
-|-----------|-------------|-------------|-------|
-| Sensor Fusion | ESKF | Complementary | UKF |
-| Scan Matching | Multi-Res Correlative + P2L ICP | Correlative only | GICP, NDT |
-| Map | Probabilistic Grid + Submaps | Binary Grid | SDF |
-| Localization | MCL (300-500 particles) | Scan match only | KLD-MCL |
-| Loop Closure | Distance + Scan Context | Distance only | Full BoW |
-| Optimization | Gauss-Newton | - | Full LM every time |
-
-**Performance Budget (10 Hz target):**
+**Performance Budget (5 Hz SLAM target):**
 
 | Component | Budget | Notes |
 |-----------|--------|-------|
-| Preprocessing | 5 ms | Downsample to ~180 points |
-| Odometry Fusion | 5 ms | ESKF predict + update |
-| Scan Matching | 40 ms | Multi-resolution + ICP |
-| Map Update | 15 ms | Log-odds with ray tracing |
-| Loop Check | 10 ms | Background when possible |
+| Preprocessing | 5 ms | Range filter + downsample to 180 pts |
+| Odometry Fusion | 1 ms | Mahony AHRS |
+| Scan Matching | 50 ms | Multi-resolution correlative |
+| Map Update | 10 ms | Log-odds with ray tracing |
+| Feature Extraction | 20 ms | Line/corner detection |
 
-**Memory Budget (256 MB for SLAM):**
+**Memory Budget (< 100 MB):**
 
 | Component | Allocation |
 |-----------|------------|
-| Active Submaps (3) | 30 MB |
-| Compressed Submaps | 50 MB |
-| Pose Graph | 10 MB |
-| Scan Buffers | 20 MB |
-| Keyframes | 50 MB |
-| Particle Filter | 20 MB |
-| Working Memory | 76 MB |
+| Occupancy Grid | 40 MB |
+| Scan Buffers | 10 MB |
+| K-d Trees | 10 MB |
+| Working Memory | 40 MB |
 
-### Algorithm Selection Guide
+### Known Limitations
 
-**By Environment Type:**
+- Loop closure detection is implemented but not fully integrated into pose correction
+- No multi-session mapping (map not persisted between runs)
+- Single-threaded (no background optimization thread yet)
 
-| Environment | Recommended Matcher | Notes |
-|-------------|---------------------|-------|
-| Structured (offices) | Point-to-Line ICP | Walls provide good line features |
-| Cluttered (homes) | Multi-Res Correlative + ICP | Handles irregular obstacles |
-| Large open spaces | Multi-Res Correlative | Needs global matching |
-| Dynamic environments | Any + temporal filtering | Filter moving objects |
+### Future Work
 
-**By Accuracy Requirements:**
+See [IMPROVEMENTS.md](IMPROVEMENTS.md) for detailed roadmap:
+- Full loop closure integration with pose graph correction
+- Background optimization thread
+- Multi-resolution map representation
+- GICP scan matching
 
-| Accuracy | Recommended Stack |
-|----------|-------------------|
-| Basic (±10cm) | Complementary + Correlative + MCL |
-| Standard (±5cm) | ESKF + Multi-Res + ICP + MCL |
-| High (±2cm) | ESKF + Preintegration + GICP + Graph opt |
+## Related Documents
 
-### Future Extensibility
-
-Not yet implemented but designed for:
-- UKF sensor fusion (higher accuracy, more compute)
-- NDT scan matching (alternative to ICP)
-- IMU preintegration (tightly-coupled fusion)
-- KLD-sampling MCL (adaptive particle count)
-- Submap compression (memory optimization for long-term operation)
+- [IMPROVEMENTS.md](IMPROVEMENTS.md) - Technical improvement roadmap
+- [docs/LOOP_CLOSURE_PROPOSAL.md](docs/LOOP_CLOSURE_PROPOSAL.md) - LiDAR-IRIS implementation plan
 
 ## License
 

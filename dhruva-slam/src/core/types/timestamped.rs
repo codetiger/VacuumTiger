@@ -1,4 +1,6 @@
 //! Generic timestamp wrapper.
+//!
+//! Note: Some utility methods are defined for future use.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,37 +20,5 @@ impl<T> Timestamped<T> {
     #[inline]
     pub fn new(data: T, timestamp_us: u64) -> Self {
         Self { data, timestamp_us }
-    }
-
-    /// Map the inner data while preserving timestamp.
-    #[inline]
-    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Timestamped<U> {
-        Timestamped {
-            data: f(self.data),
-            timestamp_us: self.timestamp_us,
-        }
-    }
-
-    /// Get a reference to the inner data.
-    #[inline]
-    pub fn as_ref(&self) -> Timestamped<&T> {
-        Timestamped {
-            data: &self.data,
-            timestamp_us: self.timestamp_us,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_timestamped_map() {
-        let ts = Timestamped::new(42i32, 1000);
-        let doubled = ts.map(|x| x * 2);
-
-        assert_eq!(doubled.data, 84);
-        assert_eq!(doubled.timestamp_us, 1000);
     }
 }

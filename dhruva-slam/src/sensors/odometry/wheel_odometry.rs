@@ -2,6 +2,8 @@
 //!
 //! Converts differential drive wheel encoder readings to pose deltas
 //! using differential drive kinematics.
+//!
+//! Note: Some utility methods are defined for future use.
 
 use crate::core::types::Pose2D;
 
@@ -60,20 +62,6 @@ impl WheelOdometry {
             last_left: None,
             last_right: None,
         }
-    }
-
-    /// Reset the odometry state.
-    ///
-    /// The next `update()` call will initialize the encoder state
-    /// without producing a pose delta.
-    pub fn reset(&mut self) {
-        self.last_left = None;
-        self.last_right = None;
-    }
-
-    /// Get the current configuration.
-    pub fn config(&self) -> &WheelOdometryConfig {
-        &self.config
     }
 
     /// Update with new encoder readings.
@@ -288,23 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn test_reset() {
-        let mut odom = WheelOdometry::new(test_config());
-
-        odom.update(0, 0);
-        let _ = odom.update(100, 100);
-
-        odom.reset();
-
-        // After reset, next update should return None
-        assert!(odom.update(200, 200).is_none());
-
-        // And the following should work
-        let delta = odom.update(300, 300).unwrap();
-        assert_relative_eq!(delta.x, 0.1, epsilon = 0.001);
-    }
-
-    #[test]
     fn test_half_rotation() {
         let mut odom = WheelOdometry::new(test_config());
 
@@ -454,14 +425,5 @@ mod tests {
         // And continue
         let delta2 = odom.update(100, 100).unwrap();
         assert_relative_eq!(delta2.x, 0.1, epsilon = 0.001);
-    }
-
-    #[test]
-    fn test_config_accessor() {
-        let config = test_config();
-        let odom = WheelOdometry::new(config);
-
-        assert_eq!(odom.config().ticks_per_meter, 1000.0);
-        assert_eq!(odom.config().wheel_base, 0.2);
     }
 }

@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 base64 = "0.22"
 clap = { version = "4.5", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+crossbeam-channel = "0.5"
 ctrlc = "3.5"
 env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
 kiddo = "4.2"  # K-d tree for nearest neighbor queries
@@ -18,7 +19,8 @@ rand = { version = "0.9", default-features = false, features = ["std", "std_rng"
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 serde_json = "1.0"  # JSON output for benchmarks
 sysinfo = "0.32"  # Memory monitoring for benchmarks
-image = { version = "0.25", default-features = false, features = ["png"] }  # Only PNG export
+image = { version = "0.25", default-features = false, features = ["png", "pnm"] }  # PNG and PGM export
+serde_yaml = "0.9"  # YAML for ROS-standard map metadata
 thiserror = "2.0"
 basic-toml = "0.1"  # Minimal TOML parser
 
@@ -27,7 +29,6 @@ prost-build = "0.13"
 
 [dev-dependencies]
 approx = "0.5"
-criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.23"
 
 [profile.release]
@@ -36,20 +37,4 @@ lto = true              # Link-time optimization
 codegen-units = 1       # Single codegen unit for better optimization
 panic = "abort"         # Abort on panic (smaller than unwinding)
 strip = true            # Strip symbols from binary
-
-[[example]]
-name = "dhruva_slam_node"
-path = "examples/dhruva_slam_node.rs"
-
-[[example]]
-name = "bag_record"
-path = "examples/bag_record.rs"
-
-[[example]]
-name = "slam_benchmark"
-path = "examples/slam_benchmark.rs"
-
-[[example]]
-name = "bag_inspect"
-path = "examples/bag_inspect.rs"
 

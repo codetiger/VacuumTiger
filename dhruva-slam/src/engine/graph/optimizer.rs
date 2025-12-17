@@ -539,11 +539,6 @@ impl GraphOptimizer {
             node.pose.theta = normalize_angle_f32(node.pose.theta + dx[base + 2] as f32);
         }
     }
-
-    /// Get configuration.
-    pub fn config(&self) -> &GraphOptimizerConfig {
-        &self.config
-    }
 }
 
 /// Normalize angle to [-π, π].
@@ -625,9 +620,10 @@ mod tests {
         let mut graph = PoseGraph::new();
 
         // Create a simple chain of poses
-        let id0 = graph.add_node(Pose2D::new(0.0, 0.0, 0.0), 0);
-        let id1 = graph.add_node(Pose2D::new(1.0, 0.0, 0.0), 1000);
-        let id2 = graph.add_node(Pose2D::new(2.0, 0.0, 0.0), 2000);
+        use crate::engine::graph::pose_graph::PoseNode;
+        let id0 = graph.add_node_full(PoseNode::new(0, Pose2D::new(0.0, 0.0, 0.0), 0));
+        let id1 = graph.add_node_full(PoseNode::new(1, Pose2D::new(1.0, 0.0, 0.0), 1000));
+        let id2 = graph.add_node_full(PoseNode::new(2, Pose2D::new(2.0, 0.0, 0.0), 2000));
 
         // Add odometry edges
         graph.add_odometry_edge(
@@ -655,10 +651,11 @@ mod tests {
         let mut graph = PoseGraph::new();
 
         // Create a square loop with slight error
-        let id0 = graph.add_node(Pose2D::new(0.0, 0.0, 0.0), 0);
-        let id1 = graph.add_node(Pose2D::new(1.0, 0.0, 0.0), 1000);
-        let id2 = graph.add_node(Pose2D::new(1.0, 1.0, 0.0), 2000);
-        let id3 = graph.add_node(Pose2D::new(0.0, 1.0, 0.0), 3000);
+        use crate::engine::graph::pose_graph::PoseNode;
+        let id0 = graph.add_node_full(PoseNode::new(0, Pose2D::new(0.0, 0.0, 0.0), 0));
+        let id1 = graph.add_node_full(PoseNode::new(1, Pose2D::new(1.0, 0.0, 0.0), 1000));
+        let id2 = graph.add_node_full(PoseNode::new(2, Pose2D::new(1.0, 1.0, 0.0), 2000));
+        let id3 = graph.add_node_full(PoseNode::new(3, Pose2D::new(0.0, 1.0, 0.0), 3000));
 
         let info = Information2D::default();
 
@@ -694,8 +691,9 @@ mod tests {
         let mut graph = PoseGraph::new();
 
         // Perfect chain - should have zero error
-        let id0 = graph.add_node(Pose2D::new(0.0, 0.0, 0.0), 0);
-        let id1 = graph.add_node(Pose2D::new(1.0, 0.0, 0.0), 1000);
+        use crate::engine::graph::pose_graph::PoseNode;
+        let id0 = graph.add_node_full(PoseNode::new(0, Pose2D::new(0.0, 0.0, 0.0), 0));
+        let id1 = graph.add_node_full(PoseNode::new(1, Pose2D::new(1.0, 0.0, 0.0), 1000));
 
         graph.add_odometry_edge(
             id0,

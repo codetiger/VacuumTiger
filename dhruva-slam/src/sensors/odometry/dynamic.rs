@@ -24,6 +24,8 @@
 //!     println!("Pose: {:?}", pose);
 //! }
 //! ```
+//!
+//! Note: Some utility methods are defined for future use.
 
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -119,15 +121,6 @@ impl WheelOdometryWrapper {
             None
         }
     }
-
-    fn pose(&self) -> Pose2D {
-        self.tracker.pose()
-    }
-
-    fn reset(&mut self) {
-        self.wheel.reset();
-        self.tracker.reset();
-    }
 }
 
 /// Complementary filter odometry wrapper.
@@ -159,15 +152,6 @@ impl ComplementaryOdometry {
             None
         }
     }
-
-    fn pose(&self) -> Pose2D {
-        self.filter.pose()
-    }
-
-    fn reset(&mut self) {
-        self.wheel.reset();
-        self.filter.reset();
-    }
 }
 
 /// ESKF odometry wrapper.
@@ -198,15 +182,6 @@ impl EskfOdometry {
         } else {
             None
         }
-    }
-
-    fn pose(&self) -> Pose2D {
-        self.eskf.pose()
-    }
-
-    fn reset(&mut self) {
-        self.wheel.reset();
-        self.eskf.reset();
     }
 }
 
@@ -241,9 +216,9 @@ impl MahonyOdometry {
     ) -> Option<Pose2D> {
         // Update Mahony AHRS (uses gyro_yaw as Z-axis rotation)
         // For 2D odometry, we only need yaw from the AHRS
-        // Pass zeros for other axes and gravity (simplified 2D case)
+        // Pass zeros for X/Y axes and gravity (simplified 2D case)
         let imu = RawImuData::new(
-            [gyro_yaw, 0, 0], // gyro: yaw on X input (Mahony remaps internally)
+            [0, 0, gyro_yaw], // gyro: [roll, pitch, yaw] - yaw on Z axis
             [0, 0, 1000],     // tilt: assume level (gravity pointing down)
         );
         let (_roll, _pitch, yaw) = self.ahrs.update(&imu, timestamp_us);
@@ -266,21 +241,6 @@ impl MahonyOdometry {
         } else {
             None
         }
-    }
-
-    fn pose(&self) -> Pose2D {
-        self.tracker.pose()
-    }
-
-    fn reset(&mut self) {
-        self.wheel.reset();
-        self.ahrs.reset();
-        self.tracker.reset();
-        self.last_yaw = 0.0;
-    }
-
-    fn is_calibrated(&self) -> bool {
-        self.ahrs.is_calibrated()
     }
 }
 
@@ -371,46 +331,6 @@ impl DynOdometry {
             DynOdometry::Mahony(o) => o.update(left, right, gyro_yaw, timestamp_us),
         }
     }
-
-    /// Get the current accumulated pose.
-    pub fn pose(&self) -> Pose2D {
-        match self {
-            DynOdometry::Wheel(o) => o.pose(),
-            DynOdometry::Complementary(o) => o.pose(),
-            DynOdometry::Eskf(o) => o.pose(),
-            DynOdometry::Mahony(o) => o.pose(),
-        }
-    }
-
-    /// Reset odometry to identity pose.
-    pub fn reset(&mut self) {
-        match self {
-            DynOdometry::Wheel(o) => o.reset(),
-            DynOdometry::Complementary(o) => o.reset(),
-            DynOdometry::Eskf(o) => o.reset(),
-            DynOdometry::Mahony(o) => o.reset(),
-        }
-    }
-
-    /// Get the odometry type.
-    pub fn odometry_type(&self) -> OdometryType {
-        match self {
-            DynOdometry::Wheel(_) => OdometryType::Wheel,
-            DynOdometry::Complementary(_) => OdometryType::Complementary,
-            DynOdometry::Eskf(_) => OdometryType::Eskf,
-            DynOdometry::Mahony(_) => OdometryType::Mahony,
-        }
-    }
-
-    /// Check if calibration is complete (only relevant for Mahony).
-    ///
-    /// Returns `true` for all types except Mahony during its calibration phase.
-    pub fn is_calibrated(&self) -> bool {
-        match self {
-            DynOdometry::Mahony(o) => o.is_calibrated(),
-            _ => true,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -441,9 +361,6 @@ mod tests {
         let config = default_config();
         let mut odom = DynOdometry::new(OdometryType::Wheel, config);
 
-        assert_eq!(odom.odometry_type(), OdometryType::Wheel);
-        assert!(odom.is_calibrated());
-
         // First call initializes
         assert!(odom.update(0, 0, 0, 0).is_none());
 
@@ -458,8 +375,6 @@ mod tests {
         let config = default_config();
         let mut odom = DynOdometry::new(OdometryType::Complementary, config);
 
-        assert_eq!(odom.odometry_type(), OdometryType::Complementary);
-
         // First call initializes
         assert!(odom.update(0, 0, 0, 0).is_none());
 
@@ -472,8 +387,6 @@ mod tests {
     fn test_dyn_odometry_eskf() {
         let config = default_config();
         let mut odom = DynOdometry::new(OdometryType::Eskf, config);
-
-        assert_eq!(odom.odometry_type(), OdometryType::Eskf);
 
         // First call initializes
         assert!(odom.update(0, 0, 0, 0).is_none());
@@ -498,54 +411,12 @@ mod tests {
         };
         let mut odom = DynOdometry::new(OdometryType::Mahony, config);
 
-        assert_eq!(odom.odometry_type(), OdometryType::Mahony);
-
         // First call initializes
         odom.update(0, 0, 0, 0);
-
-        // During calibration
-        assert!(!odom.is_calibrated());
 
         // Complete calibration
         for i in 1..=10 {
             odom.update(0, 0, 0, i * 10_000);
         }
-
-        assert!(odom.is_calibrated());
-    }
-
-    #[test]
-    fn test_dyn_odometry_reset() {
-        let config = default_config();
-        let mut odom = DynOdometry::new(OdometryType::Wheel, config);
-
-        // Initialize and move
-        odom.update(0, 0, 0, 0);
-        odom.update(100, 100, 0, 10_000);
-
-        let pose_before = odom.pose();
-        assert!(pose_before.x > 0.0);
-
-        // Reset
-        odom.reset();
-        let pose_after = odom.pose();
-        assert_relative_eq!(pose_after.x, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(pose_after.y, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(pose_after.theta, 0.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_dyn_odometry_pose() {
-        let config = default_config();
-        let mut odom = DynOdometry::new(OdometryType::Wheel, config);
-
-        let initial_pose = odom.pose();
-        assert_relative_eq!(initial_pose.x, 0.0, epsilon = 1e-6);
-
-        odom.update(0, 0, 0, 0);
-        odom.update(100, 100, 0, 10_000);
-
-        let pose = odom.pose();
-        assert_relative_eq!(pose.x, 0.1, epsilon = 0.01);
     }
 }

@@ -1,32 +1,31 @@
-//! TCP streaming module for publishing odometry and SLAM data to visualization clients.
+//! Streaming module for publishing SLAM data to visualization clients.
 //!
 //! This module provides:
-//! - TCP server for broadcasting odometry and SLAM data to clients (like Drishti)
+//! - TCP server for large/critical data (maps, map list)
+//! - UDP unicast for high-frequency streams (robot status, sensors, navigation)
 //! - Message types for streaming data
 //!
-//! Note: `PoseTracker` has been moved to `core::types` for proper layer separation.
-//! `FusedPoseTracker` has been moved to `sensors::odometry` as it's a sensor fusion concept.
+//! # Communication Architecture
+//!
+//! | Stream | Protocol | Rate | Size |
+//! |--------|----------|------|------|
+//! | RobotStatus | UDP | 10Hz | ~100B |
+//! | SensorStatus | UDP | 10Hz | ~200-2KB |
+//! | NavigationStatus | UDP | 5Hz | ~500B |
+//! | CurrentMap | TCP | 1Hz | 10-100KB |
+//! | MapList | TCP | on-change | ~100-500B |
 
-pub mod odometry_pipeline;
-mod slam_messages;
 mod tcp_publisher;
+pub mod udp_publisher;
 
-pub use odometry_pipeline::{OdometryPipeline, OdometryPipelineConfig};
+// UDP publisher
+pub use udp_publisher::{DhruvaUdpPublisher, create_client_registry};
 
-// Re-export from new locations for backward compatibility
-pub use crate::core::types::PoseTracker;
-pub use crate::sensors::odometry::FusedPoseTracker;
-pub use slam_messages::{
-    LoopClosureStats,
-    MappingStats,
-    ParticleFilterStats,
-    ScanMatchStats,
-    SlamCommand,
-    // Diagnostics types
-    SlamDiagnosticsMessage,
-    SlamMapMessage,
-    SlamScanMessage,
-    SlamStatusMessage,
-    TimingBreakdown,
+// Proto types used by publisher, tests, and other modules
+pub use tcp_publisher::proto::dhruva::{
+    CurrentMap, DhruvaCommand, DhruvaResponse, DhruvaStream, EmergencyStopResponse,
+    GoalAcceptedResponse, GoalCancelledResponse, LidarScan, MapList, MapSummary, MappingProgress,
+    MappingStartedResponse, MappingState as ProtoMappingState, MappingStoppedResponse, NavState,
+    NavigationStatus, Pose2D, RobotState, RobotStatus, SensorStatus, dhruva_command,
+    dhruva_response, dhruva_stream,
 };
-pub use tcp_publisher::{OdometryDiagnostics, OdometryMessage, OdometryPublisher, SlamMessage};

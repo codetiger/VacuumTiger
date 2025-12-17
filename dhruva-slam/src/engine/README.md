@@ -1,20 +1,67 @@
 # Engine Module
 
-SLAM orchestration layer that coordinates algorithms into a complete system.
+SLAM orchestration: online SLAM, keyframes, submaps, and pose graph optimization.
 
 ## Overview
 
 The engine module provides:
-- **Online SLAM** - Real-time SLAM with keyframes and submaps
-- **Pose Graph** - Global optimization and loop closure
+- **SLAM** - Online SLAM with scan matching and mapping
+- **Graph** - Pose graph optimization and loop closure detection
 
-## Online SLAM
+## Module Structure
 
-The main SLAM engine that processes scans in real-time.
+```
+engine/
+├── mod.rs              # Module exports, SlamEngine trait
+├── slam/
+│   ├── mod.rs          # SLAM exports, SlamResult, SlamStatus
+│   ├── online_slam.rs  # Main SLAM engine
+│   ├── keyframe.rs     # Keyframe management
+│   ├── submap.rs       # Submap lifecycle
+│   ├── kidnapped_detector.rs  # Kidnap detection
+│   └── recovery_state.rs      # Recovery state machine
+└── graph/
+    ├── mod.rs          # Graph exports
+    ├── pose_graph.rs   # Graph data structure
+    ├── loop_detector.rs    # Loop closure detection
+    ├── optimizer.rs        # Gauss-Newton optimizer
+    └── sparse_solver.rs    # Sparse CG solver
+```
+
+## SLAM
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      LOCAL SLAM                              │
+│                                                              │
+│  Scan → Preprocess → Match to Submap → Update Submap        │
+│                           │                                  │
+│                           ▼                                  │
+│                   Keyframe Decision                          │
+│                           │                                  │
+│              ┌────────────┴────────────┐                     │
+│              │                         │                     │
+│              ▼                         ▼                     │
+│      Create Keyframe           Continue in Submap            │
+│              │                                               │
+│              ▼                                               │
+│      Submap Full? ──Yes──▶ Finish Submap, Create New        │
+└─────────────────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     GLOBAL SLAM                              │
+│                  (Loop Closure)                              │
+│                                                              │
+│  Finished Submaps → Loop Detection → Graph Optimization      │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ### SlamEngine Trait
 
-Common interface for SLAM implementations:
+Common interface for all SLAM implementations:
 
 ```rust
 pub trait SlamEngine {
@@ -33,498 +80,342 @@ pub trait SlamEngine {
 }
 ```
 
-### OnlineSlam
-
-Production SLAM implementation with keyframes, submaps, and recovery.
-
-```rust
-use dhruva_slam::engine::slam::OnlineSlam;
-
-let config = OnlineSlamConfig {
-    // Preprocessing
-    min_range: 0.15,
-    max_range: 8.0,
-    target_points: 180,
-
-    // Scan matching
-    matcher_type: MatcherType::Hybrid,
-    icp_config: IcpConfig { ... },
-    correlative_config: CorrelativeConfig { ... },
-
-    // Keyframes
-    keyframe_config: KeyframeConfig {
-        min_translation_m: 0.3,
-        min_rotation_rad: 0.2,
-        max_frames_per_submap: 20,
-    },
-
-    // Mapping
-    map_resolution: 0.05,
-    map_size_cells: 400,
-};
-
-let mut slam = OnlineSlam::new(config);
-
-// Process each scan
-let result = slam.process_scan(&cloud, &odom_delta, timestamp_us);
-
-if result.converged {
-    let corrected_pose = result.pose;
-    let created_keyframe = result.keyframe_created;
-}
-```
-
 ### SlamResult
-
-Output from processing a scan:
 
 ```rust
 pub struct SlamResult {
-    pub pose: Pose2D,              // Corrected robot pose
-    pub covariance: Covariance2D,  // Uncertainty
-    pub keyframe_created: bool,    // New keyframe added?
-    pub new_submap: bool,          // New submap started?
-    pub match_score: f32,          // Match quality (0-1)
-    pub pose_refined: bool,        // Was pose corrected?
+    pub pose: Pose2D,              // Corrected pose
+    pub match_score: f32,          // Scan match quality
+    pub keyframe_created: bool,    // New keyframe?
+    pub submap_finished: bool,     // Submap completed?
+    pub mode: SlamMode,            // Current mode
 }
 ```
 
 ### SlamStatus
 
-Current system state:
-
 ```rust
 pub struct SlamStatus {
-    pub mode: SlamMode,            // Mapping/Localization/Idle
-    pub num_scans: u64,            // Total scans processed
-    pub num_keyframes: usize,      // Total keyframes
-    pub num_submaps: usize,        // Total submaps
-    pub num_finished_submaps: usize,
+    pub mode: SlamMode,
+    pub num_scans: u64,
+    pub num_keyframes: usize,
+    pub num_submaps: usize,
     pub last_match_score: f32,
-    pub is_lost: bool,             // Kidnapped detection
-    pub memory_usage: usize,       // Bytes
+    pub is_lost: bool,
 }
 ```
 
 ### SlamMode
 
-Operating modes:
-
 ```rust
 pub enum SlamMode {
-    Mapping,       // Build map while localizing
-    Localization,  // Localize in existing map
-    Idle,          // Pause SLAM processing
+    Mapping,        // Building new map
+    Localization,   // Localizing in existing map
+    Lost,           // Lost, attempting recovery
+    Idle,           // Not processing
 }
-
-// Change mode
-slam.set_mode(SlamMode::Localization);
 ```
 
-### Keyframes
+### Usage Example
 
-Pose-stamped scans for loop closure.
+```rust
+use crate::engine::slam::{OnlineSlam, OnlineSlamConfig, SlamEngine};
+
+// Create SLAM engine
+let config = OnlineSlamConfig::default();
+let mut slam = OnlineSlam::new(config);
+
+// Process scans in sensor loop
+loop {
+    let scan = preprocess(&raw_scan);
+    let result = slam.process_scan(&scan, &odom_delta, timestamp_us);
+
+    if result.keyframe_created {
+        log::info!("Keyframe created, score: {:.2}", result.match_score);
+    }
+
+    // Get current state
+    let pose = slam.current_pose();
+    let map = slam.map();
+    let status = slam.status();
+}
+```
+
+### Keyframe Management
+
+Keyframes are created when:
+1. Robot travels `keyframe_min_distance` meters
+2. Robot rotates `keyframe_min_rotation` radians
+3. Minimum time `keyframe_min_interval_us` has passed
 
 ```rust
 pub struct Keyframe {
     pub id: u64,
-    pub pose: Pose2D,              // Global pose
-    pub scan: PointCloud2D,        // Original scan
+    pub pose: Pose2D,
+    pub scan: PointCloud2D,
     pub timestamp_us: u64,
-    pub submap_id: u64,
 }
-
-// Access keyframe's global scan
-let global_scan = keyframe.global_scan();
-
-// Get scan context for loop closure
-let context = keyframe.scan_context();
 ```
 
-### ScanContext
+### Kidnap Detection
 
-Rotation-invariant descriptor for place recognition.
+Detects when the robot is "kidnapped" (relocated without motion):
 
 ```rust
-pub struct ScanContext {
-    descriptor: Vec<Vec<f32>>,  // 60 sectors × 20 rings
-    ring_key: Vec<f32>,         // Fast lookup key
-}
-
-// Compare two scan contexts
-let similarity = context1.compare(&context2);
-```
-
-**Structure:**
-- Divides scan into 60 angular sectors
-- Each sector has 20 range bins (rings)
-- Stores max range in each bin
-- Ring key enables fast candidate retrieval
-
-### KeyframeManager
-
-Decides when to create new keyframes.
-
-```rust
-use dhruva_slam::engine::slam::KeyframeManager;
-
-let config = KeyframeManagerConfig {
-    min_translation_m: 0.3,     // At least 30cm movement
-    min_rotation_rad: 0.2,      // Or 11° rotation
-    max_frames_per_submap: 20,  // Before new submap
-};
-
-let mut manager = KeyframeManager::new(config);
-
-// Check if keyframe should be created
-if manager.should_create_keyframe(&current_pose, &last_keyframe_pose) {
-    let keyframe = manager.create_keyframe(pose, scan, timestamp_us);
+// Triggered when match score drops significantly
+if match_score < kidnap_score_threshold {
+    slam.handle_kidnap();  // Triggers recovery mode
 }
 ```
 
-### Submaps
+### Recovery State Machine
 
-Local occupancy grid partitions.
-
-```rust
-pub struct Submap {
-    pub id: u64,
-    pub state: SubmapState,
-    pub grid: OccupancyGrid,      // Local map
-    pub keyframes: Vec<Keyframe>,
-    pub origin: Pose2D,           // Submap origin in global frame
-}
-
-pub enum SubmapState {
-    Unfinished,       // Still receiving scans
-    Finished,         // Complete, optimizable
-    TrimmedFinished,  // Complete, memory-optimized
-}
+```
+Normal ──low score──▶ Warning ──persistent low score──▶ Lost
+   ▲                      │                               │
+   └──────────────────────┴───────good match──────────────┘
 ```
 
-### SubmapManager
+## Graph
 
-Manages submap lifecycle.
+Pose graph optimization for loop closure correction.
 
-```rust
-use dhruva_slam::engine::slam::SubmapManager;
+### Architecture
 
-let config = SubmapManagerConfig {
-    max_keyframes_per_submap: 20,
-    submap_resolution: 0.05,
-    submap_grid_size: 200,
-};
-
-let mut manager = SubmapManager::new(config);
-
-// Add keyframe (may create new submap)
-manager.add_keyframe(keyframe);
-
-// Get active submap for integration
-let active = manager.active_submap_mut();
-
-// Finish current submap
-manager.finish_current_submap();
 ```
-
-### KidnappedDetector
-
-Detects if robot is lost (poor match quality).
-
-```rust
-use dhruva_slam::engine::slam::KidnappedDetector;
-
-let config = KidnappedDetectorConfig {
-    match_score_threshold: 0.3,
-    samples_window: 10,
-};
-
-let mut detector = KidnappedDetector::new(config);
-
-// Update with match result
-detector.update(match_score);
-
-if detector.is_kidnapped() {
-    // Trigger recovery
-}
+┌─────────────────────────────────────────────────────────────┐
+│                      POSE GRAPH                              │
+│                                                              │
+│    Nodes: Robot poses at keyframe times                     │
+│                                                              │
+│    Edges: Relative constraints between poses                │
+│           - Odometry edges (sequential)                      │
+│           - Loop closure edges (non-sequential)              │
+│                                                              │
+│    [P0] ──odom──▶ [P1] ──odom──▶ [P2] ──odom──▶ [P3]        │
+│     │                              ▲                         │
+│     └────────── loop closure ──────┘                         │
+└─────────────────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     OPTIMIZATION                             │
+│                                                              │
+│    Minimize: Σ ||error(edge)||² weighted by information      │
+│                                                              │
+│    Method: Gauss-Newton with Sparse CG solver                │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-### RecoveryStateMachine
-
-Recovers from kidnapped state.
-
-```rust
-use dhruva_slam::engine::slam::RecoveryStateMachine;
-
-let mut recovery = RecoveryStateMachine::new(config);
-
-// Attempt recovery
-match recovery.attempt(&scan, &map) {
-    RecoveryResult::Success(pose) => { /* relocalized */ }
-    RecoveryResult::InProgress => { /* still searching */ }
-    RecoveryResult::Failed => { /* give up */ }
-}
-```
-
-## Pose Graph
-
-Global optimization via pose graph.
 
 ### PoseGraph
 
-Graph structure for optimization.
-
 ```rust
-use dhruva_slam::engine::graph::PoseGraph;
+use crate::engine::graph::{PoseGraph, Information2D};
 
 let mut graph = PoseGraph::new();
 
 // Add nodes (poses)
-graph.add_node(PoseNode { id: 0, pose: Pose2D::origin() });
-graph.add_node(PoseNode { id: 1, pose: Pose2D::new(1.0, 0.0, 0.0) });
+graph.add_node(pose0, timestamp0);
+graph.add_node(pose1, timestamp1);
 
-// Add edges (constraints)
-graph.add_edge(PoseEdge {
-    from: 0,
-    to: 1,
-    relative_pose: Pose2D::new(1.0, 0.0, 0.0),
-    information: Information2D::from_diagonal(100.0, 100.0, 1000.0),
-    edge_type: EdgeType::Odometry,
-});
-```
+// Add odometry edge
+let odom_info = Information2D::from_std_dev(0.05, 0.05, 0.02);
+graph.add_odometry_edge(0, 1, relative_pose, odom_info);
 
-### PoseNode
-
-A pose in the graph:
-
-```rust
-pub struct PoseNode {
-    pub id: u64,
-    pub pose: Pose2D,
-}
-```
-
-### PoseEdge
-
-Constraint between poses:
-
-```rust
-pub struct PoseEdge {
-    pub from: u64,                    // Source node ID
-    pub to: u64,                      // Target node ID
-    pub relative_pose: Pose2D,        // Measured transform
-    pub information: Information2D,   // Inverse covariance (confidence)
-    pub edge_type: EdgeType,
-}
-
-pub enum EdgeType {
-    Odometry,     // Sequential constraint
-    LoopClosure,  // Non-sequential (detected)
-}
+// Add loop closure edge
+let loop_info = Information2D::from_std_dev(0.1, 0.1, 0.05);
+graph.add_loop_closure_edge(0, 10, closure_transform, loop_info, 0.95);
 ```
 
 ### Information2D
 
-Inverse covariance matrix (confidence weighting):
+Information matrix (inverse covariance) for pose constraints:
 
 ```rust
-pub struct Information2D {
-    pub data: [[f32; 3]; 3],
-}
-
-// Higher values = more confident
-let info = Information2D::from_diagonal(
-    100.0,   // x confidence
-    100.0,   // y confidence
-    1000.0,  // theta confidence
+// Create from standard deviations
+let info = Information2D::from_std_dev(
+    0.05,  // x uncertainty (m)
+    0.05,  // y uncertainty (m)
+    0.02,  // theta uncertainty (rad)
 );
+
+// Create identity (equal weight)
+let info = Information2D::identity();
+
+// Create scaled
+let info = Information2D::scaled(100.0);
 ```
 
 ### LoopDetector
 
-Detects loop closures using scan context.
+Detects loop closures using LiDAR-IRIS descriptors:
 
 ```rust
-use dhruva_slam::engine::graph::LoopDetector;
+use crate::engine::graph::{LoopDetector, LoopDetectorConfig, LoopClosureCandidate};
 
 let config = LoopDetectorConfig {
-    max_candidates: 5,
-    min_score_threshold: 0.5,
-    yaw_search_range: 0.5,  // ±28°
-    min_keyframe_gap: 20,   // Skip recent keyframes
+    min_keyframe_gap: 20,        // Skip recent poses
+    max_candidates: 5,           // Top-K candidates for ICP
+    max_hamming_distance: 100,   // IRIS threshold
+    min_icp_score: 0.5,          // ICP verification threshold
 };
 
-let detector = LoopDetector::new(config);
+let mut detector = LoopDetector::new(config);
 
-// Find loop closure candidates
-let candidates = detector.detect(&current_keyframe, &all_keyframes);
+// Add keyframe to database
+detector.add_keyframe(kf_id, &scan, &pose);
+
+// Detect loop closures
+let candidates: Vec<LoopClosureCandidate> = detector.detect(
+    query_id,
+    &query_scan,
+    &query_pose,
+    &keyframes,
+);
 
 for candidate in candidates {
-    if candidate.score > 0.7 {
-        // Verify with scan matching
-        let result = matcher.match_scans(
-            &current_keyframe.scan,
-            &candidate.keyframe.scan,
-            &candidate.initial_guess,
-        );
-
-        if result.converged {
-            // Add loop closure edge to graph
-        }
-    }
+    println!("Loop: {} -> {} (confidence: {:.2})",
+        candidate.query_id, candidate.match_id, candidate.confidence);
 }
 ```
 
 ### LoopClosureCandidate
 
-Potential loop closure:
-
 ```rust
 pub struct LoopClosureCandidate {
-    pub keyframe_id: u64,
-    pub score: f32,               // Context similarity
-    pub initial_guess: Pose2D,    // Estimated transform
+    pub query_id: u64,           // Current keyframe
+    pub match_id: u64,           // Matched keyframe
+    pub relative_pose: Pose2D,   // Transform from match to query
+    pub information: Information2D,
+    pub confidence: f32,         // Match confidence (0-1)
 }
 ```
 
 ### GraphOptimizer
 
-Optimizes pose graph to minimize error.
+Optimizes pose graph using Gauss-Newton:
 
 ```rust
-use dhruva_slam::engine::graph::GraphOptimizer;
+use crate::engine::graph::{GraphOptimizer, GraphOptimizerConfig};
 
 let config = GraphOptimizerConfig {
-    max_iterations: 100,
-    convergence_threshold: 1e-6,
-    algorithm: OptimizationAlgorithm::GaussNewton,
+    max_iterations: 50,
+    tolerance: 1e-6,
+    solver: SolverType::SparseCg,  // or DenseCholesky
 };
 
 let optimizer = GraphOptimizer::new(config);
 
-// Optimize graph
+// Optimize graph (modifies node poses in-place)
 let result = optimizer.optimize(&mut graph);
 
-match result.termination {
-    Termination::Converged => { /* success */ }
-    Termination::MaxIterations => { /* partial */ }
-    Termination::NoProgress => { /* stuck */ }
-}
+if result.converged {
+    println!("Converged in {} iterations", result.iterations);
 
-// Graph nodes now have optimized poses
+    // Apply corrected poses to keyframes
+    for node in graph.nodes() {
+        keyframes[node.id].pose = node.pose;
+    }
+}
 ```
 
 ### OptimizationResult
 
-Optimization outcome:
-
 ```rust
 pub struct OptimizationResult {
-    pub iterations: u32,
+    pub converged: bool,
+    pub iterations: usize,
     pub initial_error: f64,
     pub final_error: f64,
-    pub termination: Termination,
+    pub termination_reason: TerminationReason,
+}
+
+pub enum TerminationReason {
+    Converged,
+    MaxIterations,
+    SmallDelta,
+    NumericalError,
 }
 ```
 
-## Data Flow
+### Sparse CG Solver
 
-```
-Odometry + Scan
-      │
-      ▼
-┌─────────────────┐
-│   OnlineSlam    │
-│                 │
-│ ┌─────────────┐ │     ┌──────────────┐
-│ │ Preprocessor│─┼────►│ Scan Matcher │
-│ └─────────────┘ │     └──────┬───────┘
-│                 │            │
-│ ┌─────────────┐ │            ▼
-│ │  Keyframe   │◄┼────── Match Result
-│ │  Manager    │ │
-│ └──────┬──────┘ │
-│        │        │
-│ ┌──────▼──────┐ │
-│ │   Submap    │ │
-│ │   Manager   │ │
-│ └──────┬──────┘ │
-└────────┼────────┘
-         │
-         ▼
-┌─────────────────┐
-│   PoseGraph     │
-│                 │
-│ ┌─────────────┐ │
-│ │ LoopDetector│ │
-│ └──────┬──────┘ │
-│        ▼        │
-│ ┌─────────────┐ │
-│ │  Optimizer  │ │
-│ └─────────────┘ │
-└─────────────────┘
-```
-
-## File Structure
-
-```
-engine/
-├── mod.rs              # Module exports
-├── slam/
-│   ├── mod.rs          # SLAM exports
-│   ├── online.rs       # OnlineSlam
-│   ├── result.rs       # SlamResult, SlamStatus
-│   ├── keyframe.rs     # Keyframe, KeyframeManager
-│   ├── scan_context.rs # ScanContext
-│   ├── submap.rs       # Submap, SubmapManager
-│   ├── kidnapped.rs    # KidnappedDetector
-│   └── recovery.rs     # RecoveryStateMachine
-└── graph/
-    ├── mod.rs          # Graph exports
-    ├── pose_graph.rs   # PoseGraph, PoseNode, PoseEdge
-    ├── loop_detector.rs # LoopDetector
-    └── optimizer.rs    # GraphOptimizer
-```
-
-## Usage Example
-
-Complete SLAM pipeline:
+For large pose graphs (500+ nodes), use the sparse Conjugate Gradient solver:
 
 ```rust
-use dhruva_slam::engine::slam::OnlineSlam;
-use dhruva_slam::engine::graph::{PoseGraph, GraphOptimizer};
+let config = GraphOptimizerConfig {
+    solver: SolverType::SparseCg,
+    max_cg_iterations: 100,
+    cg_tolerance: 1e-8,
+    ..Default::default()
+};
+```
 
-// Initialize SLAM
-let mut slam = OnlineSlam::new(config);
+**Comparison:**
 
-// Main loop
+| Nodes | Dense Cholesky | Sparse CG |
+|-------|----------------|-----------|
+| 100 | 10ms | 2ms |
+| 500 | 1,250ms | 20ms |
+| 1,000 | 10,000ms | 50ms |
+| 5,000 | OOM | 200ms |
+
+## Integration Example
+
+Complete SLAM with loop closure:
+
+```rust
+use crate::engine::slam::{OnlineSlam, SlamEngine};
+use crate::engine::graph::{PoseGraph, LoopDetector, GraphOptimizer};
+
+let mut slam = OnlineSlam::new(slam_config);
+let mut graph = PoseGraph::new();
+let mut detector = LoopDetector::new(detector_config);
+let optimizer = GraphOptimizer::new(optimizer_config);
+
+let mut pending_closures = Vec::new();
+
 loop {
-    // Get sensor data
-    let (odom_delta, scan) = get_sensor_data();
-
     // Process scan
     let result = slam.process_scan(&scan, &odom_delta, timestamp_us);
 
-    // Check for loop closure opportunity
     if result.keyframe_created {
-        if let Some(closure) = detect_loop_closure(&slam) {
-            // Add to pose graph
-            slam.add_loop_closure(closure);
+        let kf = slam.latest_keyframe();
 
-            // Optimize if enough closures
-            if slam.status().num_loop_closures > 5 {
-                slam.optimize();
+        // Add to pose graph
+        graph.add_node(kf.pose, kf.timestamp_us);
+        if kf.id > 0 {
+            graph.add_odometry_edge(kf.id - 1, kf.id, odom_delta, odom_info);
+        }
+
+        // Add to loop detector
+        detector.add_keyframe(kf.id, &kf.scan, &kf.pose);
+
+        // Check for loops periodically
+        if kf.id % 5 == 0 && kf.id > 20 {
+            let closures = detector.detect(kf.id, &kf.scan, &kf.pose, &keyframes);
+
+            for closure in closures {
+                graph.add_loop_closure_edge(
+                    closure.query_id,
+                    closure.match_id,
+                    closure.relative_pose,
+                    closure.information,
+                    closure.confidence,
+                );
+                pending_closures.push(closure);
+            }
+
+            // Optimize after accumulating closures
+            if pending_closures.len() >= 3 {
+                let result = optimizer.optimize(&mut graph);
+                if result.converged {
+                    apply_corrections(&mut slam, &graph);
+                    pending_closures.clear();
+                }
             }
         }
     }
-
-    // Get current estimate
-    let pose = slam.current_pose();
-    let map = slam.map();
-
-    // Publish results
-    publish_pose(&pose);
-    publish_map(&map);
 }
 ```
 
@@ -532,7 +423,9 @@ loop {
 
 | Operation | Time | Notes |
 |-----------|------|-------|
-| process_scan (no keyframe) | ~5ms | Preprocessing + matching |
-| process_scan (with keyframe) | ~10ms | + map integration |
-| Loop detection | ~2ms | Scan context comparison |
-| Graph optimization (100 nodes) | ~50ms | 10 iterations |
+| Scan matching | 20-50ms | Depends on matcher |
+| Map integration | 5-10ms | Per scan |
+| Keyframe creation | <1ms | Bookkeeping only |
+| Loop detection | 2-5ms | IRIS + ICP verify |
+| Graph optimization (100 nodes) | 10ms | Sparse CG |
+| Graph optimization (1000 nodes) | 50ms | Sparse CG |

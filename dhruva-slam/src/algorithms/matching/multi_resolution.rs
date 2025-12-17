@@ -119,11 +119,6 @@ impl MultiResolutionMatcher {
         }
     }
 
-    /// Get the current configuration.
-    pub fn config(&self) -> &MultiResolutionConfig {
-        &self.config
-    }
-
     /// Compute configuration for a specific level (instance method for tests).
     ///
     /// Level 0 is finest, level num_levels-1 is coarsest.
@@ -320,17 +315,6 @@ mod tests {
                 .match_scans(&cloud, &empty, &Pose2D::identity())
                 .converged
         );
-    }
-
-    #[test]
-    fn test_config_accessor() {
-        let config = MultiResolutionConfig {
-            num_levels: 4,
-            ..MultiResolutionConfig::default()
-        };
-        let matcher = MultiResolutionMatcher::new(config);
-
-        assert_eq!(matcher.config().num_levels, 4);
     }
 
     #[test]

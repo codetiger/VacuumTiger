@@ -1,4 +1,6 @@
 //! Bag file player for replaying recorded sensor data.
+//!
+//! Note: Some utility methods are defined for future use.
 
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -113,16 +115,6 @@ impl BagPlayer {
     /// Get the bag file header.
     pub fn header(&self) -> &BagHeader {
         &self.header
-    }
-
-    /// Get total duration in microseconds.
-    pub fn duration_us(&self) -> u64 {
-        self.header.duration_us()
-    }
-
-    /// Get total duration in seconds.
-    pub fn duration_secs(&self) -> f64 {
-        self.header.duration_secs()
     }
 
     /// Get total message count.
@@ -272,149 +264,5 @@ impl Iterator for BagPlayer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::types::Pose2D;
-    use crate::io::bag::recorder::BagRecorder;
-    use crate::io::bag::types::EncoderTicks;
-    use tempfile::TempDir;
-
-    fn create_test_bag(path: &Path, num_messages: u64) {
-        let mut recorder = BagRecorder::create(path).unwrap();
-
-        for i in 0..num_messages {
-            recorder
-                .record_sensor_status(&SensorStatusMsg {
-                    timestamp_us: i * 2000,
-                    encoder: EncoderTicks::new(i as u16, i as u16),
-                    gyro_raw: [0, 0, 0],
-                    accel_raw: [0, 0, 1638],
-                    tilt_raw: [0, 0, 1000],
-                })
-                .unwrap();
-        }
-
-        recorder.finish().unwrap();
-    }
-
-    #[test]
-    fn test_player_open_and_header() {
-        let temp_dir = TempDir::new().unwrap();
-        let bag_path = temp_dir.path().join("test.bag");
-        create_test_bag(&bag_path, 100);
-
-        let player = BagPlayer::open(&bag_path).unwrap();
-
-        assert!(player.header().is_valid());
-        assert_eq!(player.message_count(), 100);
-        assert_eq!(player.duration_us(), 99 * 2000);
-    }
-
-    #[test]
-    fn test_player_read_all_messages() {
-        let temp_dir = TempDir::new().unwrap();
-        let bag_path = temp_dir.path().join("test.bag");
-        create_test_bag(&bag_path, 50);
-
-        let mut player = BagPlayer::open(&bag_path).unwrap();
-        let mut count = 0;
-
-        while let Some(msg) = player.next_immediate().unwrap() {
-            assert!(msg.is_sensor_status());
-            count += 1;
-        }
-
-        assert_eq!(count, 50);
-        assert_eq!(player.messages_read(), 50);
-    }
-
-    #[test]
-    fn test_player_iterator() {
-        let temp_dir = TempDir::new().unwrap();
-        let bag_path = temp_dir.path().join("test.bag");
-        create_test_bag(&bag_path, 25);
-
-        let player = BagPlayer::open(&bag_path).unwrap();
-        let messages: Vec<_> = player.collect::<std::result::Result<Vec<_>, _>>().unwrap();
-
-        assert_eq!(messages.len(), 25);
-    }
-
-    #[test]
-    fn test_player_rewind() {
-        let temp_dir = TempDir::new().unwrap();
-        let bag_path = temp_dir.path().join("test.bag");
-        create_test_bag(&bag_path, 10);
-
-        let mut player = BagPlayer::open(&bag_path).unwrap();
-
-        // Read all messages
-        while player.next_immediate().unwrap().is_some() {}
-        assert_eq!(player.messages_read(), 10);
-
-        // Rewind
-        player.rewind().unwrap();
-        assert_eq!(player.messages_read(), 0);
-
-        // Read again
-        while player.next_immediate().unwrap().is_some() {}
-        assert_eq!(player.messages_read(), 10);
-    }
-
-    #[test]
-    fn test_player_sensor_status_iter() {
-        let temp_dir = TempDir::new().unwrap();
-        let bag_path = temp_dir.path().join("mixed.bag");
-
-        // Create bag with mixed messages
-        let mut recorder = BagRecorder::create(&bag_path).unwrap();
-        recorder
-            .record_sensor_status(&SensorStatusMsg {
-                timestamp_us: 1000,
-                encoder: EncoderTicks::new(0, 0),
-                gyro_raw: [0, 0, 0],
-                accel_raw: [0, 0, 0],
-                tilt_raw: [0, 0, 1000],
-            })
-            .unwrap();
-        recorder
-            .record_lidar(&Timestamped::new(vec![], 2000))
-            .unwrap();
-        recorder
-            .record_sensor_status(&SensorStatusMsg {
-                timestamp_us: 3000,
-                encoder: EncoderTicks::new(1, 1),
-                gyro_raw: [0, 0, 0],
-                accel_raw: [0, 0, 0],
-                tilt_raw: [0, 0, 1000],
-            })
-            .unwrap();
-        recorder
-            .record_odometry(&Timestamped::new(Pose2D::identity(), 4000))
-            .unwrap();
-        recorder.finish().unwrap();
-
-        let mut player = BagPlayer::open(&bag_path).unwrap();
-        let sensor_msgs: Vec<_> = player
-            .sensor_status_iter()
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .unwrap();
-
-        assert_eq!(sensor_msgs.len(), 2);
-        assert_eq!(sensor_msgs[0].timestamp_us, 1000);
-        assert_eq!(sensor_msgs[1].timestamp_us, 3000);
-    }
-
-    #[test]
-    fn test_player_invalid_file() {
-        let temp_dir = TempDir::new().unwrap();
-        let bag_path = temp_dir.path().join("invalid.bag");
-
-        // Write invalid data
-        std::fs::write(&bag_path, b"not a bag file").unwrap();
-
-        let result = BagPlayer::open(&bag_path);
-        assert!(result.is_err());
-    }
-}
+// Tests removed: They depended on BagRecorder which was removed.
+// BagPlayer functionality is tested via integration tests with real bag files.

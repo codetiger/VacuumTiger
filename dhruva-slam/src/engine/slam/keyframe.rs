@@ -23,9 +23,6 @@ pub struct Keyframe {
 
     /// Index of the submap this keyframe belongs to.
     pub submap_id: u64,
-
-    /// Scan context descriptor for loop closure (computed lazily).
-    scan_context: Option<ScanContext>,
 }
 
 impl Keyframe {
@@ -43,26 +40,7 @@ impl Keyframe {
             scan,
             timestamp_us,
             submap_id,
-            scan_context: None,
         }
-    }
-
-    /// Get or compute the scan context descriptor.
-    pub fn scan_context(&mut self) -> &ScanContext {
-        if self.scan_context.is_none() {
-            self.scan_context = Some(ScanContext::from_scan(&self.scan));
-        }
-        self.scan_context.as_ref().unwrap()
-    }
-
-    /// Check if scan context has been computed.
-    pub fn has_scan_context(&self) -> bool {
-        self.scan_context.is_some()
-    }
-
-    /// Transform the scan to global frame.
-    pub fn global_scan(&self) -> PointCloud2D {
-        self.scan.transform(&self.pose)
     }
 }
 
@@ -86,6 +64,10 @@ pub struct ScanContext {
     /// Ring key for fast candidate retrieval.
     ring_key: Vec<f32>,
 }
+
+// Note: ScanContext is currently used only by loop_detector.rs but kept here
+// for potential future use. The descriptor() and ring_key() public getters
+// were removed as they were unused.
 
 impl ScanContext {
     /// Default number of sectors (angular divisions).
@@ -225,16 +207,6 @@ impl ScanContext {
 
         dot / norm
     }
-
-    /// Get the descriptor as a slice.
-    pub fn descriptor(&self) -> &[f32] {
-        &self.descriptor
-    }
-
-    /// Get the ring key.
-    pub fn ring_key(&self) -> &[f32] {
-        &self.ring_key
-    }
 }
 
 /// Configuration for keyframe selection.
@@ -372,43 +344,14 @@ impl KeyframeManager {
         &self.keyframes
     }
 
-    /// Get a keyframe by ID.
-    pub fn get(&self, id: u64) -> Option<&Keyframe> {
-        self.keyframes.iter().find(|kf| kf.id == id)
-    }
-
     /// Get mutable keyframe by ID.
     pub fn get_mut(&mut self, id: u64) -> Option<&mut Keyframe> {
         self.keyframes.iter_mut().find(|kf| kf.id == id)
     }
 
-    /// Get the most recent keyframe.
-    pub fn latest(&self) -> Option<&Keyframe> {
-        self.keyframes.last()
-    }
-
     /// Get number of keyframes.
     pub fn len(&self) -> usize {
         self.keyframes.len()
-    }
-
-    /// Check if empty.
-    pub fn is_empty(&self) -> bool {
-        self.keyframes.is_empty()
-    }
-
-    /// Get keyframes in a spatial region.
-    pub fn keyframes_near(&self, pose: &Pose2D, max_distance: f32) -> Vec<&Keyframe> {
-        let max_dist_sq = max_distance * max_distance;
-
-        self.keyframes
-            .iter()
-            .filter(|kf| {
-                let dx = kf.pose.x - pose.x;
-                let dy = kf.pose.y - pose.y;
-                dx * dx + dy * dy <= max_dist_sq
-            })
-            .collect()
     }
 
     /// Clear all keyframes.
@@ -417,11 +360,6 @@ impl KeyframeManager {
         self.last_keyframe_pose = None;
         self.last_keyframe_time = 0;
         self.next_id = 0;
-    }
-
-    /// Get configuration.
-    pub fn config(&self) -> &KeyframeManagerConfig {
-        &self.config
     }
 }
 
@@ -512,30 +450,5 @@ mod tests {
         // Large rotation - should create
         let large_rotation = Pose2D::new(0.0, 0.0, 1.0);
         assert!(manager.should_create_keyframe(&large_rotation, 1000));
-    }
-
-    #[test]
-    fn test_keyframe_manager_near_query() {
-        let config = KeyframeManagerConfig {
-            min_translation: 0.1,
-            min_interval_us: 0,
-            ..Default::default()
-        };
-        let mut manager = KeyframeManager::new(config);
-
-        let scan = create_test_scan();
-
-        // Create keyframes at different positions
-        manager.create_keyframe(Pose2D::new(0.0, 0.0, 0.0), scan.clone(), 0, 0);
-        manager.create_keyframe(Pose2D::new(1.0, 0.0, 0.0), scan.clone(), 1000, 0);
-        manager.create_keyframe(Pose2D::new(5.0, 0.0, 0.0), scan.clone(), 2000, 0);
-
-        // Query near origin
-        let near = manager.keyframes_near(&Pose2D::identity(), 2.0);
-        assert_eq!(near.len(), 2); // Should find first two
-
-        // Query near far point
-        let near_far = manager.keyframes_near(&Pose2D::new(5.0, 0.0, 0.0), 1.0);
-        assert_eq!(near_far.len(), 1);
     }
 }

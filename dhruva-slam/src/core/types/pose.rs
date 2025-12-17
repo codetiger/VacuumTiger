@@ -1,4 +1,6 @@
 //! Pose and point types for 2D SLAM.
+//!
+//! Note: Some utility methods are defined for future use.
 
 use serde::{Deserialize, Serialize};
 
@@ -111,61 +113,6 @@ impl Pose2D {
             -self.theta,
         )
     }
-
-    /// Transform a point from local frame to global frame.
-    #[inline]
-    pub fn transform_point(&self, point: &Point2D) -> Point2D {
-        let (sin_t, cos_t) = self.theta.sin_cos();
-        Point2D::new(
-            self.x + point.x * cos_t - point.y * sin_t,
-            self.y + point.x * sin_t + point.y * cos_t,
-        )
-    }
-
-    /// Transform a point from global frame to local frame.
-    #[inline]
-    pub fn inverse_transform_point(&self, point: &Point2D) -> Point2D {
-        let (sin_t, cos_t) = self.theta.sin_cos();
-        let dx = point.x - self.x;
-        let dy = point.y - self.y;
-        Point2D::new(dx * cos_t + dy * sin_t, -dx * sin_t + dy * cos_t)
-    }
-
-    /// Interpolate between two timestamped poses.
-    ///
-    /// Returns the interpolated pose at `target_time_us`.
-    /// Returns `None` if `target_time_us` is outside the range [start, end].
-    ///
-    /// Uses linear interpolation for x, y and shortest-path angular
-    /// interpolation for theta.
-    pub fn interpolate(
-        start: &super::Timestamped<Pose2D>,
-        end: &super::Timestamped<Pose2D>,
-        target_time_us: u64,
-    ) -> Option<Pose2D> {
-        // Check bounds
-        if target_time_us < start.timestamp_us || target_time_us > end.timestamp_us {
-            return None;
-        }
-
-        // Handle same timestamp
-        if start.timestamp_us == end.timestamp_us {
-            return Some(start.data);
-        }
-
-        // Compute interpolation factor
-        let t = (target_time_us - start.timestamp_us) as f32
-            / (end.timestamp_us - start.timestamp_us) as f32;
-
-        // Linear interpolation for x, y
-        let x = start.data.x + t * (end.data.x - start.data.x);
-        let y = start.data.y + t * (end.data.y - start.data.y);
-
-        // Angular interpolation (shortest path)
-        let theta = crate::core::math::angle_lerp(start.data.theta, end.data.theta, t);
-
-        Some(Pose2D { x, y, theta })
-    }
 }
 
 impl Default for Pose2D {
@@ -177,9 +124,8 @@ impl Default for Pose2D {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::types::Timestamped;
     use approx::assert_relative_eq;
-    use std::f32::consts::{FRAC_PI_2, PI};
+    use std::f32::consts::FRAC_PI_2;
 
     #[test]
     fn test_point2d_distance() {
@@ -210,24 +156,6 @@ mod tests {
     }
 
     #[test]
-    fn test_transform_point() {
-        let pose = Pose2D::new(1.0, 0.0, FRAC_PI_2);
-        let point = Point2D::new(1.0, 0.0);
-        let result = pose.transform_point(&point);
-        assert_relative_eq!(result.x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(result.y, 1.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_inverse_transform_point() {
-        let pose = Pose2D::new(1.0, 0.0, FRAC_PI_2);
-        let global_point = Point2D::new(1.0, 1.0);
-        let local = pose.inverse_transform_point(&global_point);
-        assert_relative_eq!(local.x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(local.y, 0.0, epsilon = 1e-6);
-    }
-
-    #[test]
     fn test_pose_composition_order() {
         let move_forward = Pose2D::new(1.0, 0.0, 0.0);
         let rotate = Pose2D::new(0.0, 0.0, FRAC_PI_2);
@@ -240,38 +168,6 @@ mod tests {
         assert_relative_eq!(result2.x, 0.0, epsilon = 1e-6);
         assert_relative_eq!(result2.y, 1.0, epsilon = 1e-6);
         assert_relative_eq!(result2.theta, FRAC_PI_2, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_pose_interpolation() {
-        let start = Timestamped::new(Pose2D::new(0.0, 0.0, 0.0), 0);
-        let end = Timestamped::new(Pose2D::new(2.0, 4.0, PI / 2.0), 1000);
-
-        let p = Pose2D::interpolate(&start, &end, 0).unwrap();
-        assert_relative_eq!(p.x, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(p.y, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(p.theta, 0.0, epsilon = 1e-6);
-
-        let p = Pose2D::interpolate(&start, &end, 1000).unwrap();
-        assert_relative_eq!(p.x, 2.0, epsilon = 1e-6);
-        assert_relative_eq!(p.y, 4.0, epsilon = 1e-6);
-        assert_relative_eq!(p.theta, PI / 2.0, epsilon = 1e-6);
-
-        let p = Pose2D::interpolate(&start, &end, 500).unwrap();
-        assert_relative_eq!(p.x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(p.y, 2.0, epsilon = 1e-6);
-        assert_relative_eq!(p.theta, PI / 4.0, epsilon = 1e-6);
-
-        assert!(Pose2D::interpolate(&start, &end, 1001).is_none());
-    }
-
-    #[test]
-    fn test_pose_interpolation_angle_wrap() {
-        let start = Timestamped::new(Pose2D::new(0.0, 0.0, PI - 0.1), 0);
-        let end = Timestamped::new(Pose2D::new(0.0, 0.0, -PI + 0.1), 1000);
-
-        let p = Pose2D::interpolate(&start, &end, 500).unwrap();
-        assert!(p.theta.abs() > PI - 0.2);
     }
 
     #[test]
@@ -300,28 +196,6 @@ mod tests {
         assert_relative_eq!(inv.x, 0.0, epsilon = 1e-6);
         assert_relative_eq!(inv.y, 0.0, epsilon = 1e-6);
         assert_relative_eq!(inv.theta, 0.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_pose_interpolate_identical_timestamps() {
-        let pose = Pose2D::new(1.0, 2.0, 0.5);
-        let start = Timestamped::new(pose, 1000);
-        let end = Timestamped::new(Pose2D::new(5.0, 6.0, 1.0), 1000);
-
-        let result = Pose2D::interpolate(&start, &end, 1000);
-        assert!(result.is_some());
-        let interp = result.unwrap();
-        assert_relative_eq!(interp.x, pose.x, epsilon = 1e-6);
-        assert_relative_eq!(interp.y, pose.y, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_pose_interpolate_out_of_bounds() {
-        let start = Timestamped::new(Pose2D::new(0.0, 0.0, 0.0), 1000);
-        let end = Timestamped::new(Pose2D::new(10.0, 10.0, 1.0), 2000);
-
-        assert!(Pose2D::interpolate(&start, &end, 500).is_none());
-        assert!(Pose2D::interpolate(&start, &end, 2500).is_none());
     }
 }
 
@@ -367,18 +241,6 @@ mod pose_composition_tests {
                 p
             );
         }
-    }
-
-    #[test]
-    fn test_pose_transform_point_roundtrip() {
-        let pose = Pose2D::new(2.0, 3.0, 1.1);
-        let point = Point2D::new(5.0, -2.0);
-
-        let global = pose.transform_point(&point);
-        let recovered = pose.inverse_transform_point(&global);
-
-        assert_relative_eq!(point.x, recovered.x, epsilon = 1e-5);
-        assert_relative_eq!(point.y, recovered.y, epsilon = 1e-5);
     }
 
     #[test]

@@ -5,9 +5,28 @@ External communication and data persistence infrastructure.
 ## Overview
 
 The I/O module provides:
-- **SangamClient** - TCP client for SangamIO daemon
+- **SangamClient** - TCP client for the SangamIO daemon
 - **Bag** - Recording and playback of sensor data
 - **Streaming** - TCP publishing for visualization clients
+
+## Module Structure
+
+```
+io/
+├── mod.rs              # Module exports
+├── sangam_client.rs    # SangamIO TCP client
+├── bag/
+│   ├── mod.rs          # Bag exports
+│   ├── format.rs       # File format constants
+│   ├── recorder.rs     # BagRecorder
+│   ├── player.rs       # BagPlayer
+│   └── simulated.rs    # SimulatedClient
+└── streaming/
+    ├── mod.rs          # Streaming exports
+    ├── publisher.rs    # OdometryPublisher
+    ├── pipeline.rs     # OdometryPipeline
+    └── messages.rs     # Message types
+```
 
 ## SangamClient
 
@@ -16,7 +35,7 @@ TCP client that connects to the SangamIO daemon running on the robot.
 ### Connection
 
 ```rust
-use dhruva_slam::io::sangam_client::SangamClient;
+use crate::io::sangam_client::{SangamClient, ClientError};
 
 // Connect to SangamIO (Protobuf wire format)
 let mut client = SangamClient::connect("192.168.68.101:5555")?;
@@ -28,20 +47,22 @@ client.set_timeout(Some(Duration::from_millis(500)));
 ### Receiving Messages
 
 ```rust
-use dhruva_slam::io::sangam_client::Message;
+use crate::io::sangam_client::Message;
 
 loop {
     match client.recv() {
         Ok(msg) => {
             match msg.topic.as_str() {
                 "sensors/sensor_status" => {
-                    // Extract sensor values
+                    // Sensor data at 110Hz
                     let values = &msg.payload.values;
                     let left_ticks = values.get("wheel_left")
                         .and_then(|v| v.as_u16());
+                    let gyro_z = values.get("gyro_z")
+                        .and_then(|v| v.as_i16());
                 }
                 "sensors/lidar" => {
-                    // Extract lidar scan
+                    // Lidar scan at 5Hz
                     let scan = extract_lidar_scan(&msg.payload);
                 }
                 _ => {}
@@ -53,22 +74,22 @@ loop {
 }
 ```
 
-### Message Structure
+### LidarScan Type
 
 ```rust
-pub struct Message {
-    pub topic: String,       // e.g., "sensors/sensor_status"
-    pub payload: Payload,
+pub struct LidarScan {
+    pub timestamp_us: u64,
+    pub points: Vec<LidarPoint>,
 }
 
-pub struct Payload {
-    pub group_id: String,
-    pub timestamp_us: u64,
-    pub values: HashMap<String, SensorValue>,
+pub struct LidarPoint {
+    pub angle_deg: f32,     // 0-360 degrees
+    pub distance_mm: u16,   // Distance in mm
+    pub quality: u8,        // Signal quality
 }
 ```
 
-### Protocol
+### Wire Protocol
 
 Length-prefixed Protobuf framing over TCP:
 
@@ -81,7 +102,7 @@ Length-prefixed Protobuf framing over TCP:
 
 ## Bag Recording and Playback
 
-Record sensor data from the robot for offline testing and development.
+Record sensor data for offline testing and development.
 
 ### File Format
 
@@ -107,39 +128,38 @@ Record sensor data from the robot for offline testing and development.
 
 ### BagRecorder
 
-Record live sensor data to file.
+Record live sensor data to file:
 
 ```rust
-use dhruva_slam::io::bag::BagRecorder;
+use crate::io::bag::BagRecorder;
 
 // Record for specific duration
 let recorder = BagRecorder::connect(
     "192.168.68.101:5555",
-    "recording.bag",
+    "bags/recording.bag",
 )?;
 
 let info = recorder.record_duration(Duration::from_secs(60));
 println!("Recorded {} messages", info.message_count);
 
-// Or record until stopped
+// Or record until stopped (e.g., via Ctrl-C)
 let recorder = BagRecorder::connect(address, path)?;
-
-// In signal handler or another thread:
+// ... in signal handler:
 recorder.stop();
 ```
 
 ### BagPlayer
 
-Read recorded bag files.
+Read recorded bag files:
 
 ```rust
-use dhruva_slam::io::bag::BagPlayer;
+use crate::io::bag::BagPlayer;
 
-let player = BagPlayer::open("recording.bag")?;
+let player = BagPlayer::open("bags/recording.bag")?;
 
 // Get metadata
 let info = player.info();
-println!("Duration: {}s", info.duration_secs());
+println!("Duration: {:.1}s", info.duration_secs());
 println!("Messages: {}", info.message_count);
 
 // Iterate messages
@@ -151,13 +171,13 @@ for msg in player.messages() {
 
 ### SimulatedClient
 
-Drop-in replacement for SangamClient that reads from bag file.
+Drop-in replacement for SangamClient that reads from bag file:
 
 ```rust
-use dhruva_slam::io::bag::SimulatedClient;
+use crate::io::bag::SimulatedClient;
 
-// Same API as SangamClient
-let mut client = SimulatedClient::open("recording.bag")?;
+// Same API as SangamClient!
+let mut client = SimulatedClient::open("bags/recording.bag")?;
 
 loop {
     match client.recv() {
@@ -168,21 +188,10 @@ loop {
 }
 ```
 
-### Bag Tools
-
-**Recording:**
-```bash
-cargo run --bin bag-record -- \
-  --sangam 192.168.68.101:5555 \
-  --output recording.bag \
-  --duration 60
-```
-
-**Inspection:**
-```bash
-cargo run --bin bag-info -- recording.bag
-cargo run --bin bag-info -- --verbose --count recording.bag
-```
+**Features:**
+- Preserves original timing (uses inter-message delays)
+- Can be looped for continuous playback
+- Identical API to SangamClient for easy switching
 
 ## Streaming
 
@@ -190,141 +199,101 @@ TCP publishing for visualization clients (Drishti).
 
 ### OdometryPublisher
 
-TCP server that broadcasts SLAM data to connected clients.
+TCP server that broadcasts SLAM data to connected clients:
 
 ```rust
-use dhruva_slam::io::streaming::OdometryPublisher;
+use crate::io::streaming::OdometryPublisher;
 
 let publisher = OdometryPublisher::new("0.0.0.0:5557")?;
 
 // In main loop
 publisher.publish_pose(&pose, timestamp_us);
-publisher.publish_slam_status(&status);
-publisher.publish_slam_map(&map);
-publisher.publish_slam_diagnostics(&diagnostics);
+publisher.publish_map(&map, timestamp_us);
+publisher.publish_scan(&scan, &pose, timestamp_us);
+publisher.publish_features(&features, timestamp_us);
 ```
 
 ### Published Message Types
 
-**OdometryMessage:**
+**OdometryMessage** (50Hz):
 ```rust
 pub struct OdometryMessage {
     pub timestamp_us: u64,
-    pub pose: Pose2D,
+    pub pose: Pose2D,           // Robot pose
     pub velocity: Option<Twist2D>,
     pub covariance: Option<Covariance2D>,
 }
 ```
 
-**SlamStatusMessage:**
-```rust
-pub struct SlamStatusMessage {
-    pub timestamp_us: u64,
-    pub mode: String,
-    pub num_scans: u64,
-    pub num_keyframes: usize,
-    pub num_submaps: usize,
-    pub last_match_score: f32,
-    pub is_lost: bool,
-}
-```
-
-**SlamMapMessage:**
+**SlamMapMessage** (1Hz):
 ```rust
 pub struct SlamMapMessage {
     pub timestamp_us: u64,
-    pub resolution: f32,
+    pub resolution: f32,        // Meters per cell
     pub width: u32,
     pub height: u32,
     pub origin_x: f32,
     pub origin_y: f32,
-    pub data: String,  // Base64-encoded occupancy data
+    pub data: String,           // Base64-encoded occupancy
 }
 ```
 
-**SlamScanMessage:**
+**SlamScanMessage** (5Hz):
 ```rust
 pub struct SlamScanMessage {
     pub timestamp_us: u64,
-    pub pose: Pose2D,
-    pub points: Vec<(f32, f32)>,  // (x, y) in robot frame
+    pub pose: Pose2D,           // Scan pose
+    pub points: Vec<(f32, f32)>, // (x, y) in robot frame
 }
 ```
 
-**SlamDiagnosticsMessage:**
+**FeatureMessage** (0.2Hz):
 ```rust
-pub struct SlamDiagnosticsMessage {
+pub struct FeatureMessage {
     pub timestamp_us: u64,
-    pub timing_breakdown: TimingBreakdown,
-    pub scan_match_stats: ScanMatchStats,
-    pub mapping_stats: MappingStats,
-    pub loop_closure_stats: LoopClosureStats,
+    pub lines: Vec<LineSegment>,
+    pub corners: Vec<Point2D>,
 }
 ```
 
 ### OdometryPipeline
 
-Fuses raw sensor data into odometry estimates.
+Fuses raw sensor data into odometry estimates with rate limiting:
 
 ```rust
-use dhruva_slam::io::streaming::OdometryPipeline;
+use crate::io::streaming::{OdometryPipeline, OdometryPipelineConfig};
 
 let config = OdometryPipelineConfig {
     ticks_per_meter: 4464.0,
     wheel_base: 0.233,
-    alpha: 0.8,
-    gyro_scale: 0.0001745,
     output_rate_hz: 50.0,
     gyro_calibration_samples: 1500,
 };
 
 let mut pipeline = OdometryPipeline::new(config);
 
-// Process each sensor update (110Hz)
+// Process each sensor update (110Hz input)
 if let Some(pose) = pipeline.process(left_ticks, right_ticks, gyro_z, timestamp_us) {
-    // Decimated output at configured rate
-    publish_pose(&pose, timestamp_us);
+    // Decimated output at configured rate (50Hz)
+    publisher.publish_pose(&pose, timestamp_us);
 }
 
-// Get diagnostics
-if let Some(diag) = pipeline.diagnostics(timestamp_us) {
-    publish_diagnostics(&diag);
-}
-
-// Current pose estimate
+// Current pose (always available)
 let current = pipeline.pose();
 ```
 
 **Features:**
 - Auto-calibrates gyro bias on startup (1500 samples)
 - Decimates 110Hz input to configurable output rate
-- Provides timing and quality diagnostics
-
-## File Structure
-
-```
-io/
-├── mod.rs              # Module exports
-├── sangam_client.rs    # SangamIO TCP client
-├── bag/
-│   ├── mod.rs          # Bag exports
-│   ├── format.rs       # File format constants
-│   ├── recorder.rs     # BagRecorder
-│   ├── player.rs       # BagPlayer
-│   └── simulated.rs    # SimulatedClient
-└── streaming/
-    ├── mod.rs          # Streaming exports
-    ├── publisher.rs    # OdometryPublisher
-    ├── pipeline.rs     # OdometryPipeline
-    └── messages.rs     # Message types
-```
+- Tracks pose delta for SLAM integration
 
 ## Usage Examples
 
 ### Complete Recording Session
 
 ```rust
-use dhruva_slam::io::bag::BagRecorder;
+use crate::io::bag::BagRecorder;
+use std::time::Duration;
 
 fn record_session(address: &str, output: &str, duration_secs: u64) -> Result<()> {
     println!("Recording from {} to {}", address, output);
@@ -341,26 +310,38 @@ fn record_session(address: &str, output: &str, duration_secs: u64) -> Result<()>
 }
 ```
 
-### Offline Processing
+### Offline SLAM Processing
 
 ```rust
-use dhruva_slam::io::bag::SimulatedClient;
-use dhruva_slam::io::streaming::OdometryPipeline;
+use crate::io::bag::SimulatedClient;
+use crate::io::sangam_client::ClientError;
+use crate::engine::slam::{OnlineSlam, SlamEngine};
 
 fn process_bag(bag_path: &str) -> Result<()> {
     let mut client = SimulatedClient::open(bag_path)?;
-    let mut pipeline = OdometryPipeline::new(config);
-
-    let mut poses = Vec::new();
+    let mut slam = OnlineSlam::new(slam_config);
+    let mut odom_pipeline = OdometryPipeline::new(odom_config);
 
     loop {
         match client.recv() {
             Ok(msg) => {
-                if msg.topic == "sensors/sensor_status" {
-                    let (left, right, gyro) = extract_sensor_data(&msg);
-                    if let Some(pose) = pipeline.process(left, right, gyro, msg.timestamp_us) {
-                        poses.push(pose);
+                match msg.topic.as_str() {
+                    "sensors/sensor_status" => {
+                        let (left, right, gyro) = extract_sensors(&msg);
+                        odom_pipeline.process(left, right, gyro, msg.timestamp_us);
                     }
+                    "sensors/lidar" => {
+                        let scan = extract_lidar(&msg);
+                        let odom_delta = odom_pipeline.delta_since_last_scan();
+                        let result = slam.process_scan(&scan, &odom_delta, msg.timestamp_us);
+
+                        println!("Scan {}: pose ({:.2}, {:.2}, {:.2}°), score {:.2}",
+                            slam.status().num_scans,
+                            result.pose.x, result.pose.y,
+                            result.pose.theta.to_degrees(),
+                            result.match_score);
+                    }
+                    _ => {}
                 }
             }
             Err(ClientError::EndOfFile) => break,
@@ -368,7 +349,8 @@ fn process_bag(bag_path: &str) -> Result<()> {
         }
     }
 
-    println!("Processed {} poses", poses.len());
+    println!("Processed {} scans, {} keyframes",
+        slam.status().num_scans, slam.status().num_keyframes);
     Ok(())
 }
 ```
@@ -376,14 +358,13 @@ fn process_bag(bag_path: &str) -> Result<()> {
 ### Live SLAM with Publishing
 
 ```rust
-use dhruva_slam::io::sangam_client::SangamClient;
-use dhruva_slam::io::streaming::{OdometryPublisher, OdometryPipeline};
-use dhruva_slam::engine::slam::OnlineSlam;
+use crate::io::sangam_client::SangamClient;
+use crate::io::streaming::OdometryPublisher;
 
 fn run_slam_node(sangam_addr: &str, publish_port: &str) -> Result<()> {
     let mut client = SangamClient::connect(sangam_addr)?;
     let publisher = OdometryPublisher::new(publish_port)?;
-    let mut pipeline = OdometryPipeline::new(odom_config);
+    let mut odom_pipeline = OdometryPipeline::new(odom_config);
     let mut slam = OnlineSlam::new(slam_config);
 
     loop {
@@ -392,20 +373,19 @@ fn run_slam_node(sangam_addr: &str, publish_port: &str) -> Result<()> {
         match msg.topic.as_str() {
             "sensors/sensor_status" => {
                 let (left, right, gyro) = extract_sensors(&msg);
-                if let Some(pose) = pipeline.process(left, right, gyro, msg.timestamp_us) {
+                if let Some(pose) = odom_pipeline.process(left, right, gyro, msg.timestamp_us) {
                     publisher.publish_pose(&pose, msg.timestamp_us);
                 }
             }
             "sensors/lidar" => {
-                let scan = extract_lidar(&msg);
-                let odom_delta = pipeline.delta_since_last_scan();
+                let scan = preprocess(&extract_lidar(&msg));
+                let odom_delta = odom_pipeline.delta_since_last_scan();
                 let result = slam.process_scan(&scan, &odom_delta, msg.timestamp_us);
 
-                publisher.publish_slam_scan(&scan, &result.pose, msg.timestamp_us);
+                publisher.publish_scan(&scan, &result.pose, msg.timestamp_us);
 
                 if result.keyframe_created {
-                    publisher.publish_slam_status(&slam.status());
-                    publisher.publish_slam_map(slam.map());
+                    publisher.publish_map(slam.map(), msg.timestamp_us);
                 }
             }
             _ => {}

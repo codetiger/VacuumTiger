@@ -2,6 +2,8 @@
 //!
 //! Connects to SangamIO daemon and receives sensor messages using Protobuf.
 //!
+//! Note: Some methods are defined for future TCP communication features.
+
 //! # Wire Protocol
 //!
 //! ```text
@@ -298,6 +300,55 @@ impl Message {
     #[inline]
     pub fn values(&self) -> &HashMap<String, SensorValue> {
         &self.values
+    }
+
+    /// Extract bumper state from sensor_status message.
+    ///
+    /// Returns (left_pressed, right_pressed) if this is a sensor_status message.
+    /// SangamIO sends individual boolean values: `bumper_left` and `bumper_right`.
+    pub fn bumper_state(&self) -> Option<(bool, bool)> {
+        if self.group_id != "sensor_status" {
+            return None;
+        }
+        // SangamIO sends bumper states as individual boolean values
+        let left = match self.values.get("bumper_left") {
+            Some(SensorValue::Bool(v)) => *v,
+            _ => false,
+        };
+        let right = match self.values.get("bumper_right") {
+            Some(SensorValue::Bool(v)) => *v,
+            _ => false,
+        };
+        Some((left, right))
+    }
+
+    /// Extract cliff sensor states from sensor_status message.
+    ///
+    /// Returns (left_side, left_front, right_front, right_side) if this is a sensor_status message.
+    /// SangamIO sends individual boolean values: `cliff_left_side`, `cliff_left_front`,
+    /// `cliff_right_front`, `cliff_right_side`.
+    pub fn cliff_state(&self) -> Option<(bool, bool, bool, bool)> {
+        if self.group_id != "sensor_status" {
+            return None;
+        }
+        // SangamIO sends cliff states as individual boolean values
+        let left_side = match self.values.get("cliff_left_side") {
+            Some(SensorValue::Bool(v)) => *v,
+            _ => false,
+        };
+        let left_front = match self.values.get("cliff_left_front") {
+            Some(SensorValue::Bool(v)) => *v,
+            _ => false,
+        };
+        let right_front = match self.values.get("cliff_right_front") {
+            Some(SensorValue::Bool(v)) => *v,
+            _ => false,
+        };
+        let right_side = match self.values.get("cliff_right_side") {
+            Some(SensorValue::Bool(v)) => *v,
+            _ => false,
+        };
+        Some((left_side, left_front, right_front, right_side))
     }
 }
 

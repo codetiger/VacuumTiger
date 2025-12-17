@@ -1,4 +1,6 @@
 //! Core data types for bag file format.
+//!
+//! Note: Some types are defined for bag recording features.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

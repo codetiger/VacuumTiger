@@ -1,13 +1,55 @@
 # Algorithms Module
 
-Core SLAM algorithm implementations: scan matching, mapping, and localization.
+Core SLAM algorithm implementations: scan matching, mapping, localization, and descriptors.
 
 ## Overview
 
 The algorithms module provides:
 - **Matching** - Align laser scans to estimate relative transforms
 - **Mapping** - Build and update occupancy grid maps
-- **Localization** - Particle filter for global localization
+- **Localization** - Motion and sensor models for particle filter
+- **Descriptors** - Place recognition for loop closure
+
+## Module Structure
+
+```
+algorithms/
+├── mod.rs              # Module exports
+├── matching/           # Scan matching algorithms
+│   ├── mod.rs          # Exports, ScanMatcher trait, ScanMatchResult
+│   ├── icp.rs          # Point-to-point ICP
+│   ├── point_to_line_icp/ # Point-to-line ICP (modular)
+│   │   ├── mod.rs
+│   │   ├── config.rs
+│   │   ├── line2d.rs
+│   │   ├── correspondence.rs
+│   │   └── gauss_newton.rs
+│   ├── correlative.rs  # Exhaustive correlative search
+│   ├── multi_resolution.rs # Multi-resolution correlative
+│   ├── hybrid.rs       # Combined correlative + ICP
+│   ├── dynamic.rs      # Runtime algorithm selection
+│   ├── robust_kernels.rs # Robust loss functions
+│   ├── icp_common.rs   # Shared ICP utilities
+│   ├── validation.rs   # Match result validation
+│   └── test_utils.rs   # Test helpers
+├── mapping/            # Occupancy grid mapping
+│   ├── mod.rs          # Exports, MapRegion
+│   ├── occupancy_grid/ # Grid map implementation
+│   │   ├── mod.rs
+│   │   ├── config.rs
+│   │   ├── export.rs
+│   │   └── serialization.rs
+│   ├── ray_tracer.rs   # Bresenham ray tracing
+│   ├── integrator.rs   # Scan-to-map integration
+│   └── features.rs     # Line/corner extraction
+├── localization/       # Particle filter components
+│   ├── mod.rs          # Exports
+│   ├── motion_model.rs # Odometry-based motion model
+│   └── sensor_model.rs # Likelihood field sensor model
+└── descriptors/        # Place recognition
+    ├── mod.rs          # Exports
+    └── lidar_iris.rs   # LiDAR-IRIS binary descriptor
+```
 
 ## Matching
 
@@ -20,125 +62,88 @@ All matchers implement this common interface:
 ```rust
 pub trait ScanMatcher {
     fn match_scans(
-        &self,
-        source: &PointCloud2D,  // Scan to align
-        target: &PointCloud2D,  // Reference scan
-        initial_guess: &Pose2D, // Starting estimate
+        &mut self,
+        source: &PointCloud2D,  // Scan to align (current)
+        target: &PointCloud2D,  // Reference (previous/map)
+        initial_guess: &Pose2D, // Starting estimate (e.g., odometry)
     ) -> ScanMatchResult;
 }
 ```
 
 ### ScanMatchResult
 
-Common output format:
-
 ```rust
 pub struct ScanMatchResult {
-    pub transform: Pose2D,       // Estimated transform (source → target)
-    pub covariance: Covariance2D, // Uncertainty estimate
-    pub score: f32,              // Match quality (0-1, higher = better)
+    pub transform: Pose2D,       // Estimated transform
+    pub covariance: Covariance2D, // Uncertainty
+    pub score: f32,              // Match quality (0-1)
     pub converged: bool,         // Did algorithm converge?
     pub iterations: u32,         // Iterations performed
     pub mse: f32,                // Mean squared error
 }
 ```
 
-### Point-to-Point ICP
+### Transform Semantics (IMPORTANT!)
 
-Classic Iterative Closest Point algorithm.
+The returned `transform` is the **robot motion** from target time to source time.
+
+For sequential SLAM where:
+- `source` = current scan (robot at time t+1)
+- `target` = previous scan (robot at time t)
+
+Use the transform directly (no inversion):
 
 ```rust
-use dhruva_slam::algorithms::matching::PointToPointIcp;
+let result = matcher.match_scans(&current_scan, &previous_scan, &odom_guess);
+slam_pose = slam_pose.compose(&result.transform);  // Correct!
 
-let config = IcpConfig {
-    max_iterations: 50,
-    translation_epsilon: 0.001,   // Convergence threshold (m)
-    rotation_epsilon: 0.001,      // Convergence threshold (rad)
-    max_correspondence_distance: 0.5,
-    min_correspondences: 10,
-    outlier_ratio: 0.1,
-};
+// WRONG: Don't invert!
+// slam_pose = slam_pose.compose(&result.transform.inverse());
+```
 
-let icp = PointToPointIcp::new(config);
-let result = icp.match_scans(&source, &target, &initial_guess);
+### Available Matchers
 
-if result.converged && result.score > 0.8 {
-    let corrected_pose = initial_guess.compose(&result.transform);
+| Matcher | Config | Use Case |
+|---------|--------|----------|
+| `PointToPointIcp` | `IcpConfig` | General purpose, small errors |
+| `PointToLineIcp` | `PointToLineIcpConfig` | Structured environments (walls) |
+| `CorrelativeMatcher` | `CorrelativeConfig` | Large initial errors |
+| `MultiResolutionMatcher` | `MultiResolutionConfig` | Balanced performance |
+| `HybridMatcher<C, F>` | `HybridConfig` | Coarse + fine refinement |
+
+### DynMatcher (Runtime Selection)
+
+The `DynMatcher` allows selecting the algorithm at runtime:
+
+```rust
+use crate::algorithms::matching::{DynMatcher, MatcherType};
+
+let matcher_type = MatcherType::MultiRes;  // From config
+let mut matcher = DynMatcher::new(matcher_type);
+
+let result = matcher.match_scans(&source, &target, &initial_guess);
+```
+
+Available types:
+- `MatcherType::Icp` - Point-to-point ICP
+- `MatcherType::P2l` - Point-to-line ICP
+- `MatcherType::Correlative` - Correlative search
+- `MatcherType::MultiRes` - Multi-resolution correlative
+- `MatcherType::HybridIcp` - Correlative + P2P ICP
+- `MatcherType::HybridP2l` - Correlative + P2L ICP
+
+### Robust Kernels
+
+ICP supports robust loss functions for outlier handling:
+
+```rust
+pub enum RobustKernel {
+    None,           // L2 loss
+    Huber,          // Huber loss
+    Cauchy,         // Cauchy loss
+    Welsch,         // Welsch loss (recommended)
 }
 ```
-
-**Algorithm:**
-1. Find nearest neighbors (using k-d tree)
-2. Compute optimal transform via SVD
-3. Apply transform to source points
-4. Repeat until convergence
-
-**Best for:** Small initial errors (<20cm, <10°)
-
-### Point-to-Line ICP
-
-Variant that aligns points to line segments.
-
-```rust
-use dhruva_slam::algorithms::matching::PointToLineIcp;
-
-let icp = PointToLineIcp::new(config);
-let result = icp.match_scans(&source, &target, &initial_guess);
-```
-
-**Best for:** Structured environments (walls, corridors)
-
-### Correlative Matcher
-
-Exhaustive grid search over transform space.
-
-```rust
-use dhruva_slam::algorithms::matching::CorrelativeMatcher;
-
-let config = CorrelativeConfig {
-    search_grid_resolution: 0.02,   // 2cm grid cells
-    search_range_x: 0.3,            // ±30cm search
-    search_range_y: 0.3,
-    search_range_theta: 0.3,        // ±17° search
-    min_score_threshold: 0.5,
-};
-
-let matcher = CorrelativeMatcher::new(config);
-let result = matcher.match_scans(&source, &target, &initial_guess);
-```
-
-**Best for:** Large initial errors, global matching
-
-### MultiResolutionMatcher
-
-Hierarchical correlative matching for efficiency.
-
-```rust
-use dhruva_slam::algorithms::matching::MultiResolutionMatcher;
-
-let config = MultiResolutionConfig {
-    resolutions: vec![0.08, 0.04, 0.02],  // Coarse to fine
-    search_grid_resolution: 0.02,
-    // ...
-};
-
-let matcher = MultiResolutionMatcher::new(config);
-```
-
-### HybridMatcher
-
-Combines correlative (global) with ICP (refinement).
-
-```rust
-use dhruva_slam::algorithms::matching::HybridMatcher;
-
-let matcher = HybridMatcher::new(correlative_config, icp_config);
-let result = matcher.match_scans(&source, &target, &initial_guess);
-```
-
-**Strategy:**
-1. Run correlative matcher for coarse alignment
-2. Refine with ICP for sub-centimeter accuracy
 
 ## Mapping
 
@@ -149,223 +154,201 @@ Occupancy grid mapping with ray tracing.
 2D grid map with log-odds representation.
 
 ```rust
-use dhruva_slam::algorithms::mapping::OccupancyGrid;
+use crate::algorithms::mapping::{OccupancyGrid, OccupancyGridConfig, CellState};
 
 let config = OccupancyGridConfig {
     resolution: 0.05,          // 5cm per cell
-    width: 400,                // 20m wide
-    height: 400,               // 20m tall
+    initial_width: 400,        // 20m
+    initial_height: 400,
     origin_x: -10.0,           // Origin at center
     origin_y: -10.0,
-    free_threshold: 0.3,       // Below = free
-    occupied_threshold: 0.7,   // Above = occupied
+    free_threshold: 0.3,
+    occupied_threshold: 0.7,
+    clamp_min: -5.0,           // Log-odds limits
+    clamp_max: 5.0,
 };
 
 let mut grid = OccupancyGrid::new(config);
 
 // Query cell state
-let cell = grid.get_cell(world_x, world_y);
-match cell {
+match grid.get_state(cx, cy) {
     CellState::Free => { /* navigable */ }
     CellState::Occupied => { /* obstacle */ }
     CellState::Unknown => { /* unexplored */ }
 }
 
 // Get probability
-let prob = grid.get_probability(world_x, world_y);
-```
+let prob = grid.get_probability(cx, cy);
 
-**Log-odds representation:**
-```
-log_odds = log(p / (1 - p))
-
-p = 0.5 (unknown)  → log_odds = 0
-p = 0.7 (occupied) → log_odds = 0.85
-p = 0.3 (free)     → log_odds = -0.85
-```
-
-### RayTracer
-
-Bresenham ray tracing for free space.
-
-```rust
-use dhruva_slam::algorithms::mapping::RayTracer;
-
-let tracer = RayTracer::new();
-
-// Trace ray from origin to endpoint
-let cells = tracer.trace(
-    &grid,
-    origin_x, origin_y,
-    endpoint_x, endpoint_y,
-);
-// Returns list of (cell_x, cell_y) along ray
+// World <-> cell conversion
+let (cx, cy) = grid.world_to_cell(world_x, world_y);
+let (wx, wy) = grid.cell_to_world(cx, cy);
 ```
 
 ### MapIntegrator
 
-Integrates laser scans into the occupancy grid.
+Integrates point clouds into the occupancy grid:
 
 ```rust
-use dhruva_slam::algorithms::mapping::MapIntegrator;
+use crate::algorithms::mapping::{MapIntegrator, MapIntegratorConfig};
 
 let config = MapIntegratorConfig {
-    hit_log_odd: 0.9,          // Increment for occupied
-    miss_log_odd: -0.4,        // Decrement for free
-    update_free_space: true,   // Trace rays through free space
+    hit_log_odds: 0.9,         // Increment for occupied
+    miss_log_odds: -0.4,       // Decrement for free
+    max_range: 8.0,
 };
 
 let integrator = MapIntegrator::new(config);
 
 // Integrate scan at robot pose
-integrator.integrate(&mut grid, &point_cloud, &robot_pose);
+integrator.integrate_cloud(&mut grid, &point_cloud, &robot_pose);
 ```
 
-**Integration process:**
-1. For each point in scan:
-   - Transform point to world coordinates
-   - Trace ray from robot to point (mark free)
-   - Mark endpoint as occupied
+### FeatureExtractor
 
-### MapRegion
-
-Bounding box for regional updates.
+Extracts geometric features (lines, corners) from maps:
 
 ```rust
-use dhruva_slam::algorithms::mapping::MapRegion;
+use crate::algorithms::mapping::{FeatureExtractor, FeatureExtractorConfig, MapFeatures};
 
-let region = MapRegion {
-    min_x: 0.0,
-    min_y: 0.0,
-    max_x: 5.0,
-    max_y: 5.0,
-};
+let extractor = FeatureExtractor::new(FeatureExtractorConfig::default());
+let features: MapFeatures = extractor.extract(&grid);
 
-// Update only within region
-integrator.integrate_region(&mut grid, &cloud, &pose, &region);
+// Access extracted features
+for line in &features.lines {
+    println!("Line: ({}, {}) -> ({}, {})",
+        line.start.x, line.start.y, line.end.x, line.end.y);
+}
+for corner in &features.corners {
+    println!("Corner at ({}, {})", corner.x, corner.y);
+}
+```
+
+### RayTracer
+
+Bresenham ray tracing for marking free space:
+
+```rust
+use crate::algorithms::mapping::RayTracer;
+
+let tracer = RayTracer::new();
+
+// Trace ray, calling callback for each cell
+tracer.trace(start_x, start_y, end_x, end_y, |cx, cy| {
+    // Process cell at (cx, cy)
+});
 ```
 
 ## Localization
 
-Monte Carlo Localization (Particle Filter).
-
-### ParticleFilter
-
-Full Bayes filter with particle representation.
-
-```rust
-use dhruva_slam::algorithms::localization::ParticleFilter;
-
-let config = ParticleFilterConfig {
-    num_particles: 500,
-    resample_threshold: 0.5,  // Effective sample ratio
-};
-
-let mut pf = ParticleFilter::new(config, initial_pose, &map);
-
-// Motion update (prediction)
-pf.predict(&odometry_delta, &motion_model);
-
-// Sensor update (correction)
-pf.update(&point_cloud, &sensor_model);
-
-// Get estimate
-let pose = pf.mean_pose();
-let covariance = pf.covariance();
-```
+Components for Monte Carlo Localization (particle filter).
 
 ### MotionModel
 
-Odometry-based motion prediction with noise.
+Odometry-based motion prediction with noise:
 
 ```rust
-use dhruva_slam::algorithms::localization::MotionModel;
+use crate::algorithms::localization::MotionModel;
 
-let config = MotionModelConfig {
-    alpha1: 0.1,  // Rotation noise from rotation
-    alpha2: 0.1,  // Rotation noise from translation
-    alpha3: 0.1,  // Translation noise from translation
-    alpha4: 0.1,  // Translation noise from rotation
-};
+let model = MotionModel::new(
+    0.1,  // alpha1: rotation noise from rotation
+    0.1,  // alpha2: rotation noise from translation
+    0.1,  // alpha3: translation noise from translation
+    0.1,  // alpha4: translation noise from rotation
+);
 
-let motion_model = MotionModel::new(config);
+// Sample noisy motion
+let noisy_pose = model.sample(&current_pose, &odom_delta);
 ```
 
-### SensorModel (Likelihood Field)
+### SensorModel
 
-Evaluates scan likelihood against map.
+Likelihood field for evaluating scan against map:
 
 ```rust
-use dhruva_slam::algorithms::localization::LikelihoodFieldModel;
+use crate::algorithms::localization::SensorModel;
 
-let config = LikelihoodFieldConfig {
+let model = SensorModel::new(
+    0.2,   // sigma_hit
+    0.05,  // z_rand
+    0.95,  // z_hit
+    8.0,   // max_range
+);
+
+// Compute likelihood of scan at pose
+let likelihood = model.likelihood(&pose, &scan, &map);
+```
+
+## Descriptors
+
+Place recognition for loop closure detection.
+
+### LidarIris
+
+Binary descriptor for fast scan comparison:
+
+```rust
+use crate::algorithms::descriptors::{LidarIris, LidarIrisConfig};
+
+let config = LidarIrisConfig {
+    num_rows: 80,
+    num_cols: 360,
     max_range: 8.0,
-    beam_count: 60,       // Subsample scan
-    sigma: 0.2,           // Gaussian std dev
-    z_hit: 0.9,           // Weight for hit model
-    z_random: 0.1,        // Weight for random model
+    signature_bits: 640,
 };
 
-let sensor_model = LikelihoodFieldModel::new(config, &map);
+// Generate descriptor from scan
+let iris = LidarIris::from_scan(&point_cloud, &config);
 
-// Evaluate particle
-let weight = sensor_model.likelihood(&particle_pose, &point_cloud);
+// Compare descriptors (Hamming distance)
+let distance = iris.distance(&other_iris);
+
+// Rotation-invariant matching
+let (distance, rotation_offset) = iris.match_with_rotation(&other_iris);
 ```
 
-**Likelihood field:**
-- Pre-computes distance transform of map
-- Fast lookup: O(n) for n beams (no ray tracing)
-
-## File Structure
-
-```
-algorithms/
-├── mod.rs              # Module exports
-├── matching/
-│   ├── mod.rs          # Matching exports
-│   ├── icp.rs          # Point-to-point ICP
-│   ├── icp_line.rs     # Point-to-line ICP
-│   ├── correlative.rs  # Correlative matcher
-│   ├── multi_res.rs    # Multi-resolution
-│   ├── hybrid.rs       # Hybrid matcher
-│   └── result.rs       # ScanMatchResult
-├── mapping/
-│   ├── mod.rs          # Mapping exports
-│   ├── occupancy.rs    # OccupancyGrid
-│   ├── ray_tracer.rs   # Bresenham ray tracing
-│   ├── integrator.rs   # MapIntegrator
-│   └── region.rs       # MapRegion
-└── localization/
-    ├── mod.rs          # Localization exports
-    ├── particle.rs     # ParticleFilter
-    ├── motion.rs       # MotionModel
-    └── sensor.rs       # LikelihoodFieldModel
-```
+**Properties:**
+- 80-byte binary signature (640 bits)
+- ~30x faster than cosine similarity (ScanContext)
+- Rotation-invariant matching via bit rotation
 
 ## Algorithm Selection Guide
 
-| Scenario | Recommended Algorithm |
-|----------|----------------------|
-| Small errors (<10cm) | Point-to-Point ICP |
-| Structured environments | Point-to-Line ICP |
-| Large errors (>20cm) | Correlative Matcher |
-| Real-time performance | Multi-Resolution + ICP |
-| Global localization | Particle Filter |
-| Incremental mapping | MapIntegrator |
+### By Environment
+
+| Environment | Recommended Matcher |
+|-------------|---------------------|
+| Structured (walls) | `HybridP2l` or `P2l` |
+| Cluttered (furniture) | `MultiRes` or `HybridIcp` |
+| Large open spaces | `MultiRes` with wide search |
+| Dynamic (people) | Any + temporal filtering |
+
+### By Initial Error
+
+| Initial Error | Recommended Matcher |
+|---------------|---------------------|
+| < 5cm, < 5° | `Icp` or `P2l` |
+| < 20cm, < 15° | `MultiRes` |
+| < 50cm, < 30° | `HybridIcp` or `HybridP2l` |
+| > 50cm | `Correlative` then ICP |
+
+### By CPU Budget
+
+| Budget | Recommended |
+|--------|-------------|
+| < 10ms | `Icp` with small iteration limit |
+| < 30ms | `MultiRes` |
+| < 50ms | `HybridIcp` |
+| < 100ms | `HybridP2l` |
 
 ## Performance
 
 | Operation | Time | Notes |
 |-----------|------|-------|
-| ICP (180 points) | ~2ms | 50 iterations max |
-| Correlative (±30cm) | ~10ms | 0.02m resolution |
-| Multi-resolution | ~5ms | 3 resolution levels |
-| Map integration | ~1ms | Ray tracing included |
-| Particle filter (500) | ~5ms | 60-beam likelihood |
-
-## References
-
-- **ICP**: Besl & McKay, "A Method for Registration of 3-D Shapes", 1992
-- **Correlative**: Olson, "Real-Time Correlative Scan Matching", 2009
-- **Likelihood Field**: Thrun et al., "Probabilistic Robotics", Chapter 6
-- **MCL**: Dellaert et al., "Monte Carlo Localization for Mobile Robots", 1999
+| ICP (180 pts, 30 iter) | ~5ms | ARM A33 |
+| P2L ICP (180 pts) | ~8ms | ARM A33 |
+| Correlative (±30cm) | ~15ms | 3cm resolution |
+| Multi-resolution | ~20ms | 3 levels |
+| Map integration | ~5ms | Ray tracing |
+| Feature extraction | ~20ms | Hough transform |
+| IRIS descriptor | ~2ms | 80-byte output |

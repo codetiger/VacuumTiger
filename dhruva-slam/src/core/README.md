@@ -6,9 +6,27 @@ Foundation types and math primitives for DhruvaSLAM. This module has zero intern
 
 The core module provides:
 - **Geometric types** - Points, poses, and transformations in 2D
-- **Sensor types** - Laser scans, point clouds, IMU readings
+- **Sensor types** - Laser scans, point clouds
 - **Math utilities** - Angle normalization, interpolation
-- **Uncertainty** - Covariance matrices for probabilistic reasoning
+- **SIMD primitives** - Vectorized operations for ARM NEON
+
+## Module Structure
+
+```
+core/
+├── mod.rs           # Module exports
+├── math.rs          # Angle utilities, interpolation
+├── simd/
+│   ├── mod.rs       # SIMD exports
+│   └── f32x4.rs     # 4-wide float vector (Float4)
+└── types/
+    ├── mod.rs       # Type exports
+    ├── pose.rs      # Pose2D, Point2D
+    ├── scan.rs      # LaserScan, PointCloud2D
+    ├── odometry.rs  # Covariance2D
+    ├── timestamped.rs # Timestamped<T>
+    └── pose_tracker.rs # PoseTracker
+```
 
 ## Types
 
@@ -24,8 +42,9 @@ pub struct Point2D {
 
 // Example
 let point = Point2D::new(1.0, 2.0);
-let distance = point.distance_to(&Point2D::origin());
-let normalized = point.normalize();
+let distance = point.norm();             // Distance from origin
+let angle = point.angle();               // Angle from origin
+let normalized = point.normalize();      // Unit vector
 ```
 
 ### Pose2D
@@ -43,7 +62,10 @@ pub struct Pose2D {
 **Key operations:**
 
 ```rust
-// Composition: combine two transforms
+// Identity pose (origin, no rotation)
+let origin = Pose2D::identity();
+
+// Composition: chain two transforms
 let global_pose = robot_pose.compose(&local_offset);
 
 // Inverse: compute reverse transform
@@ -54,20 +76,89 @@ let global_point = pose.transform_point(&local_point);
 
 // Inverse transform: global to local coordinates
 let local_point = pose.inverse_transform_point(&global_point);
-
-// Interpolation: smooth between poses
-let mid_pose = Pose2D::interpolate(&start, &end, mid_time);
 ```
 
-### Twist2D
+### LaserScan
 
-2D velocity (linear and angular).
+Lidar scan in polar coordinates (raw sensor data).
 
 ```rust
-pub struct Twist2D {
-    pub linear: f32,   // m/s
-    pub angular: f32,  // rad/s
+pub struct LaserScan {
+    pub angle_min: f32,       // Start angle (radians)
+    pub angle_max: f32,       // End angle (radians)
+    pub angle_increment: f32, // Angular step (radians)
+    pub range_min: f32,       // Minimum valid range (meters)
+    pub range_max: f32,       // Maximum valid range (meters)
+    pub ranges: Vec<f32>,     // Distance measurements (meters)
+    pub intensities: Vec<f32>, // Signal strengths (optional)
 }
+
+// Create from SangamIO lidar data
+let scan = LaserScan::from_lidar_scan(lidar_data);
+```
+
+### PointCloud2D
+
+Collection of 2D points in Cartesian coordinates (processed scan).
+
+```rust
+pub struct PointCloud2D {
+    xs: Vec<f32>,  // X coordinates
+    ys: Vec<f32>,  // Y coordinates
+}
+
+// Create from points
+let cloud = PointCloud2D::from_points(points);
+
+// Transform to global frame
+let global_cloud = cloud.transform(&robot_pose);
+
+// Access points
+let len = cloud.len();
+let (x, y) = cloud.get(0).unwrap();
+
+// Iteration
+for i in 0..cloud.len() {
+    let (x, y) = cloud.get(i).unwrap();
+}
+```
+
+### Covariance2D
+
+3x3 covariance matrix for 2D pose uncertainty (x, y, theta).
+
+```rust
+pub struct Covariance2D {
+    data: [[f32; 3]; 3],
+}
+
+// Create diagonal covariance
+let cov = Covariance2D::diagonal(0.01, 0.01, 0.001);
+
+// Zero covariance (no uncertainty)
+let zero = Covariance2D::zero();
+```
+
+### PoseTracker
+
+Utility for tracking pose and computing deltas.
+
+```rust
+pub struct PoseTracker {
+    pose: Pose2D,
+    snapshot: Pose2D,
+}
+
+let mut tracker = PoseTracker::new();
+
+// Update current pose
+tracker.set(new_pose);
+
+// Take snapshot (for computing deltas)
+tracker.take_snapshot();
+
+// Get delta since snapshot
+let delta = tracker.delta_since_snapshot();
 ```
 
 ### Timestamped<T>
@@ -80,64 +171,7 @@ pub struct Timestamped<T> {
     pub timestamp_us: u64,
 }
 
-// Example
 let stamped_pose = Timestamped::new(pose, timestamp_us);
-```
-
-### LaserScan
-
-Lidar scan in polar coordinates.
-
-```rust
-pub struct LaserScan {
-    pub angle_min: f32,       // Start angle (radians)
-    pub angle_max: f32,       // End angle (radians)
-    pub angle_increment: f32, // Angular step (radians)
-    pub range_min: f32,       // Minimum valid range (meters)
-    pub range_max: f32,       // Maximum valid range (meters)
-    pub ranges: Vec<f32>,     // Distance measurements (meters)
-    pub intensities: Vec<f32>, // Signal strengths (optional)
-}
-```
-
-### PointCloud2D
-
-Collection of 2D points in Cartesian coordinates.
-
-```rust
-pub struct PointCloud2D {
-    pub points: Vec<Point2D>,
-}
-
-// Example
-let cloud = PointCloud2D::from_laser_scan(&scan);
-let transformed = cloud.transform(&pose);
-let centroid = cloud.centroid();
-```
-
-### ImuReading
-
-IMU sensor data.
-
-```rust
-pub struct ImuReading {
-    pub gyro: [f32; 3],   // Angular velocity [x, y, z] (rad/s)
-    pub accel: [f32; 3],  // Linear acceleration [x, y, z] (m/s²)
-}
-```
-
-### Covariance2D
-
-3x3 uncertainty matrix for 2D pose (x, y, theta).
-
-```rust
-pub struct Covariance2D {
-    pub data: [[f32; 3]; 3],
-}
-
-// Example
-let cov = Covariance2D::from_diagonal(0.01, 0.01, 0.001);
-let scaled = cov.scale(2.0);
 ```
 
 ## Math Utilities
@@ -145,7 +179,7 @@ let scaled = cov.scale(2.0);
 ### Angle Normalization
 
 ```rust
-use dhruva_slam::core::math::normalize_angle;
+use crate::core::math::normalize_angle;
 
 // Normalize angle to [-π, π]
 let normalized = normalize_angle(angle);
@@ -154,43 +188,53 @@ let normalized = normalize_angle(angle);
 ### Angle Difference
 
 ```rust
-use dhruva_slam::core::math::angle_diff;
+use crate::core::math::angle_diff;
 
 // Compute shortest angular difference
 let diff = angle_diff(angle1, angle2);
 ```
 
-### Angle Interpolation
+## SIMD Module
+
+The `simd` module provides `Float4`, a 4-wide float vector optimized for ARM NEON:
 
 ```rust
-use dhruva_slam::core::math::angle_lerp;
+use crate::core::simd::Float4;
 
-// Linear interpolation with angle wrapping
-let mid_angle = angle_lerp(start_angle, end_angle, 0.5);
+// Create vector
+let a = Float4::splat(1.0);
+let b = Float4::new(1.0, 2.0, 3.0, 4.0);
+
+// Operations
+let sum = a + b;
+let diff = a - b;
+let prod = a * b;
+let sum_all = a.horizontal_sum();
+
+// FMA (fused multiply-add) - single instruction on NEON
+let fma = a.mul_add(b, c);  // a * b + c
 ```
 
-## File Structure
+**Note:** FMA is particularly useful for:
+- Pose transformations (rotation matrices)
+- Point cloud operations
+- Correlation scoring
 
-```
-core/
-├── mod.rs           # Module exports
-├── types/
-│   ├── mod.rs       # Type exports
-│   ├── point.rs     # Point2D
-│   ├── pose.rs      # Pose2D, Twist2D
-│   ├── scan.rs      # LaserScan, PointCloud2D
-│   ├── imu.rs       # ImuReading
-│   ├── covariance.rs # Covariance2D
-│   └── timestamped.rs # Timestamped<T>
-└── math.rs          # Math utilities
-```
+## Design Notes
 
-## Usage Examples
+- All angles are in **radians**
+- All distances are in **meters**
+- Pose theta is always normalized to **[-π, π]**
+- Timestamps use **microseconds** (u64)
+- Types implement `Clone`, `Copy`, `Debug`
+- PointCloud2D uses SoA (struct of arrays) layout for cache efficiency
+
+## Usage Example
 
 ### Pose Composition (Transform Chaining)
 
 ```rust
-use dhruva_slam::core::types::{Pose2D, Point2D};
+use crate::core::types::{Pose2D, Point2D};
 
 // Robot at (1, 0) facing +Y
 let robot_pose = Pose2D::new(1.0, 0.0, std::f32::consts::FRAC_PI_2);
@@ -216,25 +260,14 @@ let global_point = robot_pose.transform_point(&local_point);
 let back_to_local = robot_pose.inverse_transform_point(&global_point);
 ```
 
-### Temporal Interpolation
+### Processing a Scan
 
 ```rust
-let pose1 = Timestamped::new(Pose2D::new(0.0, 0.0, 0.0), 1000000);
-let pose2 = Timestamped::new(Pose2D::new(1.0, 0.0, 0.5), 2000000);
+use crate::core::types::{LaserScan, PointCloud2D, Pose2D};
 
-// Interpolate at t=1.5s
-let mid_pose = Pose2D::interpolate(
-    &pose1.data,
-    &pose2.data,
-    1500000,  // target time
-);
+// Convert scan to point cloud
+let cloud = PointCloud2D::from_laser_scan(&scan);
+
+// Transform to global frame
+let global_cloud = cloud.transform(&robot_pose);
 ```
-
-## Design Notes
-
-- All angles are in **radians**
-- All distances are in **meters**
-- Pose theta is always normalized to **[-π, π]**
-- Timestamps use **microseconds** (u64)
-- Types implement `Clone`, `Copy`, `Debug`, `PartialEq`
-- Serialization via `serde` (optional feature)

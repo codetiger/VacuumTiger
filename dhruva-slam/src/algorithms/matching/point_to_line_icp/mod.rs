@@ -32,7 +32,7 @@ use kiddo::{KdTree, SquaredEuclidean};
 
 use super::icp_common::{self, IdentitySnapConfig, maybe_snap_to_identity};
 use super::{ScanMatchResult, ScanMatcher};
-use crate::core::types::{Covariance2D, PointCloud2D, Pose2D};
+use crate::core::types::{PointCloud2D, Pose2D};
 use correspondence::{Correspondence, find_correspondences_into};
 
 /// Point-to-Line ICP scan matcher.
@@ -74,11 +74,6 @@ impl PointToLineIcp {
         self.transformed_source
             .ys
             .extend_from_slice(&transformed.ys);
-    }
-
-    /// Get the current configuration.
-    pub fn config(&self) -> &PointToLineIcpConfig {
-        &self.config
     }
 
     /// Build a k-d tree from a point cloud.
@@ -133,31 +128,6 @@ impl PointToLineIcp {
         icp_common::mse_to_score(mse)
     }
 
-    /// Match source point cloud against a pre-built k-d tree.
-    ///
-    /// This is more efficient when matching multiple scans against the same target,
-    /// as the k-d tree can be built once and reused.
-    ///
-    /// # Arguments
-    ///
-    /// * `source` - The source point cloud to be transformed
-    /// * `target` - The target point cloud (must match the tree)
-    /// * `target_tree` - Pre-built k-d tree from the target point cloud
-    /// * `initial_guess` - Initial transform estimate
-    pub fn match_scans_with_tree(
-        &mut self,
-        source: &PointCloud2D,
-        target: &PointCloud2D,
-        target_tree: &super::CachedKdTree,
-        initial_guess: &Pose2D,
-    ) -> ScanMatchResult {
-        if source.is_empty() || target_tree.len() < self.config.line_neighbors {
-            return ScanMatchResult::failed();
-        }
-
-        self.match_scans_internal(source, target, target_tree.tree(), initial_guess)
-    }
-
     /// Internal matching implementation that works with a k-d tree reference.
     fn match_scans_internal(
         &mut self,
@@ -179,8 +149,6 @@ impl PointToLineIcp {
                 score: 0.5,                // Medium confidence
                 converged: true,           // Don't count as failure
                 iterations: 0,
-                mse: f32::MAX,
-                covariance: Covariance2D::diagonal(0.5, 0.5, 0.2),
             };
         }
 
@@ -253,7 +221,7 @@ impl PointToLineIcp {
 
                 // Return buffer before early exit
                 self.correspondence_buffer = corr_buffer;
-                return ScanMatchResult::success(final_transform, score, iterations, p2p_mse);
+                return ScanMatchResult::success(final_transform, score, iterations);
             }
 
             // Transform-based convergence - if delta is tiny, accept
@@ -268,7 +236,7 @@ impl PointToLineIcp {
                     maybe_snap_to_identity(score, initial_guess, &current_transform, &snap_config);
 
                 self.correspondence_buffer = corr_buffer;
-                return ScanMatchResult::success(final_transform, score, iterations, p2p_mse);
+                return ScanMatchResult::success(final_transform, score, iterations);
             }
 
             // Check if MSE is diverging (consecutive check)
@@ -310,15 +278,13 @@ impl PointToLineIcp {
         // Consider it converged if point-to-point MSE is reasonable
         // 0.01 = 1cm² = 1cm RMSE
         if p2p_mse < 0.01 {
-            ScanMatchResult::success(final_transform, score, iterations, p2p_mse)
+            ScanMatchResult::success(final_transform, score, iterations)
         } else {
             ScanMatchResult {
                 transform: final_transform,
-                covariance: Covariance2D::diagonal(0.1, 0.1, 0.05),
                 score,
                 converged: false,
                 iterations,
-                mse: p2p_mse,
             }
         }
     }
@@ -481,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_empty_clouds() {
-        let empty = PointCloud2D::new();
+        let empty = PointCloud2D::with_capacity(0);
         let cloud = create_l_shape(50, 2.0);
         let mut icp = PointToLineIcp::new(PointToLineIcpConfig::default());
 
@@ -490,19 +456,6 @@ mod tests {
 
         let result2 = icp.match_scans(&cloud, &empty, &Pose2D::identity());
         assert!(!result2.converged);
-    }
-
-    #[test]
-    fn test_config_accessor() {
-        let config = PointToLineIcpConfig {
-            max_iterations: 100,
-            line_neighbors: 7,
-            ..PointToLineIcpConfig::default()
-        };
-        let icp = PointToLineIcp::new(config);
-
-        assert_eq!(icp.config().max_iterations, 100);
-        assert_eq!(icp.config().line_neighbors, 7);
     }
 
     #[test]

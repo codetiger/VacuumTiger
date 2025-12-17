@@ -18,6 +18,8 @@
 //! ```text
 //! θ_fused = α × θ_gyro + (1 - α) × θ_encoder
 //! ```
+//!
+//! Note: Some utility methods are defined for future use.
 
 use super::calibration::CRL200S_GYRO_SCALE;
 use crate::core::types::Pose2D;
@@ -109,37 +111,6 @@ impl ComplementaryFilter {
         }
     }
 
-    /// Create a new complementary filter at a specific initial pose.
-    pub fn new_at(config: ComplementaryConfig, initial_pose: Pose2D) -> Self {
-        Self {
-            config,
-            pose: initial_pose,
-            last_timestamp_us: None,
-        }
-    }
-
-    /// Get the current pose estimate.
-    pub fn pose(&self) -> Pose2D {
-        self.pose
-    }
-
-    /// Get the current configuration.
-    pub fn config(&self) -> &ComplementaryConfig {
-        &self.config
-    }
-
-    /// Reset to the origin.
-    pub fn reset(&mut self) {
-        self.pose = Pose2D::identity();
-        self.last_timestamp_us = None;
-    }
-
-    /// Reset to a specific pose.
-    pub fn reset_to(&mut self, pose: Pose2D) {
-        self.pose = pose;
-        self.last_timestamp_us = None;
-    }
-
     /// Update the filter with new sensor data.
     ///
     /// # Arguments
@@ -201,56 +172,12 @@ impl ComplementaryFilter {
 
         self.pose
     }
-
-    /// Update with pre-calibrated gyro value in rad/s.
-    ///
-    /// Use this if you've already applied calibration to the gyro reading.
-    ///
-    /// # Arguments
-    ///
-    /// * `encoder_delta` - Pose delta from wheel odometry (in robot frame)
-    /// * `gyro_z_rad_s` - Calibrated gyroscope Z reading in rad/s
-    /// * `timestamp_us` - Current timestamp in microseconds
-    pub fn update_calibrated(
-        &mut self,
-        encoder_delta: Pose2D,
-        gyro_z_rad_s: f32,
-        timestamp_us: u64,
-    ) -> Pose2D {
-        // Compute dt from timestamps
-        let dt = match self.last_timestamp_us {
-            Some(last) => {
-                if timestamp_us <= last {
-                    0.0
-                } else {
-                    (timestamp_us - last) as f32 / 1_000_000.0
-                }
-            }
-            None => 0.0,
-        };
-        self.last_timestamp_us = Some(timestamp_us);
-
-        let dtheta_gyro = gyro_z_rad_s * dt;
-        let dtheta_encoder = encoder_delta.theta;
-
-        let dtheta_fused = if dt > 0.0 {
-            self.config.alpha * dtheta_gyro + (1.0 - self.config.alpha) * dtheta_encoder
-        } else {
-            dtheta_encoder
-        };
-
-        let fused_delta = Pose2D::new(encoder_delta.x, encoder_delta.y, dtheta_fused);
-        self.pose = self.pose.compose(&fused_delta);
-
-        self.pose
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use std::f32::consts::FRAC_PI_2;
 
     fn test_config() -> ComplementaryConfig {
         ComplementaryConfig {
@@ -263,21 +190,14 @@ mod tests {
 
     #[test]
     fn test_initial_pose() {
-        let filter = ComplementaryFilter::new(test_config());
-        let pose = filter.pose();
-        assert_eq!(pose.x, 0.0);
-        assert_eq!(pose.y, 0.0);
-        assert_eq!(pose.theta, 0.0);
-    }
-
-    #[test]
-    fn test_initial_pose_custom() {
-        let initial = Pose2D::new(1.0, 2.0, 0.5);
-        let filter = ComplementaryFilter::new_at(test_config(), initial);
-        let pose = filter.pose();
-        assert_eq!(pose.x, 1.0);
-        assert_eq!(pose.y, 2.0);
-        assert_relative_eq!(pose.theta, 0.5, epsilon = 1e-6);
+        let mut filter = ComplementaryFilter::new(test_config());
+        // Initialize
+        filter.update(Pose2D::identity(), 0, 0);
+        // After first update, pose should still be identity
+        let pose = filter.update(Pose2D::identity(), 0, 10_000);
+        assert_relative_eq!(pose.x, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(pose.y, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(pose.theta, 0.0, epsilon = 1e-6);
     }
 
     #[test]
@@ -292,7 +212,7 @@ mod tests {
 
         // First update initializes timestamp
         let delta = Pose2D::new(1.0, 0.0, 0.1);
-        filter.update(delta, 0, 0);
+        let _pose = filter.update(delta, 0, 0);
 
         // Second update with encoder motion
         let delta = Pose2D::new(0.5, 0.0, 0.05);
@@ -349,62 +269,6 @@ mod tests {
     }
 
     #[test]
-    fn test_reset() {
-        let mut filter = ComplementaryFilter::new(test_config());
-
-        // Move around
-        filter.update(Pose2D::new(1.0, 0.0, 0.5), 0, 0);
-        filter.update(Pose2D::new(0.5, 0.0, 0.1), 0, 100_000);
-
-        assert!(filter.pose().x > 0.5);
-
-        // Reset
-        filter.reset();
-
-        let pose = filter.pose();
-        assert_eq!(pose.x, 0.0);
-        assert_eq!(pose.y, 0.0);
-        assert_eq!(pose.theta, 0.0);
-    }
-
-    #[test]
-    fn test_reset_to() {
-        let mut filter = ComplementaryFilter::new(test_config());
-
-        filter.update(Pose2D::new(1.0, 0.0, 0.5), 0, 0);
-
-        let new_pose = Pose2D::new(5.0, 3.0, FRAC_PI_2);
-        filter.reset_to(new_pose);
-
-        let pose = filter.pose();
-        assert_relative_eq!(pose.x, 5.0, epsilon = 1e-6);
-        assert_relative_eq!(pose.y, 3.0, epsilon = 1e-6);
-        assert_relative_eq!(pose.theta, FRAC_PI_2, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_update_calibrated() {
-        let config = ComplementaryConfig {
-            alpha: 0.98,
-            gyro_scale: 1.0, // ignored for calibrated
-            gyro_bias_z: 0.0,
-            gyro_sign: 1.0,
-        };
-        let mut filter = ComplementaryFilter::new(config);
-
-        // Initialize
-        filter.update_calibrated(Pose2D::identity(), 0.0, 0);
-
-        // Update with calibrated gyro (0.5 rad/s)
-        let delta = Pose2D::new(0.1, 0.0, 0.0);
-        let pose = filter.update_calibrated(delta, 0.5, 100_000);
-
-        // dt = 0.1s, gyro contribution = 0.98 * 0.5 * 0.1 = 0.049 rad
-        assert!(pose.theta > 0.04);
-        assert!(pose.theta < 0.06);
-    }
-
-    #[test]
     fn test_multiple_updates() {
         let config = ComplementaryConfig {
             alpha: 0.5, // Equal weight
@@ -419,13 +283,12 @@ mod tests {
 
         filter.update(Pose2D::identity(), 0, 0);
 
+        let mut final_pose = Pose2D::identity();
         for i in 1..=100 {
             let encoder_delta = Pose2D::new(0.001, 0.0, 0.001); // Small forward motion + turn
             let gyro = 1; // 1 rad/s
-            filter.update(encoder_delta, gyro, i * dt_us);
+            final_pose = filter.update(encoder_delta, gyro, i * dt_us);
         }
-
-        let final_pose = filter.pose();
 
         // Should have moved forward ~0.1m
         assert!(final_pose.x > 0.05);
@@ -592,14 +455,5 @@ mod tests {
             "Expected negative theta, got {}",
             pose.theta
         );
-    }
-
-    #[test]
-    fn test_config_accessor() {
-        let config = test_config();
-        let filter = ComplementaryFilter::new(config);
-
-        assert_eq!(filter.config().alpha, 0.98);
-        assert_eq!(filter.config().gyro_scale, 0.001);
     }
 }

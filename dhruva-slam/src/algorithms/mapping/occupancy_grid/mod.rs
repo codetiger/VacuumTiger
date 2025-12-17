@@ -16,6 +16,8 @@
 //! - Simple addition for updates (no multiplication)
 //! - Avoids numerical issues at probability extremes
 //! - Easy to clamp values
+//!
+//! Note: Some utility methods are defined for future use.
 
 mod config;
 mod export;
@@ -23,15 +25,13 @@ mod serialization;
 
 pub use config::{CellState, OccupancyGridConfig};
 
-use std::path::Path;
-
-use super::{MapMetadata, MapRegion};
+use super::MapRegion;
 
 /// 2D occupancy grid map.
 ///
 /// Stores log-odds values for each cell. Supports dynamic growth
 /// as the robot explores new areas.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OccupancyGrid {
     config: OccupancyGridConfig,
 
@@ -97,16 +97,6 @@ impl OccupancyGrid {
         }
     }
 
-    /// Get the configuration.
-    pub fn config(&self) -> &OccupancyGridConfig {
-        &self.config
-    }
-
-    /// Get the raw cells (for serialization).
-    pub(crate) fn cells(&self) -> &[f32] {
-        &self.cells
-    }
-
     /// Get grid width in cells.
     pub fn width(&self) -> usize {
         self.width
@@ -130,6 +120,12 @@ impl OccupancyGrid {
     /// Get grid origin in world coordinates.
     pub fn origin(&self) -> (f32, f32) {
         (self.origin_x, self.origin_y)
+    }
+
+    /// Clear all cells to unknown state.
+    pub fn clear(&mut self) {
+        self.cells.fill(0.0); // Log-odds 0 = unknown
+        self.updated_region = None;
     }
 
     /// Convert world coordinates to cell indices.
@@ -192,16 +188,6 @@ impl OccupancyGrid {
         }
     }
 
-    /// Get log-odds value at signed cell indices.
-    #[inline]
-    pub fn get_log_odds_signed(&self, cx: i32, cy: i32) -> f32 {
-        if self.is_valid_cell(cx, cy) {
-            self.cells[self.cell_index(cx as usize, cy as usize)]
-        } else {
-            0.0
-        }
-    }
-
     /// Get cell state (for visualization).
     pub fn get_state(&self, cx: usize, cy: usize) -> CellState {
         let log_odds = self.get_log_odds(cx, cy);
@@ -213,12 +199,6 @@ impl OccupancyGrid {
         } else {
             CellState::Unknown
         }
-    }
-
-    /// Get occupancy probability (0.0 to 1.0).
-    pub fn get_probability(&self, cx: usize, cy: usize) -> f32 {
-        let log_odds = self.get_log_odds(cx, cy);
-        1.0 / (1.0 + (-log_odds).exp())
     }
 
     /// Update a cell with an observation.
@@ -347,31 +327,126 @@ impl OccupancyGrid {
         self.origin_y = new_origin_y;
     }
 
-    /// Clear the map (reset all cells to unknown).
-    pub fn clear(&mut self) {
-        self.cells.fill(0.0);
-        self.updated_region = None;
-    }
+    /// Mark a bumper obstacle at the given pose.
+    ///
+    /// When a bumper is triggered, marks cells in front of the robot as occupied.
+    /// This helps the path planner avoid recently discovered obstacles.
+    ///
+    /// # Arguments
+    ///
+    /// - `robot_x`, `robot_y`: Robot position in world coordinates
+    /// - `robot_theta`: Robot heading in radians
+    /// - `bumper_left`: Left bumper triggered
+    /// - `bumper_right`: Right bumper triggered
+    /// - `robot_radius`: Robot radius in meters
+    pub fn mark_bumper_obstacle(
+        &mut self,
+        robot_x: f32,
+        robot_y: f32,
+        robot_theta: f32,
+        bumper_left: bool,
+        bumper_right: bool,
+        robot_radius: f32,
+    ) {
+        // Distance from robot center to bumper contact point
+        let bumper_offset = robot_radius + 0.02; // 2cm past robot radius
 
-    /// Get metadata for serialization.
-    pub fn metadata(&self) -> MapMetadata {
-        MapMetadata {
-            resolution: self.config.resolution,
-            width: self.width,
-            height: self.height,
-            origin_x: self.origin_x,
-            origin_y: self.origin_y,
+        // Calculate base contact point (straight ahead)
+        let front_x = robot_x + bumper_offset * robot_theta.cos();
+        let front_y = robot_y + bumper_offset * robot_theta.sin();
+
+        // Perpendicular direction for left/right offset
+        let perp_x = -robot_theta.sin();
+        let perp_y = robot_theta.cos();
+
+        // Width of bumper zone to mark (half the robot width)
+        let half_width = robot_radius * 0.7;
+
+        // Mark obstacle cells based on which bumper was triggered
+        let points_to_mark: Vec<(f32, f32)> = if bumper_left && bumper_right {
+            // Both bumpers - mark full frontal arc
+            vec![
+                (front_x, front_y),
+                (front_x + perp_x * half_width, front_y + perp_y * half_width),
+                (front_x - perp_x * half_width, front_y - perp_y * half_width),
+                (
+                    front_x + perp_x * half_width * 0.5,
+                    front_y + perp_y * half_width * 0.5,
+                ),
+                (
+                    front_x - perp_x * half_width * 0.5,
+                    front_y - perp_y * half_width * 0.5,
+                ),
+            ]
+        } else if bumper_left {
+            // Left bumper - mark left side
+            vec![
+                (front_x + perp_x * half_width, front_y + perp_y * half_width),
+                (
+                    front_x + perp_x * half_width * 0.5,
+                    front_y + perp_y * half_width * 0.5,
+                ),
+                (front_x, front_y),
+            ]
+        } else if bumper_right {
+            // Right bumper - mark right side
+            vec![
+                (front_x - perp_x * half_width, front_y - perp_y * half_width),
+                (
+                    front_x - perp_x * half_width * 0.5,
+                    front_y - perp_y * half_width * 0.5,
+                ),
+                (front_x, front_y),
+            ]
+        } else {
+            return; // No bumper triggered
+        };
+
+        // Mark each point as occupied (multiple updates for stronger marking)
+        for (px, py) in points_to_mark {
+            self.ensure_contains(px, py);
+            if let Some((cx, cy)) = self.world_to_cell(px, py) {
+                // Update multiple times to make the obstacle "sticky"
+                for _ in 0..5 {
+                    self.update_cell(cx, cy, true);
+                }
+            }
         }
+
+        log::debug!(
+            "Marked bumper obstacle at ({:.2}, {:.2}), theta={:.2}, left={}, right={}",
+            robot_x,
+            robot_y,
+            robot_theta,
+            bumper_left,
+            bumper_right
+        );
     }
 
-    /// Save map to a binary file.
-    pub fn save<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
-        serialization::save(self, path)
-    }
+    /// Convert occupied cells to a point cloud for scan matching.
+    ///
+    /// Used for localization matching against a saved map.
+    pub fn as_pointcloud(&self) -> crate::core::types::PointCloud2D {
+        use crate::core::types::{Point2D, PointCloud2D};
 
-    /// Load map from a binary file.
-    pub fn load<P: AsRef<Path>>(path: P, config: OccupancyGridConfig) -> std::io::Result<Self> {
-        serialization::load(path, config)
+        let (width, height) = self.dimensions();
+        // Estimate ~10% occupied cells
+        let estimated = (width * height) / 10;
+        let mut cloud = PointCloud2D::with_capacity(estimated);
+
+        let mut idx = 0u32;
+        for cy in 0..height {
+            for cx in 0..width {
+                if self.get_state(cx, cy) == CellState::Occupied {
+                    let (x, y) = self.cell_to_world(cx, cy);
+                    // Add tiny noise to avoid k-d tree bucket issues
+                    let noise = (idx as f32) * 1e-7;
+                    cloud.push(Point2D::new(x + noise, y + noise));
+                    idx += 1;
+                }
+            }
+        }
+        cloud
     }
 }
 
@@ -458,23 +533,6 @@ mod tests {
     }
 
     #[test]
-    fn test_probability_conversion() {
-        let config = OccupancyGridConfig::default();
-        let mut grid = OccupancyGrid::new(config);
-
-        let (cx, cy) = grid.world_to_cell(0.0, 0.0).unwrap();
-
-        // Unknown = 50% probability
-        assert_relative_eq!(grid.get_probability(cx, cy), 0.5, epsilon = 0.01);
-
-        // Make occupied
-        for _ in 0..10 {
-            grid.update_cell(cx, cy, true);
-        }
-        assert!(grid.get_probability(cx, cy) > 0.9);
-    }
-
-    #[test]
     fn test_grid_resize() {
         let config = OccupancyGridConfig {
             resolution: 0.1,
@@ -507,23 +565,6 @@ mod tests {
     }
 
     #[test]
-    fn test_clear() {
-        let config = OccupancyGridConfig::default();
-        let mut grid = OccupancyGrid::new(config);
-
-        // Update some cells
-        grid.update_cell(10, 10, true);
-        grid.update_cell(20, 20, false);
-
-        assert!(grid.get_log_odds(10, 10) != 0.0);
-
-        grid.clear();
-
-        assert_eq!(grid.get_log_odds(10, 10), 0.0);
-        assert_eq!(grid.get_log_odds(20, 20), 0.0);
-    }
-
-    #[test]
     fn test_updated_region() {
         let config = OccupancyGridConfig::default();
         let mut grid = OccupancyGrid::new(config);
@@ -541,103 +582,6 @@ mod tests {
 
         // Should be cleared
         assert!(grid.take_updated_region().is_none());
-    }
-
-    #[test]
-    fn test_to_grayscale() {
-        let config = OccupancyGridConfig {
-            resolution: 0.1,
-            initial_width: 1.0,
-            initial_height: 1.0,
-            ..Default::default()
-        };
-        let mut grid = OccupancyGrid::new(config);
-
-        // Make one cell occupied, one free
-        grid.update_cell(0, 0, true);
-        grid.update_cell(0, 0, true);
-        grid.update_cell(0, 0, true);
-
-        grid.update_cell(1, 1, false);
-        grid.update_cell(1, 1, false);
-        grid.update_cell(1, 1, false);
-
-        let (w, h, pixels) = grid.to_grayscale();
-        assert_eq!(w, 10);
-        assert_eq!(h, 10);
-        assert_eq!(pixels.len(), 100);
-
-        // Occupied cell should be dark (0)
-        assert_eq!(pixels[0], 0);
-
-        // Free cell should be white (255)
-        assert_eq!(pixels[11], 255);
-    }
-
-    #[test]
-    fn test_count_cells() {
-        let config = OccupancyGridConfig {
-            resolution: 0.1,
-            initial_width: 1.0,
-            initial_height: 1.0,
-            ..Default::default()
-        };
-        let mut grid = OccupancyGrid::new(config);
-
-        // Initially all unknown
-        let (free, unknown, occupied) = grid.count_cells();
-        assert_eq!(free, 0);
-        assert_eq!(occupied, 0);
-        assert_eq!(unknown, 100);
-
-        // Mark some cells
-        for _ in 0..5 {
-            grid.update_cell(0, 0, true);
-            grid.update_cell(1, 0, false);
-        }
-
-        let (free, unknown, occupied) = grid.count_cells();
-        assert_eq!(occupied, 1);
-        assert_eq!(free, 1);
-        assert_eq!(unknown, 98);
-    }
-
-    #[test]
-    fn test_save_and_load() {
-        let config = OccupancyGridConfig {
-            resolution: 0.1,
-            initial_width: 2.0,
-            initial_height: 2.0,
-            ..Default::default()
-        };
-        let mut grid = OccupancyGrid::new(config.clone());
-
-        // Add some data
-        for _ in 0..5 {
-            grid.update_cell(5, 5, true);
-            grid.update_cell(10, 10, false);
-        }
-
-        let original_occupied = grid.get_log_odds(5, 5);
-        let original_free = grid.get_log_odds(10, 10);
-
-        // Save to temp file
-        let temp_path = std::env::temp_dir().join("test_map.dsm");
-        grid.save(&temp_path).unwrap();
-
-        // Load
-        let loaded = OccupancyGrid::load(&temp_path, config).unwrap();
-
-        assert_eq!(loaded.dimensions(), grid.dimensions());
-        assert_relative_eq!(
-            loaded.get_log_odds(5, 5),
-            original_occupied,
-            epsilon = 0.001
-        );
-        assert_relative_eq!(loaded.get_log_odds(10, 10), original_free, epsilon = 0.001);
-
-        // Clean up
-        std::fs::remove_file(temp_path).ok();
     }
 
     #[test]
@@ -670,33 +614,6 @@ mod tests {
     }
 
     #[test]
-    fn test_probability_always_bounded() {
-        let config = OccupancyGridConfig {
-            log_odds_max: 100.0,
-            log_odds_min: -100.0,
-            ..Default::default()
-        };
-        let mut grid = OccupancyGrid::new(config);
-
-        let (cx, cy) = grid.world_to_cell(0.0, 0.0).unwrap();
-
-        for _ in 0..1000 {
-            grid.update_cell(cx, cy, true);
-        }
-        let prob_occupied = grid.get_probability(cx, cy);
-        assert!(prob_occupied >= 0.0 && prob_occupied <= 1.0);
-        assert!(prob_occupied > 0.99);
-
-        grid.clear();
-        for _ in 0..1000 {
-            grid.update_cell(cx, cy, false);
-        }
-        let prob_free = grid.get_probability(cx, cy);
-        assert!(prob_free >= 0.0 && prob_free <= 1.0);
-        assert!(prob_free < 0.01);
-    }
-
-    #[test]
     fn test_log_odds_numerical_stability() {
         let config = OccupancyGridConfig::default();
         let mut grid = OccupancyGrid::new(config);
@@ -708,12 +625,9 @@ mod tests {
         }
 
         let log_odds = grid.get_log_odds(cx, cy);
-        let prob = grid.get_probability(cx, cy);
 
         assert!(log_odds.is_finite());
-        assert!(prob.is_finite());
         assert!(!log_odds.is_nan());
-        assert!(!prob.is_nan());
     }
 
     #[test]

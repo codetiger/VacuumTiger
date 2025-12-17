@@ -59,14 +59,21 @@
 //! let optimizer = GraphOptimizer::new(config);
 //! let result = optimizer.optimize(&mut graph);
 //! ```
+//!
+//! Note: Some types and utility methods are defined for future use.
 
 mod loop_detector;
 mod optimizer;
 mod pose_graph;
 
+// Loop closure detection - used by OnlineSlam
 pub use loop_detector::{LoopClosureCandidate, LoopDetector, LoopDetectorConfig};
-pub use optimizer::{GraphOptimizer, GraphOptimizerConfig, OptimizationResult, TerminationReason};
-pub use pose_graph::{EdgeType, Information2D, PoseEdge, PoseGraph, PoseNode};
+
+// Graph optimization - used by OnlineSlam
+pub use optimizer::{GraphOptimizer, GraphOptimizerConfig};
+
+// Pose graph structure - used by OnlineSlam and optimizer
+pub use pose_graph::{Information2D, PoseGraph, PoseNode};
 
 #[cfg(test)]
 mod tests {

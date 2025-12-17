@@ -47,11 +47,6 @@ impl RangeFilter {
         Self { config }
     }
 
-    /// Get the current configuration.
-    pub fn config(&self) -> &RangeFilterConfig {
-        &self.config
-    }
-
     /// Check if a range value is valid.
     #[inline]
     pub fn is_valid(&self, range: f32) -> bool {
@@ -114,11 +109,6 @@ impl RangeFilter {
             },
         }
     }
-
-    /// Count how many points would be filtered out.
-    pub fn count_invalid(&self, scan: &LaserScan) -> usize {
-        scan.ranges.iter().filter(|&&r| !self.is_valid(r)).count()
-    }
 }
 
 impl Default for RangeFilter {
@@ -163,17 +153,6 @@ mod tests {
         for &range in &filtered.ranges {
             assert!(filter.is_valid(range));
         }
-    }
-
-    #[test]
-    fn test_range_filter_counts_invalid() {
-        let scan = create_test_scan();
-        let filter = RangeFilter::default();
-
-        let invalid_count = filter.count_invalid(&scan);
-
-        // 6 invalid: 0.05, 15.0, 0.0, -1.0, NaN, Infinity
-        assert_eq!(invalid_count, 6);
     }
 
     #[test]
@@ -246,7 +225,6 @@ mod tests {
         let filtered = filter.apply(&scan);
 
         assert!(filtered.is_empty());
-        assert_eq!(filter.count_invalid(&scan), 6);
     }
 
     #[test]
@@ -308,18 +286,6 @@ mod tests {
     }
 
     #[test]
-    fn test_config_accessor() {
-        let config = RangeFilterConfig {
-            min_range: 0.25,
-            max_range: 8.5,
-        };
-        let filter = RangeFilter::new(config);
-
-        assert_eq!(filter.config().min_range, 0.25);
-        assert_eq!(filter.config().max_range, 8.5);
-    }
-
-    #[test]
     fn test_default_config() {
         let config = RangeFilterConfig::default();
         assert_eq!(config.min_range, 0.1);
@@ -336,6 +302,5 @@ mod tests {
         let filtered = filter.apply(&scan);
 
         assert!(filtered.is_empty());
-        assert_eq!(filter.count_invalid(&scan), 1000);
     }
 }
