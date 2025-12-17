@@ -12,7 +12,7 @@ VacuumTiger is an open-source robotic vacuum firmware project for the CRL-200S h
 **Target Platform**: Embedded Linux (ARM) - Allwinner A33 running Tina Linux
 **Primary Language**: Rust (edition 2024) for SangamIO, Python 3.8+ for Drishti
 **Cross-compilation Target**: `armv7-unknown-linux-musleabihf`
-**Architecture**: Daemon-based with TCP streaming (not a library)
+**Architecture**: Daemon-based with UDP/TCP streaming (not a library)
 
 ## System Architecture
 
@@ -22,19 +22,20 @@ VacuumTiger is an open-source robotic vacuum firmware project for the CRL-200S h
 ┌─────────────────────────────────────────────────┐
 │         Client Applications (SLAM/Drishti)      │
 └─────────────┬───────────────┬───────────────────┘
-              │ TCP 5555/5556 │
+              │ UDP 5555      │ TCP 5555
+              │ (sensors)     │ (commands)
 ┌─────────────▼───────────────▼───────────────────┐
 │            SangamIO Daemon (Robot)              │
-│  • Telemetry streaming @ 110Hz (sensors)        │
+│  • Telemetry streaming @ 110Hz (UDP unicast)    │
 │  • Lidar streaming @ 5Hz (360° scans)           │
-│  • Command processing (motion/actuators)        │
-│  • Real-time control loop (50Hz)                │
+│  • Command processing (TCP, reliable)           │
+│  • Real-time control loop (20ms heartbeat)      │
 └─────────────┬───────────────┬───────────────────┘
               │ /dev/ttyS3    │ /dev/ttyS1
        ┌──────▼─────────┐  ┌──▼────────────┐
-       │ GD32F103 MCU   │  │ Delta-2D Lidar │
-       │ (Motor Control)│  │ (360° Scanning)│
-       └────────────────┘  └────────────────┘
+       │ GD32F103 MCU   │  │ Delta-2D Lidar│
+       │ (Motor Control)│  │ (360° Scan)   │
+       └────────────────┘  └───────────────┘
 ```
 
 ### Key Design Principles
@@ -43,7 +44,7 @@ VacuumTiger is an open-source robotic vacuum firmware project for the CRL-200S h
 2. **Concrete Over Abstract**: Direct implementations instead of trait objects (except LidarDriver)
 3. **Lock-Free Streaming**: Uses lock-free queues for sensor data flow
 4. **Real-Time Guarantees**: OS threads for heartbeat (20ms) instead of async
-5. **TCP Protocol**: Protobuf over TCP for all communication
+5. **Hybrid Protocol**: UDP for sensor streaming (low latency), TCP for commands (reliable)
 
 ## Build and Deployment
 
@@ -103,7 +104,13 @@ sshpass -p "vacuum@123" ssh root@vacuum "RUST_LOG=info /usr/sbin/sangamio"
 
 **CRITICAL**: Always overwrite `/usr/sbin/sangamio` directly. Do NOT write to `/tmp` folder.
 
-## TCP Protocol
+## Network Protocol
+
+SangamIO uses a hybrid UDP/TCP architecture:
+- **UDP** for sensor streaming (low latency, no head-of-line blocking)
+- **TCP** for commands (reliable delivery)
+
+Both use the same port (5555) for simpler configuration.
 
 ### Message Format
 
@@ -120,41 +127,61 @@ All messages use length-prefixed framing with Protobuf payloads:
 
 See `sangam-io/proto/sangamio.proto` for SangamIO messages (sensors, commands) and `dhruva-slam/proto/dhruva.proto` for SLAM output messages (odometry, map, scan).
 
-### Topics
+### Topics (UDP Streaming)
 
-**Outbound (Daemon → Client)**:
+**Outbound (Daemon → Client via UDP)**:
 - `sensors/sensor_status`: Sensor data @ 110Hz (all 13 sensors)
 - `sensors/device_version`: Version info (one-time)
 - `sensors/lidar`: LidarScan @ 5Hz (point cloud)
 
-**Inbound (Client → Daemon)**:
+**Inbound (Client → Daemon via TCP)**:
 - `command`: RobotCommand (SetVelocity, Stop, actuator control, etc.)
+
+### Client Registration
+
+UDP uses unicast (not broadcast). Clients are registered automatically:
+1. Client connects TCP to port 5555
+2. Server records client IP address
+3. UDP packets are sent to client on same port
+4. When TCP disconnects, UDP streaming stops
 
 ### Example Python Client
 
 ```python
 import socket
 import struct
+import threading
 from proto import sangamio_pb2
 
-# Connect to daemon
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect(('192.168.68.101', 5555))
+ROBOT_IP = '192.168.68.101'
+PORT = 5555
 
-# Read messages
-while True:
-    # Read length prefix
-    length = struct.unpack('>I', sock.recv(4))[0]
+# TCP for commands
+tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+tcp_sock.connect((ROBOT_IP, PORT))
 
-    # Read Protobuf message
-    data = sock.recv(length)
-    msg = sangamio_pb2.Message()
-    msg.ParseFromString(data)
+# UDP for sensor data (same port)
+udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp_sock.bind(('0.0.0.0', PORT))
 
-    if msg.topic == 'sensors/sensor_status':
-        sg = msg.sensor_group
-        charging = sg.values['is_charging'].bool_val
-        print(f"Charging: {charging}")
+def receive_sensors():
+    while True:
+        data, addr = udp_sock.recvfrom(4096)
+        length = struct.unpack('>I', data[:4])[0]
+        msg = sangamio_pb2.Message()
+        msg.ParseFromString(data[4:4+length])
+
+        if msg.topic == 'sensors/sensor_status':
+            sg = msg.sensor_group
+            print(f"Battery: {sg.values['battery_level'].u8_val}%")
+
+# Start receiving in background
+threading.Thread(target=receive_sensors, daemon=True).start()
+
+# Send commands via TCP
+def send_command(cmd):
+    payload = cmd.SerializeToString()
+    tcp_sock.send(struct.pack('>I', len(payload)) + payload)
 ```
 
 ## Configuration
@@ -180,40 +207,54 @@ bind_address = "0.0.0.0:5555"
 VacuumTiger/
 ├── sangam-io/                 # Hardware abstraction daemon
 │   ├── src/
-│   │   ├── main.rs           # Entry point, arg parsing
-│   │   ├── config.rs         # Configuration structures
+│   │   ├── main.rs           # Entry point, TCP/UDP listener
+│   │   ├── config.rs         # TOML configuration loading
 │   │   ├── error.rs          # Error types
 │   │   ├── core/             # Core abstractions
 │   │   │   ├── mod.rs
 │   │   │   ├── driver.rs     # DeviceDriver trait
 │   │   │   └── types.rs      # SensorValue, Command types
 │   │   ├── devices/          # Hardware drivers
-│   │   │   ├── mod.rs        # Device factory
-│   │   │   └── crl200s/      # CRL-200S robot platform
-│   │   │       ├── mod.rs
-│   │   │       ├── constants.rs      # Offsets, flags, timing
-│   │   │       ├── gd32/             # Motor controller driver
-│   │   │       │   ├── mod.rs        # Driver orchestration
-│   │   │       │   ├── protocol.rs   # RxPacket, PacketReader
-│   │   │       │   ├── packet.rs     # TxPacket, checksum
-│   │   │       │   ├── ring_buffer.rs # Zero-copy ring buffer
-│   │   │       │   ├── heartbeat.rs  # 20ms watchdog loop
-│   │   │       │   ├── reader.rs     # Status parsing
-│   │   │       │   ├── commands.rs   # Command handlers
-│   │   │       │   └── state.rs      # Shared atomic state
-│   │   │       └── delta2d/          # 3iRobotix lidar
-│   │   │           ├── mod.rs        # LidarDriver impl
-│   │   │           └── protocol.rs   # Packet parsing
-│   │   └── streaming/        # TCP communication
+│   │   │   ├── mod.rs        # Device factory (crl200s, mock)
+│   │   │   ├── crl200s/      # Real hardware driver
+│   │   │   │   ├── mod.rs
+│   │   │   │   ├── constants.rs      # Offsets, flags, timing
+│   │   │   │   ├── COMMANDS.md       # GD32 command reference
+│   │   │   │   ├── SENSORSTATUS.md   # Sensor packet docs
+│   │   │   │   ├── gd32/             # Motor controller driver
+│   │   │   │   │   ├── mod.rs        # Driver orchestration
+│   │   │   │   │   ├── protocol.rs   # RxPacket, PacketReader
+│   │   │   │   │   ├── packet.rs     # TxPacket, checksum
+│   │   │   │   │   ├── ring_buffer.rs # Zero-copy ring buffer
+│   │   │   │   │   ├── heartbeat.rs  # 20ms watchdog loop
+│   │   │   │   │   ├── reader.rs     # Status parsing
+│   │   │   │   │   ├── commands.rs   # Command handlers
+│   │   │   │   │   └── state.rs      # Shared atomic state
+│   │   │   │   └── delta2d/          # 3iRobotix lidar
+│   │   │   │       ├── mod.rs        # LidarDriver impl
+│   │   │   │       └── protocol.rs   # Packet parsing
+│   │   │   └── mock/         # Simulation driver (--features mock)
+│   │   │       ├── mod.rs           # MockDriver, simulation loop
+│   │   │       ├── config.rs        # SimulationConfig structs
+│   │   │       ├── physics.rs       # Differential drive kinematics
+│   │   │       ├── lidar_sim.rs     # Ray-casting lidar
+│   │   │       ├── imu_sim.rs       # IMU with noise
+│   │   │       ├── encoder_sim.rs   # Encoder with slip
+│   │   │       ├── sensor_sim.rs    # Bumpers, cliffs
+│   │   │       ├── map_loader.rs    # PGM+YAML loader
+│   │   │       └── noise.rs         # Noise generator
+│   │   └── streaming/        # Network communication
 │   │       ├── mod.rs        # Re-exports
 │   │       ├── wire.rs       # Protobuf serialization
-│   │       ├── tcp_publisher.rs # Outbound stream
-│   │       └── tcp_receiver.rs  # Command handler
+│   │       ├── udp_publisher.rs # UDP sensor streaming
+│   │       └── tcp_receiver.rs  # TCP command handler
 │   ├── proto/                # Protobuf schema
 │   │   └── sangamio.proto    # Message definitions
-│   ├── sangamio.toml         # Configuration file
-│   ├── COMMANDS.md           # GD32 command reference
-│   └── SENSORSTATUS.md       # Sensor packet documentation
+│   ├── maps/                 # Example simulation maps
+│   ├── docs/                 # Documentation
+│   │   └── mock-device-guide.md
+│   ├── sangamio.toml         # Hardware configuration
+│   └── mock.toml             # Simulation configuration
 │
 └── drishti/                  # Python visualization client
     ├── drishti.py           # Console client

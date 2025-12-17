@@ -1,0 +1,147 @@
+# DhruvaSLAM Test Configuration
+#
+# This config is used for round-trip testing against mock simulation.
+# Key difference: resolution matches ground truth map (0.05m = 5cm)
+
+[source]
+sangam_address = "localhost:5555"
+
+[output]
+bind_port = 5557
+odometry_rate_hz = 50
+map_rate_hz = 5.0
+feature_rate_hz = 1.0
+
+[stream]
+robot_status_hz = 10.0
+sensor_status_hz = 10.0
+map_hz = 2.0
+navigation_hz = 5.0
+
+[map_storage]
+# Use temp directory for test isolation
+path = "/tmp/dhruva_test_maps"
+
+[odometry]
+# Use wheel-only odometry to avoid Mahony calibration issues
+algorithm = "wheel"
+ticks_per_meter = 4464.0
+wheel_base = 0.233
+
+[lidar]
+# Must match mock.toml lidar configuration
+mounting_x = -0.110
+mounting_y = 0.0
+optical_offset = 0.025
+angle_offset = 0.2182
+
+[preprocessing]
+min_range = 0.15
+max_range = 5.0
+target_points = 180
+min_angle_step = 0.0175
+
+[slam]
+min_match_score = 0.3
+lost_threshold = 0.1
+min_scan_points = 50
+encoder_weight = 0.8
+use_submap_matching = false
+
+[matcher]
+algorithm = "hybrid_p2l"
+always_correlative = true
+encoder_weight = 1.0
+search_window_x = 0.3
+search_window_y = 0.3
+search_window_theta = 0.5
+linear_resolution = 0.02
+angular_resolution = 0.01
+grid_resolution = 0.05
+correlative_min_score = 0.4
+icp_max_iterations = 50
+icp_translation_epsilon = 0.001
+icp_rotation_epsilon = 0.001
+icp_max_correspondence_distance = 0.5
+icp_min_correspondences = 10
+icp_outlier_ratio = 0.1
+icp_robust_kernel = "welsch"
+icp_kernel_scale = 0.1
+
+[keyframe]
+min_translation = 0.5
+min_rotation = 0.5
+max_keyframes = 1000
+min_interval_ms = 500
+
+[submap]
+scans_per_submap = 100
+overlap_scans = 10
+max_active_submaps = 2
+
+[map]
+# CRITICAL: Must match ground truth resolution (5cm)
+resolution = 0.05
+initial_width = 20.0
+initial_height = 20.0
+log_odds_occupied = 0.9
+log_odds_free = -0.7
+log_odds_max = 50.0
+log_odds_min = -50.0
+occupied_threshold = 0.5
+free_threshold = -0.5
+
+[loop_closure]
+enabled = true
+detection_interval = 5
+min_keyframe_gap = 20
+optimization_threshold = 3
+max_candidates = 5
+
+[loop_closure.iris]
+num_rows = 80
+num_cols = 360
+max_range = 8.0
+signature_bits = 640
+
+[loop_closure.matching]
+max_hamming_distance = 100
+min_icp_score = 0.5
+
+[optimization]
+solver = "sparse_cg"
+max_iterations = 50
+tolerance = 1e-6
+
+[exploration]
+# Enabled for autonomous frontier-based exploration
+enabled = true
+strategy = "frontier"
+loop_rate_hz = 10.0
+
+[exploration.motion]
+max_linear_vel = 0.3
+max_angular_vel = 0.5
+obstacle_clearance = 0.15
+linear_vel = 0.2
+angular_vel = 0.3
+
+[exploration.frontier]
+min_frontier_size = 3       # Smaller frontiers still worth exploring
+detection_range = 10.0
+blocked_radius = 0.15       # Reduced to allow closer exploration to obstacles
+clustering_threshold = 0.5
+
+[navigation]
+enabled = true
+update_rate_hz = 10.0
+robot_radius = 0.18
+max_linear_vel = 0.3
+max_angular_vel = 0.5
+waypoint_threshold = 0.15
+goal_threshold = 0.08
+heading_threshold = 0.15
+
+[session]
+state_path = "/tmp/dhruva_test_session.json"
+auto_load_last_map = false

@@ -1,0 +1,40 @@
+# SLAM Round-Trip Test Configuration
+
+[test]
+name = "round_trip_slam"
+# Test duration in seconds (configurable via CLI --duration)
+duration_seconds = 120
+# Coverage target (0.0-1.0) - stop when this % of area explored
+coverage_target = 0.8
+
+[paths]
+# All paths relative to VacuumTiger root
+sangamio_config = "sangam-io/mock.toml"
+dhruva_config = "slam-test/dhruva-test.toml"
+ground_truth_map = "sangam-io/maps/example.pgm"
+ground_truth_yaml = "sangam-io/maps/example.yaml"
+
+[ground_truth]
+# Map resolution in meters per pixel (from example.yaml)
+resolution = 0.05
+# Robot start position in world coordinates (from mock.toml)
+robot_start_x = 1.5
+robot_start_y = 3.5
+robot_start_theta = 0.0
+
+[network]
+sangamio_port = 5555
+dhruva_port = 5557
+
+[thresholds]
+# Pass/fail thresholds for automated testing
+occupied_overlap_pass = 0.70
+occupied_overlap_warn = 0.60
+free_overlap_pass = 0.85
+free_overlap_warn = 0.75
+wall_rms_error_pass = 0.05    # meters
+wall_rms_error_warn = 0.10
+coverage_pass = 0.75
+coverage_warn = 0.60
+max_drift_pass = 0.20         # meters
+max_drift_warn = 0.30

@@ -1,0 +1,17 @@
+# Test results
+results/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated proto files
+scripts/proto/*.py
+!scripts/proto/__init__.py
+
+# Editor
+.vscode/
+.idea/
+*.swp
