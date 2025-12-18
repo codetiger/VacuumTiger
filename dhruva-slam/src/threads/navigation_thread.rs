@@ -220,7 +220,7 @@ fn run_navigation_loop(
                     )
                 }
                 Err(e) => {
-                    log::error!("Failed to read shared state: {}", e);
+                    log::warn!("Failed to read shared state: {}", e);
                     thread::sleep(loop_interval);
                     continue;
                 }
@@ -242,7 +242,7 @@ fn run_navigation_loop(
                 match result {
                     Ok(()) => {
                         lidar_enabled = true;
-                        log::info!("Navigation: Lidar enabled");
+                        log::debug!("Navigation: Lidar enabled");
                         // Brief pause for lidar to start
                         thread::sleep(Duration::from_millis(500));
 
@@ -264,7 +264,7 @@ fn run_navigation_loop(
                 match result {
                     Ok(()) => {
                         motors_enabled = true;
-                        log::info!("Navigation: Motors enabled");
+                        log::debug!("Navigation: Motors enabled");
                         // Brief pause for motors to initialize
                         thread::sleep(Duration::from_millis(500));
                     }
@@ -387,7 +387,7 @@ fn run_navigation_loop(
                         navigator.update(&mut state.navigation_state, &pose, map.as_ref(), hazard)
                     }
                     Err(e) => {
-                        log::error!("Failed to write shared state: {}", e);
+                        log::warn!("Failed to write shared state: {}", e);
                         thread::sleep(loop_interval);
                         continue;
                     }

@@ -30,12 +30,6 @@ pub struct NavigatorConfig {
     /// to the next one. Typically looser than goal tolerance.
     pub waypoint_reached_threshold: f32,
 
-    /// Goal position threshold (meters).
-    ///
-    /// How close the robot must be to the final goal position.
-    /// Uses the target's tolerance if smaller.
-    pub goal_position_threshold: f32,
-
     /// Heading threshold for rotation (radians).
     ///
     /// Angle error threshold for switching from rotation to translation.
@@ -83,7 +77,6 @@ impl Default for NavigatorConfig {
         Self {
             planner: AStarConfig::default(),
             waypoint_reached_threshold: 0.15,
-            goal_position_threshold: 0.08,
             heading_threshold: 0.3, // ~17 degrees
             max_linear_vel: 0.3,
             max_angular_vel: 0.5,
@@ -241,7 +234,7 @@ impl Navigator {
     ) -> NavUpdate {
         // Check if we've exceeded max replan attempts
         if nav_state.replan_attempts >= self.config.max_replan_attempts {
-            log::error!(
+            log::warn!(
                 "Navigation failed: exceeded {} replan attempts",
                 self.config.max_replan_attempts
             );
@@ -311,7 +304,7 @@ impl Navigator {
                 NavUpdate::stop().with_state_change()
             }
             Err(PlanningError::StartInObstacle) => {
-                log::error!("Robot position is in obstacle!");
+                log::warn!("Robot position is in obstacle");
                 nav_state.set_failed(PathFailureReason::NoPathFound);
                 nav_state.set_status("Robot position is blocked");
                 NavUpdate::stop().with_state_change()
@@ -323,7 +316,7 @@ impl Navigator {
                 NavUpdate::stop().with_state_change()
             }
             Err(PlanningError::StartOutOfBounds) | Err(PlanningError::GoalOutOfBounds) => {
-                log::error!("Position out of map bounds");
+                log::warn!("Position out of map bounds");
                 nav_state.set_failed(PathFailureReason::NoPathFound);
                 nav_state.set_status("Position out of bounds");
                 NavUpdate::stop().with_state_change()
@@ -335,7 +328,7 @@ impl Navigator {
                 NavUpdate::stop().with_state_change()
             }
             Err(PlanningError::InvalidMap) => {
-                log::error!("Invalid map data");
+                log::warn!("Invalid map data");
                 nav_state.set_failed(PathFailureReason::NoPathFound);
                 nav_state.set_status("Invalid map");
                 NavUpdate::stop().with_state_change()
@@ -677,7 +670,6 @@ mod tests {
         let navigator = Navigator::new(config);
 
         assert!(navigator.config.waypoint_reached_threshold > 0.0);
-        assert!(navigator.config.goal_position_threshold > 0.0);
     }
 
     #[test]

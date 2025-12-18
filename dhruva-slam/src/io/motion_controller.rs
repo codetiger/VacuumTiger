@@ -55,8 +55,6 @@ pub struct MotionConfig {
     pub max_linear_vel: f32,
     /// Maximum angular velocity (rad/s).
     pub max_angular_vel: f32,
-    /// Minimum safe distance from obstacles (m).
-    pub obstacle_clearance: f32,
     /// Linear velocity for normal movement (m/s).
     pub linear_vel: f32,
     /// Angular velocity for in-place rotation (rad/s).
@@ -68,7 +66,6 @@ impl Default for MotionConfig {
         Self {
             max_linear_vel: 0.3,
             max_angular_vel: 0.5,
-            obstacle_clearance: 0.15,
             linear_vel: 0.2,
             angular_vel: 0.3,
         }
@@ -243,7 +240,7 @@ impl MotionController {
             Ok(()) => {
                 self.is_enabled = true;
                 self.consecutive_failures = 0;
-                log::info!("Motion controller enabled");
+                log::debug!("Motion controller enabled");
                 Ok(())
             }
             Err(e) => {
@@ -283,7 +280,7 @@ impl MotionController {
             Ok(()) => {
                 self.is_lidar_enabled = true;
                 self.consecutive_failures = 0;
-                log::info!("Lidar enabled");
+                log::debug!("Lidar enabled");
                 Ok(())
             }
             Err(e) => {
@@ -320,7 +317,7 @@ impl MotionController {
         }
 
         self.is_lidar_enabled = false;
-        log::info!("Lidar disabled");
+        log::debug!("Lidar disabled");
         Ok(())
     }
 
@@ -345,7 +342,7 @@ impl MotionController {
         }
 
         self.is_enabled = false;
-        log::info!("Motion controller disabled");
+        log::debug!("Motion controller disabled");
         Ok(())
     }
 

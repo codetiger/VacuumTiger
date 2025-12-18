@@ -130,7 +130,7 @@ fn run_exploration_loop(
             let state = match shared_state.read() {
                 Ok(s) => s,
                 Err(e) => {
-                    log::error!("Failed to read shared state: {}", e);
+                    log::warn!("Failed to read shared state: {}", e);
                     thread::sleep(loop_duration);
                     continue;
                 }
@@ -306,12 +306,12 @@ fn run_exploration_loop(
             match result {
                 Ok(()) => {
                     lidar_enabled = true;
-                    log::info!(
-                        "Lidar enabled for mapping, waiting 3 seconds for controller to settle..."
+                    log::debug!(
+                        "Lidar enabled for mapping, waiting 3 seconds for controller to settle"
                     );
                     // Wait 3 seconds for lidar motor controller to settle
                     thread::sleep(Duration::from_secs(3));
-                    log::info!("Lidar settled, continuing");
+                    log::debug!("Lidar controller settled");
                 }
                 Err(e) => {
                     // Only log at debug level - MotionController will retry automatically
@@ -326,10 +326,10 @@ fn run_exploration_loop(
             match result {
                 Ok(()) => {
                     motion_enabled = true;
-                    log::info!("Motors enabled, waiting 3 seconds for controller to settle...");
+                    log::debug!("Motors enabled, waiting 3 seconds for controller to settle");
                     // Wait 3 seconds for motor controller to settle
                     thread::sleep(Duration::from_secs(3));
-                    log::info!("Motors settled, ready for exploration");
+                    log::debug!("Motors settled, ready for exploration");
                 }
                 Err(e) => {
                     // Only log at debug level - MotionController will retry automatically

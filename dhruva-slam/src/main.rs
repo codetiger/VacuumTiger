@@ -649,8 +649,6 @@ struct NavigationConfig {
     max_angular_vel: f32,
     /// Waypoint reached threshold (m).
     waypoint_threshold: f32,
-    /// Goal position threshold (m).
-    goal_threshold: f32,
     /// Heading threshold (rad).
     heading_threshold: f32,
     /// Treat unknown cells as obstacles for path planning.
@@ -667,7 +665,6 @@ impl Default for NavigationConfig {
             max_linear_vel: 0.3,
             max_angular_vel: 0.5,
             waypoint_threshold: 0.15,
-            goal_threshold: 0.08,
             heading_threshold: 0.15,
             unknown_is_obstacle: true,
         }
@@ -1089,7 +1086,6 @@ fn run_threaded_mode(
             .navigation
             .max_angular_vel
             .max(config.exploration.motion.max_angular_vel),
-        obstacle_clearance: config.exploration.motion.obstacle_clearance,
         linear_vel: config.exploration.motion.linear_vel,
         angular_vel: config.exploration.motion.angular_vel,
     };
@@ -1130,7 +1126,6 @@ fn run_threaded_mode(
                     ..Default::default()
                 },
                 waypoint_reached_threshold: config.navigation.waypoint_threshold,
-                goal_position_threshold: config.navigation.goal_threshold,
                 heading_threshold: config.navigation.heading_threshold,
                 max_linear_vel: config.navigation.max_linear_vel,
                 max_angular_vel: config.navigation.max_angular_vel,
@@ -1182,7 +1177,6 @@ fn run_threaded_mode(
             motion: MotionConfig {
                 max_linear_vel: config.exploration.motion.max_linear_vel,
                 max_angular_vel: config.exploration.motion.max_angular_vel,
-                obstacle_clearance: config.exploration.motion.obstacle_clearance,
                 linear_vel: config.exploration.motion.linear_vel,
                 angular_vel: config.exploration.motion.angular_vel,
             },

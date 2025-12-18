@@ -57,15 +57,6 @@ pub struct MappingConfig {
     /// Minimum escape distance per attempt (meters).
     pub min_escape_distance: f32,
 
-    /// Back distance threshold to detect dock (meters).
-    pub dock_back_threshold: f32,
-
-    /// Side distance threshold to detect dock (meters).
-    pub dock_side_threshold: f32,
-
-    /// Front distance threshold for dock (must be open).
-    pub dock_front_min: f32,
-
     /// Minimum frontier cluster size (cells).
     pub min_frontier_size: usize,
 
@@ -85,9 +76,6 @@ impl Default for MappingConfig {
             min_rotation_clearance: MIN_ROTATION_CLEARANCE,
             max_escape_attempts: 3,
             min_escape_distance: 0.15,
-            dock_back_threshold: 0.15,
-            dock_side_threshold: 0.20,
-            dock_front_min: 0.40,
             min_frontier_size: 3,
             min_frontier_distance: 0.30,
             frontier_cluster_distance: 0.30,
@@ -167,9 +155,6 @@ pub struct MappingStats {
 
     /// Number of 360° scans performed.
     pub scans_completed: u32,
-
-    /// Total distance traveled (meters).
-    pub distance_traveled: f32,
 
     /// Mapping start time.
     pub start_time: Option<Instant>,
@@ -273,11 +258,6 @@ impl MappingFeature {
     /// Get current state.
     pub fn state(&self) -> &MappingState {
         &self.state
-    }
-
-    /// Get statistics.
-    pub fn stats(&self) -> &MappingStats {
-        &self.stats
     }
 
     /// Check if mapping is active.

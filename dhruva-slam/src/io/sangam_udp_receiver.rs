@@ -209,15 +209,15 @@ impl SangamUdpReceiver {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
                 Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
                 Err(e) => {
-                    log::error!("UDP recv error: {}", e);
+                    log::warn!("UDP recv error: {}", e);
                     continue;
                 }
             };
 
-            // Track reception rate
+            // Track reception rate (debug level - periodic telemetry)
             packet_count += 1;
             if last_log_time.elapsed().as_secs() >= 5 {
-                log::info!(
+                log::debug!(
                     "UDP receiver: {} packets in last 5s ({})",
                     packet_count,
                     _src

@@ -579,12 +579,12 @@ impl SlamContext {
             return;
         }
 
-        // Log scan processing decision
+        // Log scan processing decision (debug level - routine idle state)
         if !self.is_mapping && !self.is_localizing {
             static SKIP_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let count = SKIP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count < 5 || count.is_multiple_of(50) {
-                log::info!(
+                log::debug!(
                     "Skipping scan (not mapping/localizing): is_mapping={}, is_localizing={}, skip#{}",
                     self.is_mapping,
                     self.is_localizing,
@@ -604,12 +604,12 @@ impl SlamContext {
                 .slam
                 .process_scan(&scan_cloud, &odom_delta, timestamp_us);
 
-            // Log first few pose updates
+            // Log pose updates at debug level (high frequency diagnostic data)
             static POSE_LOG_COUNT: std::sync::atomic::AtomicU32 =
                 std::sync::atomic::AtomicU32::new(0);
             let log_count = POSE_LOG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if log_count < 5 || log_count.is_multiple_of(50) {
-                log::info!(
+                log::debug!(
                     "SLAM result: pose=({:.3}, {:.3}, {:.1}°), score={:.3}, odom_delta=({:.3}, {:.3}, {:.1}°)",
                     result.pose.x,
                     result.pose.y,
@@ -745,11 +745,11 @@ impl SlamContext {
     fn process_udp_lidar(&mut self, data: &LidarData, shared_state: &SharedStateHandle) {
         let timestamp_us = data.timestamp_us;
 
-        // Log first few scans to trace processing
+        // Log scans at debug level (high frequency diagnostic data)
         static SCAN_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let count = SCAN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count < 5 || count.is_multiple_of(50) {
-            log::info!(
+            log::debug!(
                 "Processing UDP lidar: {} points, is_mapping={}, is_localizing={}, scan#{}",
                 data.points.len(),
                 self.is_mapping,
