@@ -248,7 +248,6 @@ robot_radius = 0.18
 max_linear_vel = 0.3
 max_angular_vel = 0.5
 waypoint_threshold = 0.15
-goal_threshold = 0.08
 heading_threshold = 0.15
 unknown_is_obstacle = false  # Allow navigation through unexplored areas
 

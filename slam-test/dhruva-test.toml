@@ -142,7 +142,6 @@ robot_radius = 0.18
 max_linear_vel = 0.4
 max_angular_vel = 0.8
 waypoint_threshold = 0.15
-goal_threshold = 0.08
 heading_threshold = 0.35  # ~20 degrees - allow more angular error before rotating
 
 [session]
