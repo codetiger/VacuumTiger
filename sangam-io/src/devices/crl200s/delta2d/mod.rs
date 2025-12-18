@@ -236,12 +236,12 @@ impl Delta2DDriver {
                                     );
                                 }
 
-                                // Log diagnostics every 2 seconds
+                                // Log diagnostics every 60 seconds
                                 if last_diagnostic_time.elapsed().as_secs() >= 60 {
                                     let errors = error_count.load(Ordering::Relaxed);
                                     let (bytes_discarded, crc_failures, buffer_size) =
                                         reader.diagnostics();
-                                    log::info!(
+                                    log::debug!(
                                         "Lidar stats: {} packets, {} errors, {} bytes discarded, {} CRC failures, {} bytes buffered",
                                         count,
                                         errors,

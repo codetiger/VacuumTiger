@@ -344,7 +344,7 @@ impl DeviceDriver for MockDriver {
                                     .components
                                     .wheel_motor_enabled
                                     .store(true, Ordering::Relaxed);
-                                log::info!("Drive enabled (wheel motors on)");
+                                log::debug!("Drive enabled (wheel motors on)");
                             }
                             crate::core::types::ComponentAction::Configure { config } => {
                                 if !self
@@ -377,7 +377,7 @@ impl DeviceDriver for MockDriver {
                                     .store(false, Ordering::Relaxed);
                                 self.shared_state.linear_vel.store(0.0, Ordering::Relaxed);
                                 self.shared_state.angular_vel.store(0.0, Ordering::Relaxed);
-                                log::info!("Drive disabled (wheel motors off)");
+                                log::debug!("Drive disabled (wheel motors off)");
                             }
                             _ => {}
                         }
@@ -390,14 +390,14 @@ impl DeviceDriver for MockDriver {
                                     .components
                                     .lidar_enabled
                                     .store(true, Ordering::Relaxed);
-                                log::info!("Lidar enabled");
+                                log::debug!("Lidar enabled");
                             }
                             crate::core::types::ComponentAction::Disable { .. } => {
                                 self.shared_state
                                     .components
                                     .lidar_enabled
                                     .store(false, Ordering::Relaxed);
-                                log::info!("Lidar disabled");
+                                log::debug!("Lidar disabled");
                             }
                             crate::core::types::ComponentAction::Configure { config } => {
                                 // Configure also enables lidar (like CRL-200S)
@@ -406,9 +406,9 @@ impl DeviceDriver for MockDriver {
                                     .lidar_enabled
                                     .store(true, Ordering::Relaxed);
                                 if let Some(SensorValue::U8(pwm)) = config.get("pwm") {
-                                    log::info!("Lidar enabled (PWM={}%)", pwm);
+                                    log::debug!("Lidar enabled (PWM={}%)", pwm);
                                 } else {
-                                    log::info!("Lidar enabled via configure");
+                                    log::debug!("Lidar enabled via configure");
                                 }
                             }
                             _ => {}
@@ -495,7 +495,7 @@ fn simulation_loop(
         // Update physics
         let collision = physics.update(sim_dt, linear_vel, angular_vel, &map, &config.robot);
         if collision && config.log_level != "minimal" {
-            log::info!("Collision at ({:.3}, {:.3})", physics.x(), physics.y());
+            log::debug!("Collision at ({:.3}, {:.3})", physics.x(), physics.y());
         }
 
         // Generate encoder data
@@ -597,7 +597,7 @@ fn simulation_loop(
                 let scan = lidar_sim.generate_scan(&map, physics.x(), physics.y(), physics.theta());
 
                 if let Ok(mut lidar) = lidar_data.lock() {
-                    log::info!(
+                    log::trace!(
                         "Generated lidar scan: {} points at ({:.2}, {:.2}, {:.2}°)",
                         scan.len(),
                         physics.x(),

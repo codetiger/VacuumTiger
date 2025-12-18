@@ -112,7 +112,7 @@ impl GD32Driver {
             log::warn!("Failed to clear serial input buffer: {}", e);
         }
 
-        log::info!("GD32 driver: lidar PWM configured to {}%", lidar_pwm);
+        log::debug!("GD32 driver: lidar PWM configured to {}%", lidar_pwm);
 
         Ok(Self {
             port: Arc::new(Mutex::new(port)),

@@ -121,13 +121,13 @@ fn handle_speed_component(
 ) -> Result<()> {
     match action {
         ComponentAction::Enable { .. } => {
-            log::info!("{} enable (100%)", name);
+            log::debug!("{} enable (100%)", name);
             state_field.store(100, Ordering::Relaxed);
             set_fn(pkt, 100);
             send_packet(port, pkt)
         }
         ComponentAction::Disable { .. } => {
-            log::info!("{} disable", name);
+            log::debug!("{} disable", name);
             state_field.store(0, Ordering::Relaxed);
             set_fn(pkt, 0);
             send_packet(port, pkt)
@@ -140,7 +140,7 @@ fn handle_speed_component(
                 _ => None,
             };
             if let Some(speed) = speed {
-                log::info!("{} speed={}", name, speed);
+                log::debug!("{} speed={}", name, speed);
                 state_field.store(speed, Ordering::Relaxed);
                 set_fn(pkt, speed);
                 send_packet(port, pkt)?;
@@ -243,7 +243,7 @@ pub(super) fn send_command(
 
         // Protocol Commands
         Command::ProtocolSync => {
-            log::info!("Protocol sync (0x0C)");
+            log::debug!("Protocol sync (0x0C)");
             let sync_pkt = protocol_sync_packet();
             send_packet(port, &sync_pkt)
         }
@@ -354,7 +354,7 @@ fn handle_drive(
                     _ => None,
                 })
                 .unwrap_or(0x02);
-            log::info!("Drive enable (mode 0x{:02X})", mode);
+            log::debug!("Drive enable (mode 0x{:02X})", mode);
             component_state
                 .wheel_motor_enabled
                 .store(true, Ordering::Relaxed);
@@ -363,7 +363,7 @@ fn handle_drive(
         }
         ComponentAction::Disable { .. } => {
             // Stop: zero velocity and set mode 0x00
-            log::info!("Drive disable (stop + mode 0x00)");
+            log::debug!("Drive disable (stop + mode 0x00)");
             component_state
                 .wheel_motor_enabled
                 .store(false, Ordering::Relaxed);
@@ -377,7 +377,7 @@ fn handle_drive(
         }
         ComponentAction::Reset { .. } => {
             // Emergency stop: immediate halt, all components off
-            log::info!("Drive emergency stop");
+            log::warn!("Drive emergency stop");
             emergency_stop(port, component_state, pkt)
         }
         ComponentAction::Configure { config } => {
@@ -394,7 +394,7 @@ fn handle_drive(
                 component_state
                     .angular_velocity
                     .store(angular_units, Ordering::Relaxed);
-                log::info!(
+                log::debug!(
                     "Drive velocity: linear={:.3} m/s ({} units), angular={:.3} rad/s ({} units)",
                     linear,
                     linear_units,
@@ -410,7 +410,7 @@ fn handle_drive(
             {
                 let left_units = (left * VELOCITY_TO_DEVICE_UNITS) as i16;
                 let right_units = (right * VELOCITY_TO_DEVICE_UNITS) as i16;
-                log::info!(
+                log::debug!(
                     "Drive tank: left={:.3} m/s ({} units), right={:.3} m/s ({} units)",
                     left,
                     left_units,
@@ -442,7 +442,7 @@ fn handle_led(
                 _ => None,
             };
             if let Some(state) = state {
-                log::info!("LED state={}", state);
+                log::debug!("LED state={}", state);
                 pkt.set_led(state);
                 send_packet(port, pkt)?;
             }
@@ -472,7 +472,7 @@ fn handle_lidar(
             // Upstream clients cannot override this value
             let pwm = component_state.get_lidar_pwm();
 
-            log::info!("Lidar enable (PWM={}% from config)", pwm);
+            log::debug!("Lidar enable (PWM={}% from config)", pwm);
 
             // Power on first
             pkt.set_lidar_power(true);
@@ -488,7 +488,7 @@ fn handle_lidar(
             Ok(())
         }
         ComponentAction::Disable { .. } => {
-            log::info!("Lidar disable");
+            log::debug!("Lidar disable");
 
             // Clear state first
             component_state
@@ -522,7 +522,7 @@ fn handle_imu(
     match action {
         ComponentAction::Enable { .. } => {
             pkt.set_imu_calibrate_state(&IMU_DEFAULT_PAYLOAD);
-            log::info!(
+            log::debug!(
                 "IMU calibration state query (0xA2): payload={:02X?}, bytes={:02X?}",
                 IMU_DEFAULT_PAYLOAD,
                 pkt.as_bytes()
@@ -530,7 +530,7 @@ fn handle_imu(
             send_packet(port, pkt)
         }
         ComponentAction::Reset { .. } => {
-            log::info!("IMU factory reset (0xA1)");
+            log::debug!("IMU factory reset (0xA1)");
             pkt.set_imu_factory_calibrate();
             send_packet(port, pkt)
         }
@@ -549,12 +549,12 @@ fn handle_compass(
 ) -> Result<()> {
     match action {
         ComponentAction::Enable { .. } => {
-            log::info!("Compass calibration state query (0xA4)");
+            log::debug!("Compass calibration state query (0xA4)");
             pkt.set_compass_calibration_state();
             send_packet(port, pkt)
         }
         ComponentAction::Reset { .. } => {
-            log::info!("Compass calibration start (0xA3)");
+            log::debug!("Compass calibration start (0xA3)");
             pkt.set_compass_calibrate();
             send_packet(port, pkt)
         }
@@ -573,12 +573,12 @@ fn handle_cliff_ir(
 ) -> Result<()> {
     match action {
         ComponentAction::Enable { .. } => {
-            log::info!("Cliff IR enable (0x78)");
+            log::debug!("Cliff IR enable (0x78)");
             pkt.set_cliff_ir(true);
             send_packet(port, pkt)
         }
         ComponentAction::Disable { .. } => {
-            log::info!("Cliff IR disable (0x78)");
+            log::debug!("Cliff IR disable (0x78)");
             pkt.set_cliff_ir(false);
             send_packet(port, pkt)
         }
@@ -590,7 +590,7 @@ fn handle_cliff_ir(
                 _ => None,
             };
             if let Some(dir) = dir {
-                log::info!("Cliff IR direction (0x79): {}", dir);
+                log::debug!("Cliff IR direction (0x79): {}", dir);
                 pkt.set_cliff_ir_direction(dir);
                 send_packet(port, pkt)?;
             }
@@ -616,7 +616,7 @@ fn handle_main_board(
 ) -> Result<()> {
     match action {
         ComponentAction::Enable { .. } => {
-            log::info!("Main board power on (0x99)");
+            log::debug!("Main board power on (0x99)");
             pkt.set_main_board_power(true);
             send_packet(port, pkt)
         }
@@ -649,12 +649,12 @@ fn handle_charger(
 ) -> Result<()> {
     match action {
         ComponentAction::Enable { .. } => {
-            log::info!("Charger power enable (0x9B)");
+            log::debug!("Charger power enable (0x9B)");
             pkt.set_charger_power(true);
             send_packet(port, pkt)
         }
         ComponentAction::Disable { .. } => {
-            log::info!("Charger power disable (0x9B)");
+            log::debug!("Charger power disable (0x9B)");
             pkt.set_charger_power(false);
             send_packet(port, pkt)
         }
@@ -678,17 +678,17 @@ fn handle_mcu(
 ) -> Result<()> {
     match action {
         ComponentAction::Disable { .. } => {
-            log::info!("MCU sleep (0x04)");
+            log::debug!("MCU sleep (0x04)");
             pkt.set_mcu_sleep();
             send_packet(port, pkt)
         }
         ComponentAction::Enable { .. } => {
-            log::info!("MCU wakeup ack (0x05)");
+            log::debug!("MCU wakeup ack (0x05)");
             pkt.set_wakeup_ack();
             send_packet(port, pkt)
         }
         ComponentAction::Reset { .. } => {
-            log::info!("MCU reset error code (0x0A)");
+            log::debug!("MCU reset error code (0x0A)");
             pkt.set_reset_error_code();
             send_packet(port, pkt)
         }

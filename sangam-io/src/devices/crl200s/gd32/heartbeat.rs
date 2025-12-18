@@ -134,7 +134,7 @@ pub(super) fn heartbeat_loop(
                 component_state
                     .motor_mode_set
                     .store(true, Ordering::Relaxed);
-                log::info!("Motor mode set to navigation (0x02)");
+                log::debug!("Motor mode set to navigation (0x02)");
                 // Wait for GD32 firmware to process mode switch (see MODE_SWITCH_DELAY_MS docs).
                 // Releasing the port lock during sleep allows other operations to proceed.
                 drop(port);

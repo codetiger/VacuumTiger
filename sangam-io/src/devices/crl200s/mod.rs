@@ -92,21 +92,21 @@ impl DeviceDriver for CRL200SDriver {
         // Create streaming channel for high-rate sensor data (~110Hz)
         let (stream_tx, stream_rx) = create_stream_channel();
         stream_receivers.insert("sensor_status".to_string(), stream_rx);
-        log::info!("Created sensor group 'sensor_status' with streaming channel (~110Hz)");
+        log::debug!("Created sensor group 'sensor_status' with streaming channel (~110Hz)");
 
         // Create GD32 version sensor group (one-time after boot)
         // Contains: version_string, version_code
         let device_version = SensorGroupData::new("device_version");
         let version_data = Arc::new(Mutex::new(device_version));
         sensor_data.insert("device_version".to_string(), version_data.clone());
-        log::info!("Created sensor group 'device_version' (GD32 firmware version)");
+        log::debug!("Created sensor group 'device_version' (GD32 firmware version)");
 
         // Create lidar sensor group (5Hz scan data)
         // Contains: scan (PointCloud2D)
         let lidar_group = SensorGroupData::new("lidar");
         let lidar_data = Arc::new(Mutex::new(lidar_group));
         sensor_data.insert("lidar".to_string(), lidar_data.clone());
-        log::info!("Created sensor group 'lidar' (360° point cloud @ 5Hz)");
+        log::debug!("Created sensor group 'lidar' (360° point cloud @ 5Hz)");
 
         // Initialize GD32 motor controller
         let mut gd32 = GD32Driver::new(

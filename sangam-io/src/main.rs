@@ -96,7 +96,7 @@ fn main() -> Result<()> {
     })
     .map_err(|e| error::Error::Other(format!("Error setting Ctrl-C handler: {}", e)))?;
 
-    log::info!("Wire format: Protobuf");
+    log::debug!("Wire format: Protobuf");
 
     // =========================================================================
     // UDP Unicast Setup (sensor streaming to registered clients)
@@ -109,12 +109,12 @@ fn main() -> Result<()> {
         .map_err(|e| error::Error::Other(format!("Failed to create UDP socket: {}", e)))?;
 
     if udp_streaming_port == config.network.port() {
-        log::info!(
+        log::debug!(
             "UDP unicast streaming enabled (port {} - same as TCP)",
             udp_streaming_port
         );
     } else {
-        log::info!(
+        log::debug!(
             "UDP unicast streaming enabled (port {} - different from TCP:{})",
             udp_streaming_port,
             config.network.port()

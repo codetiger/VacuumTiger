@@ -167,10 +167,10 @@ impl ActuatorState {
         if log_changes {
             if let Some(old) = old_state {
                 if old != state_str {
-                    log::info!("Actuator '{}': {} -> {}", id, old, state_str);
+                    log::debug!("Actuator '{}': {} -> {}", id, old, state_str);
                 }
             } else {
-                log::info!("Actuator '{}': -> {}", id, state_str);
+                log::debug!("Actuator '{}': -> {}", id, state_str);
             }
         }
     }

@@ -83,7 +83,7 @@ pub(super) fn reader_loop(
 
         match packet_result {
             Ok(Some(packet)) => {
-                log::debug!(
+                log::trace!(
                     "Packet received: CMD=0x{:02X}, payload_len={}",
                     packet.cmd,
                     packet.payload_len()
@@ -91,7 +91,7 @@ pub(super) fn reader_loop(
 
                 // Request version after first packet (like sangam-io2-backup)
                 if !version_requested && version_data.is_some() {
-                    log::info!(
+                    log::debug!(
                         "First packet received (CMD=0x{:02X}), requesting version",
                         packet.cmd
                     );
@@ -100,10 +100,10 @@ pub(super) fn reader_loop(
                     let version_pkt = version_request_packet();
                     if let Ok(mut port) = port.lock() {
                         if let Err(e) = version_pkt.send_to(&mut *port) {
-                            log::error!("Failed to send version request: {}", e);
+                            log::warn!("Failed to send version request: {}", e);
                         }
                     } else {
-                        log::error!("Failed to lock port for version request");
+                        log::warn!("Failed to lock port for version request");
                     }
                 }
 
@@ -115,7 +115,7 @@ pub(super) fn reader_loop(
                 // Handle protocol sync ACK (0x0C echoed back from GD32)
                 if packet.cmd == CMD_PROTOCOL_SYNC && !protocol_sync_received {
                     protocol_sync_received = true;
-                    log::info!(
+                    log::debug!(
                         "Protocol sync ACK received (payload: {:02X?})",
                         packet.payload()
                     );
@@ -167,7 +167,7 @@ fn handle_version_packet(
         let payload = packet.payload();
         if !payload.is_empty() {
             let Ok(mut data) = vdata.lock() else {
-                log::error!("Failed to lock version data");
+                log::warn!("Failed to lock version data");
                 return;
             };
             data.touch();

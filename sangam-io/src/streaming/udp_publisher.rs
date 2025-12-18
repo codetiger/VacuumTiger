@@ -229,22 +229,12 @@ impl UdpPublisher {
                         // UDP send errors are not fatal - just log and continue
                         log::warn!("Failed to send {} poll data: {}", group_id, e);
                     } else {
-                        // Log lidar at INFO level to trace data flow
-                        if group_id == "lidar" {
-                            log::info!(
-                                "Sent {} (seq: {}) to {} [polled]",
-                                cloned.group_id,
-                                cloned.sequence_number,
-                                target_addr
-                            );
-                        } else {
-                            log::trace!(
-                                "Sent {} (seq: {}) to {} [polled]",
-                                cloned.group_id,
-                                cloned.sequence_number,
-                                target_addr
-                            );
-                        }
+                        log::trace!(
+                            "Sent {} (seq: {}) to {} [polled]",
+                            cloned.group_id,
+                            cloned.sequence_number,
+                            target_addr
+                        );
                     }
                     sent_any = true;
                 }

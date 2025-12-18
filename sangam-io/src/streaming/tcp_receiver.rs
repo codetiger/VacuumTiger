@@ -119,9 +119,9 @@ impl TcpReceiver {
 
             match self.read_command(&mut stream) {
                 Ok(Some(cmd)) => {
-                    log::info!("Received command: {:?}", cmd);
+                    log::debug!("Received command: {:?}", cmd);
                     if let Err(e) = self.handle_command(cmd) {
-                        log::error!("Failed to handle command: {}", e);
+                        log::warn!("Failed to handle command: {}", e);
                     }
                 }
                 Ok(None) => {
@@ -140,7 +140,7 @@ impl TcpReceiver {
                         log::info!("Client disconnected");
                         return Ok(());
                     }
-                    log::error!("Failed to read message: {}", e);
+                    log::warn!("Failed to read message: {}", e);
                     return Err(e);
                 }
             }
@@ -162,16 +162,16 @@ impl TcpReceiver {
         let mut len_buf = [0u8; 4];
         match stream.read_exact(&mut len_buf) {
             Ok(_) => {
-                log::debug!("Read length prefix: {:?}", len_buf);
+                log::trace!("Read length prefix: {:?}", len_buf);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Ok(None),
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                log::debug!("EOF on length read");
+                log::trace!("EOF on length read");
                 return Err(Error::Io(e));
             }
             Err(e) => {
-                log::debug!("Error reading length: {:?}", e.kind());
+                log::trace!("Error reading length: {:?}", e.kind());
                 return Err(Error::Io(e));
             }
         }
@@ -194,13 +194,11 @@ impl TcpReceiver {
 
     /// Handle a command
     fn handle_command(&self, cmd: Command) -> Result<()> {
-        log::debug!("Executing command: {:?}", cmd);
+        log::trace!("Executing command: {:?}", cmd);
         let mut driver = self.driver.lock().map_err(|_| Error::ThreadPanic)?;
         let result = driver.send_command(cmd);
-        if result.is_ok() {
-            log::trace!("Command executed successfully");
-        } else {
-            log::error!("Command execution failed: {:?}", result);
+        if result.is_err() {
+            log::warn!("Command execution failed: {:?}", result);
         }
         result
     }
