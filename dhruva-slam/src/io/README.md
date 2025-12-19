@@ -6,7 +6,6 @@ External communication and data persistence infrastructure.
 
 The I/O module provides:
 - **SangamClient** - TCP client for the SangamIO daemon
-- **Bag** - Recording and playback of sensor data
 - **Streaming** - TCP publishing for visualization clients
 
 ## Module Structure
@@ -15,12 +14,9 @@ The I/O module provides:
 io/
 ├── mod.rs              # Module exports
 ├── sangam_client.rs    # SangamIO TCP client
-├── bag/
-│   ├── mod.rs          # Bag exports
-│   ├── format.rs       # File format constants
-│   ├── recorder.rs     # BagRecorder
-│   ├── player.rs       # BagPlayer
-│   └── simulated.rs    # SimulatedClient
+├── sangam_udp_receiver.rs  # UDP sensor data receiver
+├── map_manager.rs      # Map persistence
+├── motion_controller.rs # Velocity commands
 └── streaming/
     ├── mod.rs          # Streaming exports
     ├── publisher.rs    # OdometryPublisher
@@ -99,99 +95,6 @@ Length-prefixed Protobuf framing over TCP:
 │ Big-endian u32   │ (binary)            │
 └──────────────────┴─────────────────────┘
 ```
-
-## Bag Recording and Playback
-
-Record sensor data for offline testing and development.
-
-### File Format
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Header (64 bytes)                                           │
-│  • Magic: "DBAG"                                            │
-│  • Version: 1                                               │
-│  • Flags                                                    │
-│  • Start timestamp (μs)                                     │
-│  • End timestamp (μs)                                       │
-│  • Message count                                            │
-│  • Index offset                                             │
-│  • Reserved                                                 │
-├─────────────────────────────────────────────────────────────┤
-│ Messages                                                    │
-│  ┌──────────────┬─────────────────────────────────────────┐ │
-│  │ Length (4B)  │ Postcard-encoded BagMessage             │ │
-│  └──────────────┴─────────────────────────────────────────┘ │
-│  ...                                                        │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### BagRecorder
-
-Record live sensor data to file:
-
-```rust
-use crate::io::bag::BagRecorder;
-
-// Record for specific duration
-let recorder = BagRecorder::connect(
-    "192.168.68.101:5555",
-    "bags/recording.bag",
-)?;
-
-let info = recorder.record_duration(Duration::from_secs(60));
-println!("Recorded {} messages", info.message_count);
-
-// Or record until stopped (e.g., via Ctrl-C)
-let recorder = BagRecorder::connect(address, path)?;
-// ... in signal handler:
-recorder.stop();
-```
-
-### BagPlayer
-
-Read recorded bag files:
-
-```rust
-use crate::io::bag::BagPlayer;
-
-let player = BagPlayer::open("bags/recording.bag")?;
-
-// Get metadata
-let info = player.info();
-println!("Duration: {:.1}s", info.duration_secs());
-println!("Messages: {}", info.message_count);
-
-// Iterate messages
-for msg in player.messages() {
-    let msg = msg?;
-    println!("[{}] {}", msg.timestamp_us, msg.topic);
-}
-```
-
-### SimulatedClient
-
-Drop-in replacement for SangamClient that reads from bag file:
-
-```rust
-use crate::io::bag::SimulatedClient;
-
-// Same API as SangamClient!
-let mut client = SimulatedClient::open("bags/recording.bag")?;
-
-loop {
-    match client.recv() {
-        Ok(msg) => process_message(&msg),
-        Err(ClientError::EndOfFile) => break,
-        Err(e) => return Err(e),
-    }
-}
-```
-
-**Features:**
-- Preserves original timing (uses inter-message delays)
-- Can be looped for continuous playback
-- Identical API to SangamClient for easy switching
 
 ## Streaming
 
@@ -289,72 +192,6 @@ let current = pipeline.pose();
 
 ## Usage Examples
 
-### Complete Recording Session
-
-```rust
-use crate::io::bag::BagRecorder;
-use std::time::Duration;
-
-fn record_session(address: &str, output: &str, duration_secs: u64) -> Result<()> {
-    println!("Recording from {} to {}", address, output);
-
-    let recorder = BagRecorder::connect(address, output)?;
-    let info = recorder.record_duration(Duration::from_secs(duration_secs));
-
-    println!("Recording complete:");
-    println!("  Messages: {}", info.message_count);
-    println!("  Duration: {:.1}s", info.duration_secs());
-    println!("  Size: {} bytes", info.file_size);
-
-    Ok(())
-}
-```
-
-### Offline SLAM Processing
-
-```rust
-use crate::io::bag::SimulatedClient;
-use crate::io::sangam_client::ClientError;
-use crate::engine::slam::{OnlineSlam, SlamEngine};
-
-fn process_bag(bag_path: &str) -> Result<()> {
-    let mut client = SimulatedClient::open(bag_path)?;
-    let mut slam = OnlineSlam::new(slam_config);
-    let mut odom_pipeline = OdometryPipeline::new(odom_config);
-
-    loop {
-        match client.recv() {
-            Ok(msg) => {
-                match msg.topic.as_str() {
-                    "sensors/sensor_status" => {
-                        let (left, right, gyro) = extract_sensors(&msg);
-                        odom_pipeline.process(left, right, gyro, msg.timestamp_us);
-                    }
-                    "sensors/lidar" => {
-                        let scan = extract_lidar(&msg);
-                        let odom_delta = odom_pipeline.delta_since_last_scan();
-                        let result = slam.process_scan(&scan, &odom_delta, msg.timestamp_us);
-
-                        println!("Scan {}: pose ({:.2}, {:.2}, {:.2}°), score {:.2}",
-                            slam.status().num_scans,
-                            result.pose.x, result.pose.y,
-                            result.pose.theta.to_degrees(),
-                            result.match_score);
-                    }
-                    _ => {}
-                }
-            }
-            Err(ClientError::EndOfFile) => break,
-            Err(e) => return Err(e.into()),
-        }
-    }
-
-    println!("Processed {} scans, {} keyframes",
-        slam.status().num_scans, slam.status().num_keyframes);
-    Ok(())
-}
-```
-
 ### Live SLAM with Publishing
 
 ```rust
@@ -399,7 +236,6 @@ fn run_slam_node(sangam_addr: &str, publish_port: &str) -> Result<()> {
 | Operation | Time | Notes |
 |-----------|------|-------|
 | SangamClient.recv | <1ms | Network-bound |
-| BagPlayer iteration | ~10μs | Per message |
 | OdometryPipeline.process | <10μs | Per sample |
 | Publisher.publish_pose | <100μs | Per client |
 | Publisher.publish_map | ~5ms | Depends on map size |

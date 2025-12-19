@@ -53,27 +53,16 @@ navigation_hz = 5.0
 path = "/var/lib/dhruva/maps"
 
 # ============================================================================
-# Bag File Configuration (offline playback)
-# ============================================================================
-
-[bag]
-# Bag file path for offline playback (comment out for live mode)
-# file = "bags/test.bag"
-
-# Loop bag file playback continuously
-loop_playback = false
-
-# ============================================================================
 # Odometry Configuration
 # ============================================================================
 
 [odometry]
 # Odometry algorithm: "wheel", "complementary", "eskf", "mahony"
-# - wheel: Pure encoder odometry (no sensor fusion)
+# - wheel: Pure encoder odometry (no sensor fusion, simpler, no calibration)
 # - complementary: Simple encoder + gyro complementary filter
 # - eskf: Error-State Kalman Filter (full IMU fusion)
-# - mahony: Mahony AHRS with auto gyro bias calibration (recommended)
-algorithm = "mahony"
+# - mahony: Mahony AHRS with auto gyro bias calibration
+algorithm = "wheel"
 
 # Encoder ticks per meter of wheel travel
 ticks_per_meter = 4464.0
@@ -143,6 +132,11 @@ encoder_weight = 0.8
 # Currently disabled due to transform semantic issues
 use_submap_matching = false
 
+# Sanity check thresholds - reject matches that deviate too much from odometry
+# Helps reject false positive matches in symmetric environments
+max_theta_deviation = 0.35       # ~20 degrees - reject if rotation differs too much
+max_translation_deviation = 0.5  # 50cm - reject if translation differs too much
+
 # ============================================================================
 # Scan Matching Configuration
 # ============================================================================
@@ -155,7 +149,7 @@ use_submap_matching = false
 # - multi_res: Multi-resolution correlative (recommended for speed/robustness)
 # - hybrid_icp: Correlative + P2P ICP
 # - hybrid_p2l: Correlative + P2L ICP (best accuracy, recommended)
-algorithm = "multi_res"
+algorithm = "hybrid_p2l"
 
 # Always run correlative search first (true) or only on ICP failure (false)
 always_correlative = true
@@ -170,8 +164,8 @@ search_window_y = 0.3
 search_window_theta = 0.5
 
 # Resolution for correlative search
-linear_resolution = 0.03
-angular_resolution = 0.03
+linear_resolution = 0.02
+angular_resolution = 0.01
 grid_resolution = 0.05
 
 # Minimum correlative score to accept match
@@ -239,6 +233,7 @@ max_active_submaps = 2
 
 [map]
 # Cell size in meters (smaller = more detail, more memory)
+# NOTE: Must match ground truth map resolution (5cm for mock maps)
 resolution = 0.02
 
 # Initial map dimensions in meters (grows automatically)
@@ -288,7 +283,7 @@ num_rows = 80
 num_cols = 360
 
 # Maximum range to consider (meters)
-max_range = 8.0
+max_range = 6.0
 
 # Number of bits in binary signature (must be multiple of 64)
 # 640 bits = 80 bytes per keyframe
@@ -337,32 +332,67 @@ loop_rate_hz = 10.0
 
 [exploration.motion]
 # Maximum linear velocity (m/s)
-max_linear_vel = 0.3
+max_linear_vel = 0.4
 
 # Maximum angular velocity (rad/s)
-max_angular_vel = 0.5
+max_angular_vel = 0.8
 
 # Minimum safe distance from obstacles (m)
 obstacle_clearance = 0.15
 
 # Normal linear velocity for forward movement (m/s)
-linear_vel = 0.2
+linear_vel = 0.3
 
 # Normal angular velocity for rotation (rad/s)
-angular_vel = 0.3
+angular_vel = 0.5
 
 [exploration.frontier]
 # Minimum number of cells to consider a valid frontier
-min_frontier_size = 5
+min_frontier_size = 3
 
 # Maximum range to search for frontiers (m)
 detection_range = 10.0
 
 # Radius around blocked locations to avoid (m)
-blocked_radius = 0.3
+blocked_radius = 0.15
 
 # Distance threshold for grouping frontier cells (m)
 clustering_threshold = 0.5
+
+# ============================================================================
+# Navigation Configuration
+# ============================================================================
+
+[navigation]
+# Enable goal-based navigation thread
+enabled = true
+
+# Navigation update rate (Hz)
+update_rate_hz = 10.0
+
+# Robot radius for path planning obstacle inflation (m)
+robot_radius = 0.18
+
+# Safety margin beyond robot radius (m)
+# Adds extra clearance to prevent getting too close to walls
+# Total inflation = robot_radius + safety_margin
+safety_margin = 0.10
+
+# Maximum linear velocity for navigation (m/s)
+max_linear_vel = 0.4
+
+# Maximum angular velocity for navigation (rad/s)
+max_angular_vel = 0.8
+
+# Distance to consider waypoint reached (m)
+waypoint_threshold = 0.15
+
+# Angle error threshold for rotation (rad) - ~20 degrees
+heading_threshold = 0.35
+
+# Treat unknown cells as passable (required for exploration)
+# Set to true only for navigation in fully mapped environments
+unknown_is_obstacle = false
 
 # ============================================================================
 # Session Configuration

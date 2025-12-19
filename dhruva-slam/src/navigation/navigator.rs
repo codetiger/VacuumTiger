@@ -414,10 +414,11 @@ impl Navigator {
                 // Path is complete but not at exact goal position.
                 // For frontiers/exploration, accept "close enough" to avoid getting stuck
                 // trying to reach goals in obstacle inflation zones.
+                // Use 1.5x waypoint threshold (typically ~22cm with default 15cm threshold).
                 let goal_dx = target.position.x - pose.x;
                 let goal_dy = target.position.y - pose.y;
                 let goal_dist = (goal_dx * goal_dx + goal_dy * goal_dy).sqrt();
-                let close_enough_threshold = 0.4; // 40cm tolerance for path-complete
+                let close_enough_threshold = self.config.waypoint_reached_threshold * 1.5;
 
                 if goal_dist < close_enough_threshold {
                     log::info!(

@@ -30,6 +30,10 @@ pub struct FrontierConfig {
     pub surrounded_check_directions: usize,
     /// Minimum clearance required in a direction to not be considered blocked (meters).
     pub min_clearance_m: f32,
+    /// Robot radius for path planning (meters).
+    pub robot_radius: f32,
+    /// Safety margin beyond robot radius (meters).
+    pub safety_margin: f32,
 }
 
 impl Default for FrontierConfig {
@@ -43,6 +47,8 @@ impl Default for FrontierConfig {
             recovery_rotation_rad: 0.175,   // ~10 degrees
             surrounded_check_directions: 8, // Check 8 directions (every 45°)
             min_clearance_m: 0.25,          // Need at least 25cm clearance
+            robot_radius: 0.18,             // CRL-200S robot radius
+            safety_margin: 0.10,            // 10cm extra clearance from walls
         }
     }
 }
@@ -84,6 +90,10 @@ pub struct FrontierExploration {
     last_frontiers: Vec<Frontier>,
     /// Locations blocked by bumper (world coordinates).
     blocked_locations: Vec<(f32, f32)>,
+    /// Recently visited locations with timestamps (cooldown to prevent re-selection).
+    recently_visited: Vec<((f32, f32), std::time::Instant)>,
+    /// Cooldown duration for recently visited locations (seconds).
+    visited_cooldown_secs: f32,
     /// Current target frontier (if any).
     current_target: Option<Frontier>,
     /// Current navigation target point (may differ from centroid if edge-point fallback used).
@@ -113,8 +123,8 @@ impl FrontierExploration {
     pub fn new(config: FrontierConfig) -> Self {
         // Configure A* for exploration: allow routing through unknown space
         let planner_config = AStarConfig {
-            robot_radius: 0.18,  // CRL-200S robot radius
-            safety_margin: 0.05, // 5cm extra clearance from walls
+            robot_radius: config.robot_radius,
+            safety_margin: config.safety_margin,
             allow_diagonal: true,
             max_iterations: 50_000, // Lower limit for quick reachability check
             simplification_tolerance: 0.0, // Don't need simplified paths for reachability check
@@ -126,6 +136,8 @@ impl FrontierExploration {
             planner: AStarPlanner::new(planner_config),
             last_frontiers: Vec::new(),
             blocked_locations: Vec::new(),
+            recently_visited: Vec::new(),
+            visited_cooldown_secs: 10.0, // 10 second cooldown before re-visiting
             current_target: None,
             current_target_point: None,
             path_history: Vec::with_capacity(100),
@@ -138,6 +150,31 @@ impl FrontierExploration {
             peak_explored_area: 0.0,
             last_map: None,
         }
+    }
+
+    /// Check if a frontier was recently visited (in cooldown period).
+    fn is_recently_visited(&self, frontier: &Frontier) -> bool {
+        let radius_sq = self.config.blocked_radius * self.config.blocked_radius;
+        let now = std::time::Instant::now();
+
+        self.recently_visited.iter().any(|((vx, vy), visited_time)| {
+            // Check if still in cooldown
+            if now.duration_since(*visited_time).as_secs_f32() > self.visited_cooldown_secs {
+                return false;
+            }
+            // Check if frontier is near this visited location
+            let dx = frontier.centroid.x - vx;
+            let dy = frontier.centroid.y - vy;
+            (dx * dx + dy * dy) < radius_sq
+        })
+    }
+
+    /// Clean up expired entries from recently_visited list.
+    fn cleanup_recently_visited(&mut self) {
+        let now = std::time::Instant::now();
+        self.recently_visited.retain(|(_, visited_time)| {
+            now.duration_since(*visited_time).as_secs_f32() < self.visited_cooldown_secs
+        });
     }
 
     /// Record current position in path history.
@@ -232,6 +269,61 @@ impl FrontierExploration {
         // Occupied if value >= 100 (but not unknown 255 for exploration purposes)
         let cell_value = map.cells[idx];
         cell_value >= 100 && cell_value != 255
+    }
+
+    /// Check if a frontier is trapped inside an enclosed area.
+    ///
+    /// A frontier is considered "trapped" if obstacles surround it from all directions
+    /// within a short distance. This typically happens when there's a small pocket of
+    /// unknown cells completely enclosed by walls - the frontier exists but is unreachable.
+    fn is_frontier_trapped(&self, frontier: &Frontier, map: &CurrentMapData) -> bool {
+        let num_directions = 8; // Check every 45 degrees
+        let angle_step = 2.0 * std::f32::consts::PI / num_directions as f32;
+        let check_distance = 0.5; // Check 50cm out from frontier
+        let step_size = 0.05; // 5cm steps
+
+        let fx = frontier.centroid.x;
+        let fy = frontier.centroid.y;
+
+        let mut blocked_directions = 0;
+
+        for i in 0..num_directions {
+            let angle = i as f32 * angle_step;
+            let mut hit_obstacle = false;
+
+            // Ray-cast in this direction
+            let mut dist = step_size;
+            while dist <= check_distance {
+                let check_x = fx + dist * angle.cos();
+                let check_y = fy + dist * angle.sin();
+
+                if self.is_point_blocked(map, check_x, check_y) {
+                    hit_obstacle = true;
+                    break;
+                }
+                dist += step_size;
+            }
+
+            if hit_obstacle {
+                blocked_directions += 1;
+            }
+        }
+
+        // Frontier is trapped if ALL or almost all directions hit obstacles
+        // Allow at most 1 unblocked direction (could be the frontier edge itself)
+        let trapped = blocked_directions >= num_directions - 1;
+
+        if trapped {
+            log::debug!(
+                "Frontier at ({:.2}, {:.2}) is TRAPPED ({}/{} directions blocked)",
+                fx,
+                fy,
+                blocked_directions,
+                num_directions
+            );
+        }
+
+        trapped
     }
 
     /// Find the direction with most clearance from obstacles.
@@ -635,10 +727,20 @@ impl FrontierExploration {
         robot_pose: &Pose2D,
         map: &CurrentMapData,
     ) -> Option<(&'a Frontier, (f32, f32))> {
-        // Filter non-blocked frontiers and sort by distance (closest first)
+        // Clean up expired cooldown entries
+        self.cleanup_recently_visited();
+
+        // Filter frontiers that are:
+        // - Not blocked (previous navigation failures)
+        // - Not recently visited (cooldown period)
+        // - Not trapped inside enclosed areas
         let mut candidates: Vec<&Frontier> = frontiers
             .iter()
-            .filter(|f| !self.is_frontier_blocked(f))
+            .filter(|f| {
+                !self.is_frontier_blocked(f)
+                    && !self.is_recently_visited(f)
+                    && !self.is_frontier_trapped(f, map)
+            })
             .collect();
 
         // Sort by distance (ascending - closest first)
@@ -971,6 +1073,11 @@ impl ExplorationStrategy for FrontierExploration {
                 target.centroid.x,
                 target.centroid.y
             );
+
+            // Add to recently visited cooldown list to prevent immediate re-selection
+            // This handles the case where we reached "close enough" but didn't fully clear the frontier
+            self.recently_visited
+                .push(((target.centroid.x, target.centroid.y), std::time::Instant::now()));
         }
 
         // Clear current target - navigation completed

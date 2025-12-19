@@ -55,7 +55,7 @@ impl Default for AStarConfig {
     fn default() -> Self {
         Self {
             robot_radius: 0.18,  // CRL-200S robot radius
-            safety_margin: 0.05, // 5cm extra clearance from walls
+            safety_margin: 0.10, // 10cm extra clearance from walls
             allow_diagonal: true,
             max_iterations: 100_000,
             simplification_tolerance: 0.05, // 5cm

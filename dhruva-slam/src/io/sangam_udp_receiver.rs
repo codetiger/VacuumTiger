@@ -267,7 +267,7 @@ impl SangamUdpReceiver {
                 }
                 "lidar" => {
                     if let Some(data) = Self::parse_lidar(&sensor_group) {
-                        log::info!("Lidar scan received: {} points", data.points.len());
+                        log::debug!("Lidar scan received: {} points", data.points.len());
                         // Non-blocking send - drop if channel full
                         self.lidar_tx.try_send(data).ok();
                     } else {

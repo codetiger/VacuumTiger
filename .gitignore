@@ -56,3 +56,5 @@ analysis/
 .claude/
 
 *.log
+
+results/

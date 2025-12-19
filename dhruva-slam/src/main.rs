@@ -17,7 +17,7 @@
 //!                          │
 //! ┌─────────────────────────────────────────────────────┐
 //! │                      io/                            │  ← Infrastructure
-//! │         (sangam_client, bag, streaming)             │
+//! │            (sangam_client, streaming)               │
 //! └─────────────────────────────────────────────────────┘
 //!                          │
 //! ┌─────────────────────────────────────────────────────┐
@@ -140,8 +140,6 @@ struct Config {
     #[serde(default)]
     map_storage: MapStorageConfig,
     #[serde(default)]
-    bag: BagConfig,
-    #[serde(default)]
     preprocessing: PreprocessingConfig,
     #[serde(default)]
     slam: SlamConfig,
@@ -241,16 +239,6 @@ impl Default for MapStorageConfig {
             path: "/var/lib/dhruva/maps".to_string(),
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(default)]
-#[derive(Default)]
-struct BagConfig {
-    /// Bag file path for offline playback (None for live mode)
-    file: Option<String>,
-    /// Loop bag file playback
-    loop_playback: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -643,6 +631,9 @@ struct NavigationConfig {
     update_rate_hz: f32,
     /// Robot radius for A* inflation (m).
     robot_radius: f32,
+    /// Safety margin beyond robot radius (m).
+    /// Adds extra clearance to prevent getting too close to walls.
+    safety_margin: f32,
     /// Maximum linear velocity (m/s).
     max_linear_vel: f32,
     /// Maximum angular velocity (rad/s).
@@ -662,6 +653,7 @@ impl Default for NavigationConfig {
             enabled: true,
             update_rate_hz: 10.0,
             robot_radius: 0.18,
+            safety_margin: 0.10, // 10cm extra clearance from walls
             max_linear_vel: 0.3,
             max_angular_vel: 0.5,
             waypoint_threshold: 0.15,
@@ -722,7 +714,6 @@ fn print_help() {
     println!("    All settings are configured via the TOML config file:");
     println!("    - [source] sangam_address: SangamIO daemon address");
     println!("    - [output] bind_port: TCP stream port");
-    println!("    - [bag] file, loop: Bag file playback settings");
     println!();
     println!("THREADS:");
     println!("    The daemon runs with 3 fixed threads:");
@@ -930,17 +921,10 @@ fn main() {
     let config = load_config(&args);
 
     log::info!("dhruva-slam starting");
-    if let Some(ref bag) = config.bag.file {
-        log::info!("  Input: Bag file {}", bag);
-        if config.bag.loop_playback {
-            log::info!("  Loop: enabled");
-        }
-    } else {
-        log::info!(
-            "  SangamIO: {} (TCP commands + UDP sensors)",
-            config.source.sangam_address
-        );
-    }
+    log::info!(
+        "  SangamIO: {} (TCP commands + UDP sensors)",
+        config.source.sangam_address
+    );
     log::info!(
         "  Output port: {} (TCP commands+maps, UDP status)",
         config.output.bind_port
@@ -1059,8 +1043,6 @@ fn run_threaded_mode(
         odometry_type: config.odometry.algorithm_type(),
         odometry_config,
         preprocessor_config,
-        bag_file: config.bag.file.clone(),
-        loop_bag: config.bag.loop_playback,
     };
 
     // 6. Build stream config
@@ -1122,6 +1104,7 @@ fn run_threaded_mode(
             navigator: NavigatorConfig {
                 planner: AStarConfig {
                     robot_radius: config.navigation.robot_radius,
+                    safety_margin: config.navigation.safety_margin,
                     unknown_is_obstacle: config.navigation.unknown_is_obstacle,
                     ..Default::default()
                 },
@@ -1185,6 +1168,9 @@ fn run_threaded_mode(
                 frontier_detection_range: config.exploration.frontier.detection_range,
                 blocked_radius: config.exploration.frontier.blocked_radius,
                 clustering_threshold: config.exploration.frontier.clustering_threshold,
+                // Use same robot_radius and safety_margin as navigation for consistent path planning
+                robot_radius: config.navigation.robot_radius,
+                safety_margin: config.navigation.safety_margin,
                 ..FrontierConfig::default()
             },
             loop_rate_hz: config.exploration.loop_rate_hz,

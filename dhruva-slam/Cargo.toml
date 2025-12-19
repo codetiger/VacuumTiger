@@ -13,7 +13,6 @@ ctrlc = "3.5"
 env_logger = { version = "0.11", default-features = false, features = ["humantime"] }
 kiddo = "4.2"  # K-d tree for nearest neighbor queries
 log = "0.4"
-postcard = { version = "1.1", features = ["alloc"] }  # For bag file format (internal)
 prost = { version = "0.13", default-features = false, features = ["std", "derive"] }
 rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "os_rng"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }

@@ -8,16 +8,11 @@
 //! When a TCP client connects for commands, their IP is automatically registered
 //! for UDP sensor streaming. This eliminates network flooding from broadcasts.
 
-mod config;
-mod core;
-mod devices;
-mod error;
-mod streaming;
-
-use crate::config::Config;
-use crate::devices::create_device;
-use crate::error::Result;
-use crate::streaming::{TcpReceiver, UdpClientRegistry, UdpPublisher, create_serializer};
+use sangam_io::config::Config;
+use sangam_io::core::types::Command;
+use sangam_io::devices::create_device;
+use sangam_io::error::{Error, Result};
+use sangam_io::streaming::{TcpReceiver, UdpClientRegistry, UdpPublisher, create_serializer};
 use std::env;
 use std::net::{Shutdown, SocketAddr, TcpListener, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,7 +89,7 @@ fn main() -> Result<()> {
         log::info!("Received shutdown signal");
         r.store(false, Ordering::Relaxed);
     })
-    .map_err(|e| error::Error::Other(format!("Error setting Ctrl-C handler: {}", e)))?;
+    .map_err(|e| Error::Other(format!("Error setting Ctrl-C handler: {}", e)))?;
 
     log::debug!("Wire format: Protobuf");
 
@@ -106,7 +101,7 @@ fn main() -> Result<()> {
 
     // Bind UDP socket to any available port (we only send, not receive)
     let udp_socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| error::Error::Other(format!("Failed to create UDP socket: {}", e)))?;
+        .map_err(|e| Error::Other(format!("Failed to create UDP socket: {}", e)))?;
 
     if udp_streaming_port == config.network.port() {
         log::debug!(
@@ -145,14 +140,14 @@ fn main() -> Result<()> {
                 log::error!("UDP publisher error: {}", e);
             }
         })
-        .map_err(|e| error::Error::Other(format!("Failed to spawn UDP publisher: {}", e)))?;
+        .map_err(|e| Error::Other(format!("Failed to spawn UDP publisher: {}", e)))?;
 
     // =========================================================================
     // TCP Server Setup (commands only)
     // =========================================================================
     let bind_addr = &config.network.bind_address;
     let listener = TcpListener::bind(bind_addr)
-        .map_err(|e| error::Error::Other(format!("Failed to bind to {}: {}", bind_addr, e)))?;
+        .map_err(|e| Error::Other(format!("Failed to bind to {}: {}", bind_addr, e)))?;
     if let Err(e) = listener.set_nonblocking(true) {
         log::warn!("Failed to set nonblocking mode: {}", e);
     }
@@ -251,8 +246,8 @@ fn main() -> Result<()> {
     {
         let mut driver = driver
             .lock()
-            .map_err(|e| error::Error::MutexPoisoned(format!("driver mutex: {}", e)))?;
-        driver.send_command(crate::core::types::Command::Shutdown)?;
+            .map_err(|e| Error::MutexPoisoned(format!("driver mutex: {}", e)))?;
+        driver.send_command(Command::Shutdown)?;
     }
 
     log::info!("SangamIO stopped");

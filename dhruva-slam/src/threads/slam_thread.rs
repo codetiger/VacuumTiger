@@ -1,22 +1,17 @@
 //! SLAM Thread - Real-time sensor processing.
 //!
 //! This thread:
-//! - Receives sensor data via UDP from SangamIO (live mode)
+//! - Receives sensor data via UDP from SangamIO
 //! - Processes odometry and lidar data through SLAM engine
 //! - Updates SharedState with pose, map, and sensor status
 //! - Handles commands from Command Thread via channel (non-blocking)
 //!
 //! # Communication Architecture
 //!
-//! **Live mode**: Event-driven via UDP
+//! Event-driven via UDP:
 //! - Sensors arrive via crossbeam channels from SangamUdpReceiver
 //! - Uses `crossbeam::select!` to wait on sensor_status + lidar channels
 //! - Processes immediately on arrival (no fixed rate loop)
-//!
-//! Note: Some methods are defined for planned features.
-//!
-//! **Bag mode**: Same as before
-//! - Reads from bag file with timing control
 //!
 //! CRITICAL: This thread NEVER blocks on commands or publishing.
 //! Sensor data flows uninterrupted.
@@ -29,7 +24,6 @@ use std::time::Instant;
 
 use crate::core::types::{LaserScan, Pose2D, PoseTracker};
 use crate::engine::slam::{OnlineSlam, OnlineSlamConfig, SlamEngine, SlamMode};
-use crate::io::bag::{BagMessage, BagPlayer, SensorStatusMsg};
 use crate::io::sangam_client::Message as SangamMessage;
 use crate::io::sangam_udp_receiver::{
     LidarData, ReceiverConfig, SangamUdpReceiver, SensorStatusData,
@@ -59,10 +53,6 @@ pub struct SlamThreadConfig {
     pub odometry_config: DynOdometryConfig,
     /// Scan preprocessor configuration.
     pub preprocessor_config: PreprocessorConfig,
-    /// Bag file path for offline playback (None for live mode).
-    pub bag_file: Option<String>,
-    /// Loop bag file playback.
-    pub loop_bag: bool,
 }
 
 /// SLAM Thread handle.
@@ -81,11 +71,7 @@ impl SlamThread {
         let handle = thread::Builder::new()
             .name("slam".into())
             .spawn(move || {
-                if let Some(bag_path) = config.bag_file.clone() {
-                    run_bag_loop(config, bag_path, shared_state, command_rx, running);
-                } else {
-                    run_live_loop(config, shared_state, command_rx, running);
-                }
+                run_live_loop(config, shared_state, command_rx, running);
             })
             .expect("Failed to spawn SLAM thread");
 
@@ -189,76 +175,6 @@ fn run_live_loop(
     receiver_handle.join().ok();
 
     log::info!("SLAM thread shutdown complete");
-}
-
-/// Run SLAM loop with bag file playback.
-fn run_bag_loop(
-    config: SlamThreadConfig,
-    bag_path: String,
-    shared_state: SharedStateHandle,
-    command_rx: CommandReceiver,
-    running: Arc<AtomicBool>,
-) {
-    log::info!("SLAM thread starting (bag playback)");
-    log::info!("  Bag file: {}", bag_path);
-
-    loop {
-        // Open bag file
-        let mut player = match BagPlayer::open(&bag_path) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("Failed to open bag file: {}", e);
-                return;
-            }
-        };
-        player.set_speed(1.0); // Real-time playback
-
-        // Initialize components
-        let mut slam_context = SlamContext::new(&config);
-
-        // Main loop
-        while running.load(Ordering::Relaxed) {
-            // 1. Check for commands (non-blocking)
-            slam_context.process_commands(&command_rx, &shared_state);
-
-            // 2. Get next message from bag
-            let msg = match player.next() {
-                Ok(Some(m)) => m,
-                Ok(None) => {
-                    log::info!("End of bag file reached");
-                    break;
-                }
-                Err(e) => {
-                    log::error!("Bag read error: {}", e);
-                    break;
-                }
-            };
-
-            match msg {
-                BagMessage::SensorStatus(status) => {
-                    slam_context.process_bag_sensor_status(&status, &shared_state);
-                }
-                BagMessage::Lidar(timestamped) => {
-                    slam_context.process_lidar(
-                        &timestamped.data,
-                        timestamped.timestamp_us,
-                        &shared_state,
-                    );
-                }
-                BagMessage::Odometry(_) => {
-                    // Skip raw odometry messages, we compute our own
-                }
-            }
-        }
-
-        // Check if we should loop
-        if !config.loop_bag || !running.load(Ordering::Relaxed) {
-            break;
-        }
-        log::info!("Looping bag file...");
-    }
-
-    log::info!("SLAM thread shutting down (bag playback)");
 }
 
 /// Robot radius used for bumper obstacle marking.
@@ -501,22 +417,6 @@ impl SlamContext {
                 }
             }
         }
-    }
-
-    /// Process sensor status from bag file.
-    fn process_bag_sensor_status(
-        &mut self,
-        status: &SensorStatusMsg,
-        shared_state: &SharedStateHandle,
-    ) {
-        let timestamp_us = status.timestamp_us;
-        self.process_odometry(
-            status.encoder.left,
-            status.encoder.right,
-            status.gyro_raw[2],
-            timestamp_us,
-            shared_state,
-        );
     }
 
     /// Common odometry processing.

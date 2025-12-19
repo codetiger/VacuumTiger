@@ -139,10 +139,12 @@ clustering_threshold = 0.5
 enabled = true
 update_rate_hz = 10.0
 robot_radius = 0.18
+safety_margin = 0.10  # 10cm extra clearance from walls
 max_linear_vel = 0.4
 max_angular_vel = 0.8
 waypoint_threshold = 0.15
 heading_threshold = 0.35  # ~20 degrees - allow more angular error before rotating
+unknown_is_obstacle = false  # Required for exploration - allow paths through unknown areas
 
 [session]
 state_path = "/tmp/dhruva_test_session.json"

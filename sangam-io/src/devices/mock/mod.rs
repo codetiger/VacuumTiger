@@ -125,13 +125,13 @@
 //! - [`noise`]: Configurable noise generator
 
 pub mod config;
-mod encoder_sim;
-mod imu_sim;
-mod lidar_sim;
-mod map_loader;
-mod noise;
-mod physics;
-mod sensor_sim;
+pub mod encoder_sim;
+pub mod imu_sim;
+pub mod lidar_sim;
+pub mod map_loader;
+pub mod noise;
+pub mod physics;
+pub mod sensor_sim;
 
 use crate::config::DeviceConfig;
 use crate::core::driver::{DeviceDriver, DriverInitResult};

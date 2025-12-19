@@ -60,7 +60,7 @@ DhruvaSLAM is organized as a binary crate (not a library) with 5 logical layers:
                          │
 ┌─────────────────────────────────────────────────────┐
 │                      io/                             │  ← Infrastructure
-│         (sangam_client, bag, streaming)              │
+│            (sangam_client, streaming)                │
 └─────────────────────────────────────────────────────┘
                          │
 ┌─────────────────────────────────────────────────────┐
@@ -89,7 +89,7 @@ See individual module READMEs for details:
 - [sensors/](src/sensors/README.md) - Odometry fusion and lidar preprocessing
 - [algorithms/](src/algorithms/README.md) - Matching, mapping, localization, descriptors
 - [engine/](src/engine/README.md) - SLAM orchestration, keyframes, pose graph
-- [io/](src/io/README.md) - SangamIO client, bag files, TCP streaming
+- [io/](src/io/README.md) - SangamIO client, TCP streaming
 
 ## Building
 
@@ -133,22 +133,12 @@ cargo run --release -- --sangam 192.168.68.101:5555 --port 5557
 
 # With debug logging
 RUST_LOG=debug cargo run --release
-
-# Offline playback from bag file
-cargo run --release -- --bag bags/recording.bag
-
-# Loop bag file playback
-cargo run --release -- --bag bags/recording.bag --loop
 ```
 
 **Arguments:**
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `-c, --config` | Configuration file | `dhruva-slam.toml` |
-| `-s, --sangam` | SangamIO address | `192.168.68.101:5555` |
-| `-p, --port` | TCP publish port | `5557` |
-| `-b, --bag` | Bag file for offline playback | (none) |
-| `-l, --loop` | Loop bag file playback | false |
 
 ## Configuration
 
@@ -256,7 +246,6 @@ dhruva-slam/
 │   │
 │   ├── io/                   # I/O infrastructure
 │   │   ├── sangam_client.rs  # SangamIO TCP/UDP client
-│   │   ├── bag/              # BagRecorder, BagPlayer
 │   │   ├── streaming/        # TCP/UDP publishers
 │   │   ├── map_manager.rs    # Map persistence
 │   │   └── motion_controller.rs  # Velocity commands
@@ -285,7 +274,6 @@ dhruva-slam/
 ├── proto/                    # Protobuf schemas
 │   └── dhruva.proto          # Output message definitions
 │
-├── bags/                     # Recorded sensor data
 ├── results/                  # Benchmark results
 ├── docs/                     # Design documents
 │
@@ -389,7 +377,7 @@ cargo test -- --nocapture
 | **Binary, Not Library** | Standalone daemon, not imported as a library |
 | **Runtime Configuration** | Algorithm selection via TOML config |
 | **Embedded-First** | Optimized for Allwinner A33 (ARM Cortex-A7) |
-| **Testability** | Components unit-testable with bag file playback |
+| **Testability** | Components unit-testable with mock data |
 
 ### Platform Considerations (Allwinner A33)
 
