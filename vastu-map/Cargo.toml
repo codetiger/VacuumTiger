@@ -1,0 +1,50 @@
+[package]
+name = "vastu-map"
+version = "0.1.0"
+edition = "2024"
+description = "Feature-based 2D SLAM library optimized for ARM NEON"
+license = "MIT"
+
+[features]
+default = []
+integration-tests = ["dep:sangam-io", "dep:svg", "dep:image", "dep:serde_yaml"]
+
+[dependencies]
+rstar = "0.12"           # R-tree spatial index
+log = "0.4"              # Logging
+approx = "0.5"           # Approximate comparisons
+rand = "0.9"             # RANSAC randomness
+
+# Integration test dependencies (optional)
+sangam-io = { path = "../sangam-io", features = ["mock"], optional = true }
+svg = { version = "0.17", optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "pnm"], optional = true }
+serde_yaml = { version = "0.9", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+criterion = "0.5"        # Benchmarks
+env_logger = "0.11"      # Test logging
+
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
+required-features = ["integration-tests"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1        # Better optimization, slower compile
+panic = "abort"          # Smaller binary, no unwinding overhead
+strip = true             # Strip debug symbols for smaller binary
+
+# Release with debug info (for profiling)
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+strip = false
+
+# Benchmarks (uncomment when ready)
+# [[bench]]
+# name = "simd_bench"
+# harness = false

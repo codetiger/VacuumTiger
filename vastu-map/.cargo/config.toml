@@ -1,0 +1,47 @@
+# Cross-compilation configuration for ARM targets
+#
+# Baseline target: Allwinner A33 (Cortex-A7) with NEON + VFPv4
+# This configuration also works on:
+# - Cortex-A8, A9, A15 (ARMv7-A with NEON)
+# - Cortex-A53, A55, A72 (ARMv8-A, backward compatible)
+#
+# Performance Optimizations:
+# - target-cpu=cortex-a7: Tune scheduling for Cortex-A7
+# - +neon: Enable NEON SIMD (128-bit vectors)
+# - +vfpv4: Enable VFPv4 floating point with FMA
+# - opt-level=3: Maximum optimization
+# - llvm-args: Enable fast-math and loop vectorization
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "arm-linux-gnueabihf-gcc"
+rustflags = [
+    # CPU targeting
+    "-C", "target-cpu=cortex-a7",
+    "-C", "target-feature=+neon,+vfpv4",
+
+    # Optimization flags
+    "-C", "opt-level=3",
+
+    # LLVM optimization passes for better auto-vectorization
+    "-C", "llvm-args=-enable-unsafe-fp-math",
+    "-C", "llvm-args=-vectorize-loops",
+    "-C", "llvm-args=-vectorize-slp",
+
+    # Linker
+    "-C", "link-arg=-lgcc",
+]
+
+# Host machine (macOS/Linux x86_64) - enable AVX2 for development testing
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-C", "target-cpu=native",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C", "target-cpu=native",
+]
+
+# Uncomment for ARM-only development
+# [build]
+# target = "armv7-unknown-linux-musleabihf"

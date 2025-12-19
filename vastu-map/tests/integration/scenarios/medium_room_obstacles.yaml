@@ -1,0 +1,52 @@
+# Medium Room Obstacle Navigation Test
+#
+# Navigate around obstacles to test obstacle detection.
+# Visit areas near each obstacle.
+#
+# Obstacles:
+# - Table at (2m, 2m)
+# - Pillar at (6m, 2m)
+# - L-shape at (5m, 5m)
+# - Small box at (2m, 6m)
+
+name: "medium_room_obstacles"
+map: "maps/medium_room.yaml"
+
+start_pose:
+  x: 4.0
+  y: 4.0
+  theta: 0.0
+
+path:
+  # Scan from center
+  - {left: -0.732, right: 0.732}
+
+  # Move toward table area
+  - {left: -0.366, right: 0.366}  # Turn 180°
+  - {left: 1.5, right: 1.5}       # Move toward (2.5, 4)
+  - {left: -0.183, right: 0.183}  # Turn left 90°
+  - {left: 1.5, right: 1.5}       # Move toward table
+
+  # Scan near table
+  - {left: -0.732, right: 0.732}
+
+  # Navigate to pillar area
+  - {left: 0.183, right: -0.183}  # Turn right 90°
+  - {left: 4.0, right: 4.0}       # Move across to pillar side
+
+  # Scan near pillar
+  - {left: -0.732, right: 0.732}
+
+  # Move up toward L-shape
+  - {left: -0.183, right: 0.183}  # Turn left 90°
+  - {left: 3.0, right: 3.0}       # Move up
+
+  # Scan near L-shape
+  - {left: -0.732, right: 0.732}
+
+  # Navigate to small box area
+  - {left: 0.366, right: -0.366}  # Turn right 180°
+  - {left: 3.0, right: 3.0}       # Move toward small box
+
+  # Final scan
+  - {left: -0.732, right: 0.732}

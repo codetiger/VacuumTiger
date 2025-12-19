@@ -1,0 +1,42 @@
+# Medium Room Exploration Test
+#
+# Starting from center (4m, 4m), explore the room with rotation
+# and forward motion to discover all walls and obstacles.
+#
+# Map: 8m x 8m room with 4 obstacles
+# Wheel base: 0.233m
+
+name: "medium_room_exploration"
+map: "maps/medium_room.yaml"
+
+start_pose:
+  x: 4.0
+  y: 4.0
+  theta: 0.0
+
+path:
+  # Initial 360° rotation to scan surroundings
+  # 360° = 2π * 0.233 / 2 = 0.732m per wheel
+  - {left: -0.732, right: 0.732}
+
+  # Move forward 1m
+  - {left: 1.0, right: 1.0}
+
+  # Turn right 90° and move
+  # 90° = π/2 * 0.233 / 2 = 0.183m
+  - {left: 0.183, right: -0.183}
+  - {left: 1.5, right: 1.5}
+
+  # Turn right 90° and move back
+  - {left: 0.183, right: -0.183}
+  - {left: 1.0, right: 1.0}
+
+  # Another rotation to scan
+  - {left: -0.732, right: 0.732}
+
+  # Explore other direction
+  - {left: 0.183, right: -0.183}
+  - {left: 2.0, right: 2.0}
+
+  # Final rotation
+  - {left: -0.732, right: 0.732}
