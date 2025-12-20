@@ -1,0 +1,57 @@
+# Long Path Drift Test
+#
+# Tests cumulative drift over extended motion (20m total path).
+# In a large room, the robot makes a zigzag pattern to cover distance
+# while staying within bounds.
+#
+# Expected behavior:
+# - Position error should grow slowly (< 0.75% of distance traveled)
+# - After 20m, error should be < 15cm
+# - ICP should maintain convergence throughout
+#
+# Map: 12m x 12m large empty room
+# Path: Zigzag covering ~20m total distance
+
+name: "drift_long_path"
+map: "maps/large_room.yaml"
+
+start_pose:
+  x: 2.0
+  y: 6.0
+  theta: 0.0  # Facing +X
+
+path:
+  # Leg 1: 4m forward (now at x=6, y=6)
+  - {left: 4.0, right: 4.0}
+
+  # Turn 90° CCW (now facing +Y)
+  - {left: -0.183, right: 0.183}
+
+  # Leg 2: 4m forward (now at x=6, y=10)
+  - {left: 4.0, right: 4.0}
+
+  # Turn 90° CW (now facing +X)
+  - {left: 0.183, right: -0.183}
+
+  # Leg 3: 4m forward (now at x=10, y=10)
+  - {left: 4.0, right: 4.0}
+
+  # Turn 90° CCW (now facing +Y)
+  - {left: -0.183, right: 0.183}
+
+  # Leg 4: 2m forward (now at x=10, y=8) - shortened to stay in bounds
+  - {left: 2.0, right: 2.0}
+
+  # Turn 90° CW (now facing -X)
+  - {left: 0.183, right: -0.183}
+
+  # Leg 5: 4m forward (now at x=6, y=8)
+  - {left: 4.0, right: 4.0}
+
+  # Turn 90° CCW (now facing -Y)
+  - {left: -0.183, right: 0.183}
+
+  # Leg 6: 2m forward (final position)
+  - {left: 2.0, right: 2.0}
+
+  # Total: 4+4+4+2+4+2 = 20m of travel

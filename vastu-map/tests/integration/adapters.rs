@@ -2,16 +2,12 @@
 //!
 //! sangam-io's lidar simulator produces `Vec<(f32, f32, u8)>` which maps
 //! directly to vastu-map's `PolarScan.points` format.
-//!
-//! Note: vastu-map's extract_lines algorithm can hang on large continuous
-//! point clouds (>100 points). We subsample lidar data to work around this.
 
 use vastu_map::core::{PointCloud2D, PolarScan, Pose2D};
 
 /// Convert lidar scan data from sangam-io format to vastu-map PointCloud2D.
 ///
-/// This function subsamples the data to avoid performance issues with
-/// vastu-map's line extraction algorithm on large continuous point clouds.
+/// Uses full 360° lidar data for better line extraction quality.
 ///
 /// # Arguments
 /// * `lidar_data` - Raw lidar data from LidarSimulator::generate_scan()
@@ -27,23 +23,9 @@ pub fn lidar_to_point_cloud(
     min_range: f32,
     max_range: f32,
 ) -> PointCloud2D {
-    // Split lidar data into 4 quadrants to avoid continuous loop issue
-    // vastu-map's algorithm hangs on continuous point clouds
-    // By taking only front-facing points, we get a simpler pattern
-
-    // Filter to front 180 degrees only (angle between -PI/2 and PI/2)
-    let front_points: Vec<_> = lidar_data
-        .into_iter()
-        .filter(|(angle, _, _)| {
-            // Keep only front-facing points
-            angle.abs() < std::f32::consts::FRAC_PI_2
-        })
-        .step_by(5) // Subsample to ~18 points
-        .collect();
-
-    let polar = PolarScan {
-        points: front_points,
-    };
+    // Use full 360° scan data - the split-merge algorithm handles this correctly
+    // after the infinite recursion fix in split_recursive()
+    let polar = PolarScan { points: lidar_data };
     polar.to_cartesian(min_quality, min_range, max_range)
 }
 
@@ -96,8 +78,8 @@ mod tests {
     }
 
     #[test]
-    fn test_lidar_to_point_cloud_filters_back() {
-        // Test that the subsampled version only keeps front-facing points
+    fn test_lidar_to_point_cloud_full_360() {
+        // Test that full 360 degree scan is preserved
         let lidar_data: Vec<_> = (0..360)
             .map(|i| {
                 let angle = (i as f32).to_radians();
@@ -107,14 +89,13 @@ mod tests {
 
         let cloud = lidar_to_point_cloud(lidar_data, 50, 0.1, 10.0);
 
-        // Should only keep front 180 degrees, subsampled by 5
-        // ~90 points in front, subsampled to ~18
-        assert!(cloud.len() > 0, "Should have some points");
-        assert!(cloud.len() < 30, "Should be subsampled");
+        // Should have all 360 points (no subsampling)
+        assert_eq!(cloud.len(), 360, "Should have all points");
 
-        // All points should be in front (x > 0 for angle near 0)
-        // But actually the cloud is in robot frame, so we check y range
-        // Points from -90 to +90 degrees will have x values near cos(angle)
-        // which is positive for angles near 0
+        // Points should form a circle around origin in robot frame
+        for i in 0..cloud.len() {
+            let dist = (cloud.xs[i].powi(2) + cloud.ys[i].powi(2)).sqrt();
+            assert!((dist - 1.0).abs() < 0.01, "Points should be at radius 1.0");
+        }
     }
 }

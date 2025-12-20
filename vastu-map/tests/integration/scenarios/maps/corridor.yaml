@@ -1,0 +1,8 @@
+# Narrow corridor for degenerate geometry testing (1m x 10m)
+# Tests ICP behavior with only parallel walls visible
+image: corridor.pgm
+resolution: 0.05    # 5cm per pixel
+origin: [0.0, 0.0, 0.0]  # Origin at bottom-left
+negate: 0           # 0 = white is free, black is occupied
+occupied_thresh: 0.65
+free_thresh: 0.196

@@ -14,6 +14,7 @@
 //! - Only the perpendicular distance matters
 //! - Better handles structured environments (walls, edges)
 
+use crate::config::LidarNoiseModel;
 use crate::core::{Point2D, Pose2D};
 use crate::features::{Line2D, LineCollection};
 
@@ -61,6 +62,19 @@ pub struct IcpConfig {
     /// Whether to use batch (SIMD) correspondence search.
     /// Default: true
     pub use_batch_search: bool,
+
+    /// Lidar noise model for correspondence weighting.
+    /// Used to weight measurements by their estimated uncertainty.
+    pub noise_model: LidarNoiseModel,
+
+    /// Whether to use coarse search when odometry is unreliable.
+    /// Default: false
+    pub use_coarse_search: bool,
+
+    /// Confidence threshold below which coarse search is triggered.
+    /// Only used if use_coarse_search is true.
+    /// Default: 0.5
+    pub coarse_search_confidence_threshold: f32,
 }
 
 /// Outlier rejection method.
@@ -85,6 +99,9 @@ impl Default for IcpConfig {
             min_confidence: 0.3,
             use_ransac_init: false,
             use_batch_search: true,
+            noise_model: LidarNoiseModel::default(),
+            use_coarse_search: true, // Enabled: triggers when previous match confidence < threshold
+            coarse_search_confidence_threshold: 0.5,
         }
     }
 }
@@ -130,6 +147,63 @@ impl IcpConfig {
         self.use_ransac_init = enabled;
         self
     }
+
+    /// Builder-style setter for lidar noise model.
+    pub fn with_noise_model(mut self, model: LidarNoiseModel) -> Self {
+        self.noise_model = model;
+        self
+    }
+
+    /// Builder-style setter for coarse search.
+    pub fn with_coarse_search(mut self, enabled: bool) -> Self {
+        self.use_coarse_search = enabled;
+        self
+    }
+
+    /// Builder-style setter for coarse search confidence threshold.
+    pub fn with_coarse_search_threshold(mut self, threshold: f32) -> Self {
+        self.coarse_search_confidence_threshold = threshold;
+        self
+    }
+}
+
+/// Configuration for coarse search initialization.
+#[derive(Clone, Debug)]
+pub struct CoarseSearchConfig {
+    /// Maximum translation search range (meters).
+    /// Search from -range to +range in both x and y.
+    /// Default: 0.3m
+    pub translation_range: f32,
+
+    /// Translation step size (meters).
+    /// Default: 0.05m (5cm)
+    pub translation_step: f32,
+
+    /// Maximum rotation search range (radians).
+    /// Search from -range to +range.
+    /// Default: 0.262 rad (~15°)
+    pub rotation_range: f32,
+
+    /// Rotation step size (radians).
+    /// Default: 0.052 rad (~3°)
+    pub rotation_step: f32,
+
+    /// Point subsampling rate for fast scoring.
+    /// Only use every Nth point for initial evaluation.
+    /// Default: 4
+    pub subsample_rate: usize,
+}
+
+impl Default for CoarseSearchConfig {
+    fn default() -> Self {
+        Self {
+            translation_range: 0.3,
+            translation_step: 0.05,
+            rotation_range: 0.262, // ~15°
+            rotation_step: 0.052,  // ~3°
+            subsample_rate: 4,
+        }
+    }
 }
 
 /// Point-to-Line ICP matcher.
@@ -142,6 +216,10 @@ pub struct PointToLineIcp {
     nn_config: NearestNeighborConfig,
     /// Gauss-Newton configuration.
     gn_config: GaussNewtonConfig,
+    /// Coarse search configuration.
+    coarse_config: CoarseSearchConfig,
+    /// Last match confidence for adaptive coarse search.
+    last_confidence: f32,
 }
 
 impl PointToLineIcp {
@@ -164,7 +242,99 @@ impl PointToLineIcp {
             config,
             nn_config,
             gn_config,
+            coarse_config: CoarseSearchConfig::default(),
+            last_confidence: 1.0, // Start with high confidence (no coarse search first time)
         }
+    }
+
+    /// Update the last match confidence (for adaptive coarse search).
+    pub fn update_last_confidence(&mut self, confidence: f32) {
+        self.last_confidence = confidence;
+    }
+
+    /// Check if coarse search should be used.
+    fn should_use_coarse_search(&self) -> bool {
+        self.config.use_coarse_search
+            && self.last_confidence < self.config.coarse_search_confidence_threshold
+    }
+
+    /// Perform coarse search to find a better initial pose.
+    ///
+    /// Searches a grid of poses around the initial pose and returns
+    /// the one with the lowest total point-to-line distance.
+    fn coarse_search(
+        &self,
+        points: &[Point2D],
+        lines: &LineCollection,
+        initial_pose: Pose2D,
+    ) -> Pose2D {
+        if lines.is_empty() || points.is_empty() {
+            return initial_pose;
+        }
+
+        let cfg = &self.coarse_config;
+
+        // Compute number of steps in each dimension
+        let t_steps = ((2.0 * cfg.translation_range / cfg.translation_step) as usize).max(1);
+        let r_steps = ((2.0 * cfg.rotation_range / cfg.rotation_step) as usize).max(1);
+
+        let mut best_pose = initial_pose;
+        let mut best_score = f32::MAX;
+
+        // Subsample points for fast evaluation
+        let subsampled_points: Vec<&Point2D> =
+            points.iter().step_by(cfg.subsample_rate.max(1)).collect();
+
+        // Search grid
+        for tx_i in 0..=t_steps {
+            let tx = initial_pose.x - cfg.translation_range + (tx_i as f32 * cfg.translation_step);
+
+            for ty_i in 0..=t_steps {
+                let ty =
+                    initial_pose.y - cfg.translation_range + (ty_i as f32 * cfg.translation_step);
+
+                for r_i in 0..=r_steps {
+                    let theta =
+                        initial_pose.theta - cfg.rotation_range + (r_i as f32 * cfg.rotation_step);
+
+                    let test_pose = Pose2D::new(tx, ty, theta);
+
+                    // Compute score (sum of squared distances)
+                    let score = self.score_pose(&subsampled_points, lines, &test_pose);
+
+                    if score < best_score {
+                        best_score = score;
+                        best_pose = test_pose;
+                    }
+                }
+            }
+        }
+
+        best_pose
+    }
+
+    /// Score a pose hypothesis by summing squared point-to-line distances.
+    fn score_pose(&self, points: &[&Point2D], lines: &LineCollection, pose: &Pose2D) -> f32 {
+        let (sin, cos) = pose.theta.sin_cos();
+        let mut sum_sq = 0.0f32;
+
+        for &point in points {
+            // Transform point by pose
+            let tx = point.x * cos - point.y * sin + pose.x;
+            let ty = point.x * sin + point.y * cos + pose.y;
+
+            // Find minimum distance to any line
+            let min_dist_sq = lines
+                .distances_to_point(Point2D::new(tx, ty))
+                .into_iter()
+                .map(|d| d * d)
+                .fold(f32::MAX, f32::min);
+
+            // Clamp to avoid outliers dominating
+            sum_sq += min_dist_sq.min(1.0);
+        }
+
+        sum_sq
     }
 
     /// Match scan points against map lines.
@@ -175,33 +345,40 @@ impl PointToLineIcp {
     /// * `initial_pose` - Initial pose estimate (typically from odometry)
     ///
     /// # Returns
-    /// Match result with optimized pose and confidence.
+    /// Match result with optimized pose, covariance, and confidence.
     pub fn match_scan(
         &self,
         points: &[Point2D],
         lines: &[Line2D],
         initial_pose: Pose2D,
     ) -> MatchResult {
+        use super::correspondence::{IDENTITY_COVARIANCE, PoseCovariance};
+
         if points.is_empty() || lines.is_empty() {
             return MatchResult::new(initial_pose, CorrespondenceSet::new(), 0, false);
         }
 
         // Convert lines to collection for batch operations
-        let line_collection = if self.config.use_batch_search {
-            Some(LineCollection::from_lines(lines))
-        } else {
-            None
-        };
+        let line_collection = LineCollection::from_lines(lines);
 
         let mut pose = initial_pose;
         let mut prev_pose = pose;
         let mut final_correspondences = CorrespondenceSet::new();
         let mut converged = false;
+        let mut used_coarse_search = false;
+        let mut final_covariance: PoseCovariance = IDENTITY_COVARIANCE;
+        let mut final_condition_number = 1.0f32;
 
-        // Optional RANSAC initialization
+        // Optional coarse search when confidence is low
+        if self.should_use_coarse_search() {
+            pose = self.coarse_search(points, &line_collection, initial_pose);
+            used_coarse_search = true;
+        }
+
+        // Optional RANSAC initialization (after coarse search if used)
         if self.config.use_ransac_init {
             let initial_corrs =
-                self.find_correspondences_for_pose(points, lines, line_collection.as_ref(), &pose);
+                self.find_correspondences_for_pose(points, lines, Some(&line_collection), &pose);
 
             if initial_corrs.len() >= self.config.min_correspondences {
                 let ransac_config = RansacConfig::default()
@@ -217,25 +394,46 @@ impl PointToLineIcp {
         }
 
         // Main ICP loop
+        let mut final_iteration = 0;
         for iteration in 0..self.config.max_iterations {
+            final_iteration = iteration + 1;
+
             // 1. Find correspondences at current pose
             let correspondences =
-                self.find_correspondences_for_pose(points, lines, line_collection.as_ref(), &pose);
+                self.find_correspondences_for_pose(points, lines, Some(&line_collection), &pose);
 
             if correspondences.len() < self.config.min_correspondences {
                 // Not enough correspondences - return with low confidence
-                return MatchResult::new(pose, correspondences, iteration + 1, false);
+                return MatchResult::with_covariance(
+                    pose,
+                    correspondences,
+                    final_iteration,
+                    false,
+                    final_covariance,
+                    final_condition_number,
+                    used_coarse_search,
+                );
             }
 
             // 2. Reject outliers
             let filtered = self.reject_outliers(&correspondences, lines);
 
             if filtered.len() < self.config.min_correspondences {
-                return MatchResult::new(pose, filtered, iteration + 1, false);
+                return MatchResult::with_covariance(
+                    pose,
+                    filtered,
+                    final_iteration,
+                    false,
+                    final_covariance,
+                    final_condition_number,
+                    used_coarse_search,
+                );
             }
 
-            // 3. Optimize pose using Gauss-Newton
+            // 3. Optimize pose using Gauss-Newton (with covariance output)
             let gn_result = optimize_pose(&filtered, lines, Pose2D::identity(), &self.gn_config);
+            final_covariance = gn_result.covariance;
+            final_condition_number = gn_result.condition_number;
 
             // 4. Update pose (compose with delta)
             pose = pose.compose(gn_result.pose);
@@ -257,11 +455,14 @@ impl PointToLineIcp {
             final_correspondences = filtered;
         }
 
-        MatchResult::new(
+        MatchResult::with_covariance(
             pose,
             final_correspondences,
-            self.config.max_iterations,
+            final_iteration,
             converged,
+            final_covariance,
+            final_condition_number,
+            used_coarse_search,
         )
     }
 
@@ -274,6 +475,156 @@ impl PointToLineIcp {
     ) -> MatchResult {
         let lines_vec = lines.to_lines();
         self.match_scan(points, &lines_vec, initial_pose)
+    }
+
+    /// Match scan with range-based weighted correspondences.
+    ///
+    /// This method takes points in robot frame and applies proper uncertainty-based
+    /// weighting using the configured noise model. Close-range measurements get
+    /// higher weight than far-range ones.
+    ///
+    /// # Arguments
+    /// * `robot_frame_points` - Scan points in robot frame (for weight computation)
+    /// * `lines` - Map lines in world frame
+    /// * `initial_pose` - Initial pose estimate in world frame (from odometry)
+    ///
+    /// # Returns
+    /// Match result with optimized pose, covariance, and confidence.
+    pub fn match_scan_robot_frame(
+        &self,
+        robot_frame_points: &[Point2D],
+        lines: &[Line2D],
+        initial_pose: Pose2D,
+    ) -> MatchResult {
+        use super::correspondence::{IDENTITY_COVARIANCE, PoseCovariance};
+
+        if robot_frame_points.is_empty() || lines.is_empty() {
+            return MatchResult::new(initial_pose, CorrespondenceSet::new(), 0, false);
+        }
+
+        // Convert lines to collection for batch operations
+        let line_collection = LineCollection::from_lines(lines);
+
+        let mut pose = initial_pose;
+        let mut prev_pose = pose;
+        let mut final_correspondences = CorrespondenceSet::new();
+        let mut converged = false;
+        let mut used_coarse_search = false;
+        let mut final_covariance: PoseCovariance = IDENTITY_COVARIANCE;
+        let mut final_condition_number = 1.0f32;
+
+        // Keep points in robot frame - find_correspondences_for_pose will transform them
+        // using the current pose estimate during each ICP iteration
+
+        // Optional coarse search when confidence is low
+        // Note: coarse_search expects robot-frame points and transforms them internally
+        if self.should_use_coarse_search() {
+            pose = self.coarse_search(robot_frame_points, &line_collection, initial_pose);
+            used_coarse_search = true;
+        }
+
+        // Optional RANSAC initialization
+        if self.config.use_ransac_init {
+            let mut initial_corrs = self.find_correspondences_for_pose(
+                robot_frame_points,
+                lines,
+                Some(&line_collection),
+                &pose,
+            );
+            // Apply weights based on robot-frame ranges
+            initial_corrs.apply_weights(robot_frame_points, &self.config.noise_model);
+
+            if initial_corrs.len() >= self.config.min_correspondences {
+                let ransac_config = RansacConfig::default()
+                    .with_max_iterations(50)
+                    .with_inlier_threshold(0.15);
+
+                if let Some(ransac_result) =
+                    estimate_pose_ransac(&initial_corrs, lines, &ransac_config)
+                {
+                    pose = pose.compose(ransac_result.pose);
+                }
+            }
+        }
+
+        // Main ICP loop
+        let mut final_iteration = 0;
+        for iteration in 0..self.config.max_iterations {
+            final_iteration = iteration + 1;
+
+            // 1. Find correspondences at current pose
+            // Pass robot-frame points - find_correspondences_for_pose transforms them internally
+            let mut correspondences = self.find_correspondences_for_pose(
+                robot_frame_points,
+                lines,
+                Some(&line_collection),
+                &pose,
+            );
+
+            // Apply weights based on robot-frame ranges
+            correspondences.apply_weights(robot_frame_points, &self.config.noise_model);
+
+            if correspondences.len() < self.config.min_correspondences {
+                return MatchResult::with_covariance(
+                    pose,
+                    correspondences,
+                    final_iteration,
+                    false,
+                    final_covariance,
+                    final_condition_number,
+                    used_coarse_search,
+                );
+            }
+
+            // 2. Reject outliers
+            let filtered = self.reject_outliers(&correspondences, lines);
+
+            if filtered.len() < self.config.min_correspondences {
+                return MatchResult::with_covariance(
+                    pose,
+                    filtered,
+                    final_iteration,
+                    false,
+                    final_covariance,
+                    final_condition_number,
+                    used_coarse_search,
+                );
+            }
+
+            // 3. Optimize pose using Gauss-Newton (uses weighted correspondences)
+            let gn_result = optimize_pose(&filtered, lines, Pose2D::identity(), &self.gn_config);
+            final_covariance = gn_result.covariance;
+            final_condition_number = gn_result.condition_number;
+
+            // 4. Update pose (compose with delta)
+            pose = pose.compose(gn_result.pose);
+
+            // 5. Check convergence
+            let delta_trans =
+                ((pose.x - prev_pose.x).powi(2) + (pose.y - prev_pose.y).powi(2)).sqrt();
+            let delta_rot = crate::core::math::angle_diff(pose.theta, prev_pose.theta).abs();
+
+            if delta_trans < self.config.convergence_threshold
+                && delta_rot < self.config.convergence_threshold
+            {
+                converged = true;
+                final_correspondences = filtered;
+                break;
+            }
+
+            prev_pose = pose;
+            final_correspondences = filtered;
+        }
+
+        MatchResult::with_covariance(
+            pose,
+            final_correspondences,
+            final_iteration,
+            converged,
+            final_covariance,
+            final_condition_number,
+            used_coarse_search,
+        )
     }
 
     /// Match scan using pre-allocated scratch space (zero-allocation hot path).
@@ -310,6 +661,8 @@ impl PointToLineIcp {
         initial_pose: Pose2D,
         scratch: &mut IcpScratchSpace,
     ) -> MatchResult {
+        use super::correspondence::{IDENTITY_COVARIANCE, PoseCovariance};
+
         if points.is_empty() || lines.is_empty() {
             return MatchResult::new(initial_pose, CorrespondenceSet::new(), 0, false);
         }
@@ -320,9 +673,21 @@ impl PointToLineIcp {
         let mut prev_pose = pose;
         let mut final_correspondences = CorrespondenceSet::new();
         let mut converged = false;
+        let mut used_coarse_search = false;
+        let mut final_covariance: PoseCovariance = IDENTITY_COVARIANCE;
+        let mut final_condition_number = 1.0f32;
+
+        // Optional coarse search when confidence is low
+        if self.should_use_coarse_search() {
+            pose = self.coarse_search(points, lines, initial_pose);
+            used_coarse_search = true;
+        }
 
         // Main ICP loop with scratch space
+        let mut final_iteration = 0;
         for iteration in 0..self.config.max_iterations {
+            final_iteration = iteration + 1;
+
             // 1. Transform points and find correspondences using scratch space
             let (sin, cos) = pose.theta.sin_cos();
             scratch.transform_points(points, sin, cos, pose.x, pose.y);
@@ -330,11 +695,14 @@ impl PointToLineIcp {
 
             if scratch.num_correspondences() < self.config.min_correspondences {
                 // Not enough correspondences - return with low confidence
-                return MatchResult::new(
+                return MatchResult::with_covariance(
                     pose,
                     scratch.take_correspondences(),
-                    iteration + 1,
+                    final_iteration,
                     false,
+                    final_covariance,
+                    final_condition_number,
+                    used_coarse_search,
                 );
             }
 
@@ -343,12 +711,22 @@ impl PointToLineIcp {
             let filtered = self.reject_outliers(correspondences, &lines_vec);
 
             if filtered.len() < self.config.min_correspondences {
-                return MatchResult::new(pose, filtered, iteration + 1, false);
+                return MatchResult::with_covariance(
+                    pose,
+                    filtered,
+                    final_iteration,
+                    false,
+                    final_covariance,
+                    final_condition_number,
+                    used_coarse_search,
+                );
             }
 
             // 3. Optimize pose using fast Gauss-Newton (uses pre-computed normals)
             let gn_result =
                 optimize_pose_fast(&filtered, lines, Pose2D::identity(), &self.gn_config);
+            final_covariance = gn_result.covariance;
+            final_condition_number = gn_result.condition_number;
 
             // 4. Update pose (compose with delta)
             pose = pose.compose(gn_result.pose);
@@ -370,11 +748,14 @@ impl PointToLineIcp {
             final_correspondences = filtered;
         }
 
-        MatchResult::new(
+        MatchResult::with_covariance(
             pose,
             final_correspondences,
-            self.config.max_iterations,
+            final_iteration,
             converged,
+            final_covariance,
+            final_condition_number,
+            used_coarse_search,
         )
     }
 
@@ -632,5 +1013,109 @@ mod tests {
         let result = match_scan(&points, &lines, Pose2D::identity());
 
         assert!(result.converged);
+    }
+
+    #[test]
+    fn test_icp_collinear_points() {
+        // Test with all points along a single line (degenerate case)
+        // This can cause issues with the Jacobian being rank-deficient
+
+        // Map has only a horizontal wall
+        let lines = vec![Line2D::new(Point2D::new(-5.0, 0.0), Point2D::new(5.0, 0.0))];
+
+        // All points on a line parallel to the wall
+        let points: Vec<Point2D> = (-10..=10)
+            .map(|i| Point2D::new(i as f32 * 0.5, 0.1))
+            .collect();
+
+        let config = IcpConfig::default().with_min_correspondences(3);
+        let icp = PointToLineIcp::with_config(config);
+        let result = icp.match_scan(&points, &lines, Pose2D::identity());
+
+        // Should handle gracefully (may or may not converge, but shouldn't crash)
+        // The key is no panics or NaN values
+        assert!(!result.pose.x.is_nan());
+        assert!(!result.pose.y.is_nan());
+        assert!(!result.pose.theta.is_nan());
+    }
+
+    #[test]
+    fn test_icp_max_iterations_reached() {
+        // Create a scenario where ICP struggles to converge
+
+        // Small room
+        let lines = vec![
+            Line2D::new(Point2D::new(-1.0, -1.0), Point2D::new(1.0, -1.0)),
+            Line2D::new(Point2D::new(1.0, -1.0), Point2D::new(1.0, 1.0)),
+        ];
+
+        // Points with large initial offset
+        let points: Vec<Point2D> = (-5..=5)
+            .map(|i| Point2D::new(i as f32 * 0.1 + 2.0, -0.9))
+            .collect();
+
+        // Very low max iterations to force hitting the limit
+        let config = IcpConfig::default()
+            .with_max_iterations(2)
+            .with_convergence_threshold(1e-10) // Very strict to prevent early convergence
+            .with_min_correspondences(3);
+
+        let icp = PointToLineIcp::with_config(config);
+        let result = icp.match_scan(&points, &lines, Pose2D::identity());
+
+        // Should hit max iterations (may not converge)
+        // The important check is that iterations <= max_iterations
+        assert!(result.iterations <= 2);
+    }
+
+    #[test]
+    fn test_icp_iterations_tracked() {
+        let lines = make_room_lines();
+        let points = make_scan_points_at_origin();
+
+        let result = match_scan(&points, &lines, Pose2D::identity());
+
+        // If converged, should have used some iterations
+        if result.converged {
+            assert!(
+                result.iterations > 0,
+                "Converged result should track iterations"
+            );
+            assert!(
+                result.iterations <= 30,
+                "Iterations should not exceed max (30)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_icp_symmetric_room() {
+        // Test with a symmetric room where correspondences might be ambiguous
+
+        // Square room (all walls equal length)
+        let lines = vec![
+            Line2D::new(Point2D::new(-2.0, -2.0), Point2D::new(2.0, -2.0)), // Bottom
+            Line2D::new(Point2D::new(2.0, -2.0), Point2D::new(2.0, 2.0)),   // Right
+            Line2D::new(Point2D::new(2.0, 2.0), Point2D::new(-2.0, 2.0)),   // Top
+            Line2D::new(Point2D::new(-2.0, 2.0), Point2D::new(-2.0, -2.0)), // Left
+        ];
+
+        // Symmetric scan from center
+        let mut points = Vec::new();
+        for i in -3..=3 {
+            let offset = i as f32 * 0.5;
+            points.push(Point2D::new(offset, -2.0)); // Bottom
+            points.push(Point2D::new(offset, 2.0)); // Top
+            points.push(Point2D::new(-2.0, offset)); // Left
+            points.push(Point2D::new(2.0, offset)); // Right
+        }
+
+        let result = match_scan(&points, &lines, Pose2D::identity());
+
+        // Should converge despite symmetry
+        assert!(result.converged);
+        // Pose should be near identity (we're at center looking at symmetric walls)
+        assert!(result.pose.x.abs() < 0.5);
+        assert!(result.pose.y.abs() < 0.5);
     }
 }

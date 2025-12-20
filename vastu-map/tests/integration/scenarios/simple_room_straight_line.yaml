@@ -1,0 +1,20 @@
+# Simple Room Straight Line Test
+#
+# Robot moves straight forward in a simple square room (no obstacles).
+# This isolates the feature extraction issue from obstacle interference.
+#
+# Room: 3m x 3m simple square room
+# Starting in center, facing +X (theta=0)
+# Move 0.5m forward in a straight line
+
+name: "simple_room_straight_line"
+map: "maps/simple_room.yaml"
+
+start_pose:
+  x: 1.5
+  y: 1.5
+  theta: 0.0  # Facing right (+X)
+
+path:
+  # Move forward 0.5m (both wheels equal distance = straight line)
+  - {left: 0.5, right: 0.5}

@@ -66,6 +66,7 @@ pub mod core;
 pub mod extraction;
 pub mod features;
 pub mod integration;
+pub mod loop_closure;
 pub mod matching;
 pub mod query;
 pub mod simd;
@@ -145,6 +146,12 @@ pub struct ObserveResult {
     pub features_added: usize,
     /// Number of features merged with existing map features.
     pub features_merged: usize,
+    /// Number of ICP iterations performed (0 if no matching was done).
+    pub icp_iterations: usize,
+    /// Whether the ICP algorithm converged.
+    pub icp_converged: bool,
+    /// Whether a loop closure was detected.
+    pub loop_closure_detected: bool,
 }
 
 impl ObserveResult {
@@ -156,6 +163,9 @@ impl ObserveResult {
             features_extracted: 0,
             features_added: 0,
             features_merged: 0,
+            icp_iterations: 0,
+            icp_converged: false,
+            loop_closure_detected: false,
         }
     }
 }
@@ -273,5 +283,8 @@ mod tests {
         assert_eq!(result.pose.y, 2.0);
         assert_eq!(result.confidence, 0.8);
         assert_eq!(result.features_extracted, 0);
+        assert_eq!(result.icp_iterations, 0);
+        assert!(!result.icp_converged);
+        assert!(!result.loop_closure_detected);
     }
 }

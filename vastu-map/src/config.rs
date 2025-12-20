@@ -4,6 +4,64 @@
 
 use std::f32::consts::PI;
 
+/// Lidar measurement noise model.
+///
+/// Models measurement uncertainty as a function of range:
+/// σ(r) = σ_base + σ_range × r²
+///
+/// This allows weighting correspondences by their measurement quality.
+/// Close-range measurements are more reliable than far-range ones.
+#[derive(Clone, Copy, Debug)]
+pub struct LidarNoiseModel {
+    /// Base measurement standard deviation (meters).
+    /// Minimum uncertainty even at zero range.
+    /// Default: 0.01m (1cm)
+    pub sigma_base: f32,
+
+    /// Range-dependent noise coefficient.
+    /// Uncertainty grows quadratically with range.
+    /// Default: 0.001 (1mm per m² of range)
+    pub sigma_range: f32,
+}
+
+impl Default for LidarNoiseModel {
+    fn default() -> Self {
+        Self {
+            sigma_base: 0.01,   // 1cm base uncertainty
+            sigma_range: 0.001, // 1mm per m²
+        }
+    }
+}
+
+impl LidarNoiseModel {
+    /// Create a noise model with custom parameters.
+    pub fn new(sigma_base: f32, sigma_range: f32) -> Self {
+        Self {
+            sigma_base,
+            sigma_range,
+        }
+    }
+
+    /// Compute measurement standard deviation at a given range.
+    #[inline]
+    pub fn sigma(&self, range: f32) -> f32 {
+        self.sigma_base + self.sigma_range * range * range
+    }
+
+    /// Compute weight for a measurement at given range.
+    /// Weight = 1 / σ²
+    #[inline]
+    pub fn weight(&self, range: f32) -> f32 {
+        let sigma = self.sigma(range);
+        1.0 / (sigma * sigma)
+    }
+
+    /// Compute weights for a batch of ranges.
+    pub fn weights(&self, ranges: &[f32]) -> Vec<f32> {
+        ranges.iter().map(|&r| self.weight(r)).collect()
+    }
+}
+
 /// Configuration for VectorMap SLAM.
 ///
 /// All parameters have sensible defaults. Create with `Default::default()`
@@ -114,6 +172,10 @@ pub struct VectorMapConfig {
     /// Default: 0.05m (5cm)
     pub ransac_inlier_threshold: f32,
 
+    /// Lidar noise model for correspondence weighting.
+    /// Used to weight measurements by their estimated uncertainty.
+    pub noise_model: LidarNoiseModel,
+
     // ─────────────────────────────────────────────────────────────────────────
     // Confidence Thresholds
     // ─────────────────────────────────────────────────────────────────────────
@@ -155,6 +217,7 @@ impl Default for VectorMapConfig {
             icp_min_correspondence_ratio: 0.3,
             ransac_iterations: 100,
             ransac_inlier_threshold: 0.05,
+            noise_model: LidarNoiseModel::default(),
 
             // Confidence
             min_match_confidence: 0.3,
@@ -205,6 +268,12 @@ impl VectorMapConfig {
         self.ransac_iterations = value;
         self
     }
+
+    /// Builder-style setter for lidar noise model.
+    pub fn with_noise_model(mut self, model: LidarNoiseModel) -> Self {
+        self.noise_model = model;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -243,5 +312,63 @@ mod tests {
         assert_eq!(config.icp_max_iterations, 100);
         assert_eq!(config.icp_convergence_threshold, 0.0005);
         assert_eq!(config.ransac_iterations, 200);
+    }
+
+    #[test]
+    fn test_lidar_noise_model_default() {
+        let model = LidarNoiseModel::default();
+        assert_eq!(model.sigma_base, 0.01);
+        assert_eq!(model.sigma_range, 0.001);
+    }
+
+    #[test]
+    fn test_lidar_noise_model_sigma() {
+        let model = LidarNoiseModel::default();
+
+        // At 0m range, sigma = sigma_base = 0.01
+        assert!((model.sigma(0.0) - 0.01).abs() < 1e-6);
+
+        // At 1m range, sigma = 0.01 + 0.001 * 1 = 0.011
+        assert!((model.sigma(1.0) - 0.011).abs() < 1e-6);
+
+        // At 5m range, sigma = 0.01 + 0.001 * 25 = 0.035
+        assert!((model.sigma(5.0) - 0.035).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_lidar_noise_model_weight() {
+        let model = LidarNoiseModel::default();
+
+        // Weight at 0m = 1 / (0.01)^2 = 10000
+        let w0 = model.weight(0.0);
+        assert!((w0 - 10000.0).abs() < 1.0);
+
+        // Weight decreases with range
+        let w1 = model.weight(1.0);
+        let w5 = model.weight(5.0);
+        assert!(w0 > w1);
+        assert!(w1 > w5);
+    }
+
+    #[test]
+    fn test_lidar_noise_model_weights_batch() {
+        let model = LidarNoiseModel::default();
+        let ranges = vec![0.5, 1.0, 2.0, 5.0];
+        let weights = model.weights(&ranges);
+
+        assert_eq!(weights.len(), 4);
+        // Weights should decrease with range
+        assert!(weights[0] > weights[1]);
+        assert!(weights[1] > weights[2]);
+        assert!(weights[2] > weights[3]);
+    }
+
+    #[test]
+    fn test_config_with_noise_model() {
+        let custom_model = LidarNoiseModel::new(0.02, 0.002);
+        let config = VectorMapConfig::new().with_noise_model(custom_model);
+
+        assert_eq!(config.noise_model.sigma_base, 0.02);
+        assert_eq!(config.noise_model.sigma_range, 0.002);
     }
 }

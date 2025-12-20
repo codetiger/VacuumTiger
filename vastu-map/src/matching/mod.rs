@@ -66,14 +66,17 @@ pub mod ransac;
 pub mod scratch;
 
 // Re-export main types
-pub use correspondence::{Correspondence, CorrespondenceSet, MatchResult};
+pub use correspondence::{
+    Correspondence, CorrespondenceSet, IDENTITY_COVARIANCE, MatchResult, PoseCovariance,
+};
 pub use gauss_newton::{GaussNewtonConfig, GaussNewtonResult, optimize_pose_fast};
 pub use nearest_neighbor::{
     NearestNeighborConfig, find_correspondences, find_correspondences_batch,
-    find_correspondences_spatial, find_correspondences_with_angle,
+    find_correspondences_spatial, find_correspondences_weighted, find_correspondences_with_angle,
 };
 pub use point_to_line_icp::{
-    IcpConfig, OutlierRejection, PointToLineIcp, match_scan, match_scan_with_config,
+    CoarseSearchConfig, IcpConfig, OutlierRejection, PointToLineIcp, match_scan,
+    match_scan_with_config,
 };
 pub use ransac::{RansacConfig, RansacResult, estimate_pose_ransac};
 pub use scratch::IcpScratchSpace;

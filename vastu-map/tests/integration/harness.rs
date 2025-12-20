@@ -13,7 +13,7 @@ use vastu_map::core::Pose2D;
 use vastu_map::{Map, VectorMap, VectorMapConfig};
 
 use crate::adapters::lidar_to_point_cloud;
-use crate::metrics::TestMetrics;
+use crate::metrics::{ConvergenceStats, TestMetrics};
 use crate::path_generator::PathSegment;
 use crate::visualization::Visualizer;
 
@@ -50,13 +50,24 @@ pub struct HarnessConfig {
 
 impl Default for HarnessConfig {
     fn default() -> Self {
+        // Use lidar config with zero offsets for test accuracy
+        // The defaults match the physical robot but cause systematic errors:
+        // - angle_offset=0.2182 rad (~12.5°) rotates the scan
+        // - mounting_x=-0.110m shifts scan origin 11cm behind robot center
+        // For testing we want the lidar at robot center with no angular offset.
+        let mut lidar = LidarConfig::default();
+        lidar.angle_offset = 0.0;
+        lidar.mounting_x = 0.0;
+        lidar.mounting_y = 0.0;
+        lidar.optical_offset = 0.0;
+
         Self {
             map_file: String::new(),
             start_x: 2.5,
             start_y: 2.5,
             start_theta: 0.0,
             robot: RobotConfig::default(),
-            lidar: LidarConfig::default(),
+            lidar,
             slam: VectorMapConfig::default(),
             random_seed: 42, // Fixed seed for reproducibility
             min_quality: 50,
@@ -114,6 +125,105 @@ pub struct TestResult {
     pub sim_time: f32,
 }
 
+/// Interval for storing lidar scans in trajectory history.
+const SCAN_STORAGE_INTERVAL: usize = 5;
+
+/// Per-observation record for trajectory visualization.
+#[derive(Clone, Debug)]
+pub struct ObservationRecord {
+    /// Ground truth pose from physics.
+    pub truth_pose: Pose2D,
+    /// Estimated pose from SLAM.
+    pub slam_pose: Pose2D,
+    /// Simulation time at this observation.
+    pub sim_time: f32,
+    /// Observation index (0-based).
+    pub observation_idx: usize,
+    /// ICP iterations for this observation.
+    pub icp_iterations: usize,
+    /// Whether ICP converged.
+    pub icp_converged: bool,
+    /// Match confidence (0.0-1.0).
+    pub confidence: f32,
+    /// Drift magnitude (translation error in meters).
+    pub drift_translation: f32,
+    /// Drift magnitude (rotation error in radians).
+    pub drift_rotation: f32,
+    /// Lidar scan at this observation (robot frame) - stored at intervals for visualization.
+    pub scan: Option<vastu_map::core::PointCloud2D>,
+}
+
+/// Trajectory history for visualization.
+#[derive(Clone, Debug, Default)]
+pub struct TrajectoryHistory {
+    /// All observation records in chronological order.
+    pub observations: Vec<ObservationRecord>,
+}
+
+impl TrajectoryHistory {
+    /// Create a new empty trajectory history.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record an observation.
+    pub fn record(
+        &mut self,
+        truth_pose: Pose2D,
+        slam_pose: Pose2D,
+        sim_time: f32,
+        icp_iterations: usize,
+        icp_converged: bool,
+        confidence: f32,
+        scan: Option<vastu_map::core::PointCloud2D>,
+    ) {
+        let drift_translation =
+            ((truth_pose.x - slam_pose.x).powi(2) + (truth_pose.y - slam_pose.y).powi(2)).sqrt();
+        let drift_rotation = normalize_angle(truth_pose.theta - slam_pose.theta).abs();
+
+        self.observations.push(ObservationRecord {
+            truth_pose,
+            slam_pose,
+            sim_time,
+            observation_idx: self.observations.len(),
+            icp_iterations,
+            icp_converged,
+            confidence,
+            drift_translation,
+            drift_rotation,
+            scan,
+        });
+    }
+
+    /// Get ground truth path as a list of poses.
+    pub fn ground_truth_path(&self) -> Vec<Pose2D> {
+        self.observations.iter().map(|o| o.truth_pose).collect()
+    }
+
+    /// Get estimated path as a list of poses.
+    pub fn estimated_path(&self) -> Vec<Pose2D> {
+        self.observations.iter().map(|o| o.slam_pose).collect()
+    }
+
+    /// Get maximum drift (translation error) across all observations.
+    pub fn max_drift(&self) -> f32 {
+        self.observations
+            .iter()
+            .map(|o| o.drift_translation)
+            .fold(0.0, f32::max)
+    }
+
+    /// Check if trajectory is empty.
+    pub fn is_empty(&self) -> bool {
+        self.observations.is_empty()
+    }
+
+    /// Get number of observations.
+    pub fn len(&self) -> usize {
+        self.observations.len()
+    }
+}
+
 /// Main test harness for running integration tests.
 pub struct TestHarness {
     config: HarnessConfig,
@@ -126,6 +236,14 @@ pub struct TestHarness {
     tick_count: usize,
     observations: usize,
     last_slam_pose: Pose2D,
+    /// Ground truth pose from last scan (for computing odometry)
+    last_physics_pose: Pose2D,
+    /// Last lidar scan in robot frame (for visualization)
+    last_scan_robot_frame: Option<vastu_map::core::PointCloud2D>,
+    /// ICP convergence statistics across all observations
+    convergence_stats: ConvergenceStats,
+    /// Trajectory history for enhanced visualization
+    trajectory: TrajectoryHistory,
 }
 
 impl TestHarness {
@@ -164,6 +282,10 @@ impl TestHarness {
             tick_count: 0,
             observations: 0,
             last_slam_pose: start_pose,
+            last_physics_pose: start_pose,
+            last_scan_robot_frame: None,
+            convergence_stats: ConvergenceStats::new(),
+            trajectory: TrajectoryHistory::new(),
         })
     }
 
@@ -230,6 +352,9 @@ impl TestHarness {
             return;
         }
 
+        // Store the robot-frame scan for visualization
+        self.last_scan_robot_frame = Some(cloud.clone());
+
         // Compute relative odometry from ground truth (simplified)
         // In real tests, this would come from encoder simulation
         let current_truth = Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta());
@@ -245,10 +370,33 @@ impl TestHarness {
         // Feed to SLAM
         let result = self.slam.observe(&cloud, odometry);
         self.last_slam_pose = result.pose;
+        self.last_physics_pose = current_truth; // Update for next odometry computation
         self.observations += 1;
 
+        // Record ICP convergence stats
+        self.convergence_stats
+            .record(result.icp_iterations, result.icp_converged);
+
+        // Record to trajectory history for visualization
+        // Store scan at intervals to avoid excessive memory usage
+        let scan_to_store = if self.observations % SCAN_STORAGE_INTERVAL == 0 {
+            Some(cloud.clone())
+        } else {
+            None
+        };
+
+        self.trajectory.record(
+            current_truth,
+            result.pose,
+            self.sim_time,
+            result.icp_iterations,
+            result.icp_converged,
+            result.confidence,
+            scan_to_store,
+        );
+
         log::debug!(
-            "Observation {}: truth=({:.2}, {:.2}, {:.1}°), slam=({:.2}, {:.2}, {:.1}°), conf={:.2}",
+            "Observation {}: truth=({:.2}, {:.2}, {:.1}°), slam=({:.2}, {:.2}, {:.1}°), conf={:.2}, icp_iters={}",
             self.observations,
             current_truth.x,
             current_truth.y,
@@ -256,21 +404,24 @@ impl TestHarness {
             result.pose.x,
             result.pose.y,
             result.pose.theta.to_degrees(),
-            result.confidence
+            result.confidence,
+            result.icp_iterations
         );
     }
 
-    /// Compute relative odometry between last SLAM pose and current truth.
+    /// Compute relative odometry between consecutive ground truth poses.
+    ///
+    /// Uses physics poses (not SLAM poses) to mimic real-world encoders that
+    /// measure actual wheel motion independent of SLAM corrections.
     fn compute_relative_odometry(&self, current_truth: Pose2D) -> Pose2D {
-        // For simplicity, use a small delta pose based on expected motion
-        // This simulates imperfect odometry
-        let dx = current_truth.x - self.last_slam_pose.x;
-        let dy = current_truth.y - self.last_slam_pose.y;
-        let dtheta = normalize_angle(current_truth.theta - self.last_slam_pose.theta);
+        // Compute delta from previous physics pose (like real encoders)
+        let dx = current_truth.x - self.last_physics_pose.x;
+        let dy = current_truth.y - self.last_physics_pose.y;
+        let dtheta = normalize_angle(current_truth.theta - self.last_physics_pose.theta);
 
-        // Transform to robot frame
-        let cos_th = self.last_slam_pose.theta.cos();
-        let sin_th = self.last_slam_pose.theta.sin();
+        // Transform to robot frame using previous physics pose orientation
+        let cos_th = self.last_physics_pose.theta.cos();
+        let sin_th = self.last_physics_pose.theta.sin();
         let dx_robot = dx * cos_th + dy * sin_th;
         let dy_robot = -dx * sin_th + dy * cos_th;
 
@@ -283,12 +434,26 @@ impl TestHarness {
         let ground_truth_pose =
             Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta());
 
-        // Compute metrics using the simulation map
-        let metrics = TestMetrics::compute(&self.slam, &self.map, final_pose, ground_truth_pose);
+        // Compute metrics using the simulation map, including convergence stats
+        let metrics = TestMetrics::compute(
+            &self.slam,
+            &self.map,
+            final_pose,
+            ground_truth_pose,
+            self.convergence_stats.clone(),
+        );
 
-        // Generate visualization if enabled
+        // Generate enhanced visualization if enabled
         if let Some(ref viz) = self.visualizer {
-            viz.render(&self.slam, &self.map, final_pose, ground_truth_pose);
+            viz.render_full(
+                &self.slam,
+                &self.map,
+                final_pose,
+                ground_truth_pose,
+                self.last_scan_robot_frame.as_ref(),
+                &self.trajectory,
+                &metrics,
+            );
         }
 
         TestResult {

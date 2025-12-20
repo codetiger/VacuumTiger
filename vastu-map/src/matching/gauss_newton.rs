@@ -69,6 +69,8 @@ impl GaussNewtonConfig {
     }
 }
 
+use super::correspondence::PoseCovariance;
+
 /// Result of Gauss-Newton optimization.
 #[derive(Clone, Debug)]
 pub struct GaussNewtonResult {
@@ -80,26 +82,36 @@ pub struct GaussNewtonResult {
     pub residual: f32,
     /// Whether optimization converged.
     pub converged: bool,
+    /// Pose covariance matrix (from inverse Hessian).
+    /// Captures uncertainty in [x, y, theta].
+    pub covariance: PoseCovariance,
+    /// Condition number of the Hessian matrix.
+    /// High values (>100) indicate degenerate geometry.
+    pub condition_number: f32,
 }
+
+/// Identity covariance matrix.
+const IDENTITY_COVARIANCE: PoseCovariance = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// Optimize pose using Gauss-Newton method for point-to-line ICP.
 ///
-/// Minimizes: sum_i (n_i · (R(θ)·p_i + t - q_i))²
+/// Minimizes: sum_i w_i * (n_i · (R(θ)·p_i + t - q_i))²
 ///
 /// where:
+/// - w_i is the weight of correspondence i (from noise model)
 /// - p_i is the i-th scan point
 /// - q_i is the closest point on line i
 /// - n_i is the normal of line i
 /// - R(θ), t is the rotation and translation
 ///
 /// # Arguments
-/// * `correspondences` - Point-to-line correspondences
+/// * `correspondences` - Point-to-line correspondences (with weights)
 /// * `lines` - Map lines
 /// * `initial_pose` - Initial pose estimate
 /// * `config` - Solver configuration
 ///
 /// # Returns
-/// Optimization result with final pose and convergence info.
+/// Optimization result with final pose, covariance, and convergence info.
 pub fn optimize_pose(
     correspondences: &CorrespondenceSet,
     lines: &[Line2D],
@@ -112,20 +124,24 @@ pub fn optimize_pose(
             iterations: 0,
             residual: 0.0,
             converged: true,
+            covariance: IDENTITY_COVARIANCE,
+            condition_number: 1.0,
         };
     }
 
     let mut pose = initial_pose;
     let mut converged = false;
     let mut iterations = 0;
+    let mut final_hessian = [[0.0f32; 3]; 3];
 
     for iter in 0..config.max_iterations {
         iterations = iter + 1;
 
-        // Build linear system: H·Δx = -g
-        // H = J^T·J (Hessian approximation)
-        // g = J^T·r (gradient)
-        let (h, g, residual) = build_linear_system(correspondences, lines, &pose);
+        // Build weighted linear system: H·Δx = -g
+        // H = J^T·W·J (weighted Hessian approximation)
+        // g = J^T·W·r (weighted gradient)
+        let (h, g, residual) = build_linear_system_weighted(correspondences, lines, &pose);
+        final_hessian = h;
 
         // Solve for Δx using direct 3x3 solve
         let Some(delta) = solve_3x3(&h, &g, config.regularization) else {
@@ -156,21 +172,31 @@ pub fn optimize_pose(
     // Compute final residual
     let final_residual = compute_residual(correspondences, lines, &pose);
 
+    // Compute covariance from inverse Hessian: Cov = σ² × H⁻¹
+    // Use residual variance as σ²
+    let residual_variance = final_residual * final_residual;
+    let (covariance, condition_number) =
+        compute_covariance(&final_hessian, residual_variance, config.regularization);
+
     GaussNewtonResult {
         pose,
         iterations,
         residual: final_residual,
         converged,
+        covariance,
+        condition_number,
     }
 }
 
-/// Build the linear system for Gauss-Newton.
+/// Build the weighted linear system for Gauss-Newton.
+///
+/// Uses correspondence weights for proper uncertainty-weighted least squares.
 ///
 /// Returns (H, g, residual) where:
-/// - H is the 3x3 Hessian approximation (J^T·J)
-/// - g is the 3-element gradient (J^T·r)
-/// - residual is the RMS error
-fn build_linear_system(
+/// - H is the 3x3 weighted Hessian approximation (J^T·W·J)
+/// - g is the 3-element weighted gradient (J^T·W·r)
+/// - residual is the weighted RMS error
+fn build_linear_system_weighted(
     correspondences: &CorrespondenceSet,
     lines: &[Line2D],
     pose: &Pose2D,
@@ -180,12 +206,13 @@ fn build_linear_system(
     // Initialize H and g to zero
     let mut h = [[0.0f32; 3]; 3];
     let mut g = [0.0f32; 3];
-    let mut sum_sq_error = 0.0f32;
-    let mut count = 0;
+    let mut sum_weighted_sq_error = 0.0f32;
+    let mut sum_weights = 0.0f32;
 
     for corr in correspondences.iter() {
         let p = corr.point;
         let line = &lines[corr.line_idx];
+        let weight = corr.weight;
 
         // Transform point by current pose
         let tx = p.x * cos - p.y * sin + pose.x;
@@ -197,42 +224,116 @@ fn build_linear_system(
 
         // Compute residual: signed distance from transformed point to line
         let residual = line.signed_distance_to_point(transformed);
-        sum_sq_error += residual * residual;
-        count += 1;
+        sum_weighted_sq_error += weight * residual * residual;
+        sum_weights += weight;
 
         // Jacobian of residual w.r.t. pose (x, y, theta)
-        // r = n · (R(θ)·p + t - q)
-        // ∂r/∂x = n_x
-        // ∂r/∂y = n_y
-        // ∂r/∂θ = n · ∂(R(θ)·p)/∂θ = n · [-p_x·sin(θ) - p_y·cos(θ), p_x·cos(θ) - p_y·sin(θ)]
-        //       = n_x·(-p_x·sin - p_y·cos) + n_y·(p_x·cos - p_y·sin)
-
         let j0 = normal.x;
         let j1 = normal.y;
         let j2 = normal.x * (-p.x * sin - p.y * cos) + normal.y * (p.x * cos - p.y * sin);
 
         let jacobian = [j0, j1, j2];
 
-        // Accumulate H = J^T·J
+        // Accumulate H = J^T·W·J (weighted Hessian)
         for i in 0..3 {
             for j in 0..3 {
-                h[i][j] += jacobian[i] * jacobian[j];
+                h[i][j] += weight * jacobian[i] * jacobian[j];
             }
         }
 
-        // Accumulate g = J^T·r
+        // Accumulate g = J^T·W·r (weighted gradient)
         for i in 0..3 {
-            g[i] += jacobian[i] * residual;
+            g[i] += weight * jacobian[i] * residual;
         }
     }
 
-    let rms_error = if count > 0 {
-        (sum_sq_error / count as f32).sqrt()
+    let rms_error = if sum_weights > 0.0 {
+        (sum_weighted_sq_error / sum_weights).sqrt()
     } else {
         0.0
     };
 
     (h, g, rms_error)
+}
+
+/// Compute covariance matrix from inverse Hessian.
+///
+/// Cov = σ² × H⁻¹
+///
+/// Also computes condition number for degeneracy detection.
+fn compute_covariance(
+    hessian: &[[f32; 3]; 3],
+    residual_variance: f32,
+    regularization: f32,
+) -> (PoseCovariance, f32) {
+    // Add regularization to diagonal
+    let mut h = *hessian;
+    h[0][0] += regularization;
+    h[1][1] += regularization;
+    h[2][2] += regularization;
+
+    // Compute determinant
+    let det = h[0][0] * (h[1][1] * h[2][2] - h[1][2] * h[2][1])
+        - h[0][1] * (h[1][0] * h[2][2] - h[1][2] * h[2][0])
+        + h[0][2] * (h[1][0] * h[2][1] - h[1][1] * h[2][0]);
+
+    if det.abs() < 1e-10 {
+        // Singular matrix - return identity covariance with high condition number
+        return (IDENTITY_COVARIANCE, f32::MAX);
+    }
+
+    let inv_det = 1.0 / det;
+
+    // Compute inverse (H⁻¹)
+    let inv = [
+        [
+            (h[1][1] * h[2][2] - h[1][2] * h[2][1]) * inv_det,
+            (h[0][2] * h[2][1] - h[0][1] * h[2][2]) * inv_det,
+            (h[0][1] * h[1][2] - h[0][2] * h[1][1]) * inv_det,
+        ],
+        [
+            (h[1][2] * h[2][0] - h[1][0] * h[2][2]) * inv_det,
+            (h[0][0] * h[2][2] - h[0][2] * h[2][0]) * inv_det,
+            (h[0][2] * h[1][0] - h[0][0] * h[1][2]) * inv_det,
+        ],
+        [
+            (h[1][0] * h[2][1] - h[1][1] * h[2][0]) * inv_det,
+            (h[0][1] * h[2][0] - h[0][0] * h[2][1]) * inv_det,
+            (h[0][0] * h[1][1] - h[0][1] * h[1][0]) * inv_det,
+        ],
+    ];
+
+    // Scale by residual variance to get covariance
+    let covariance = [
+        [
+            residual_variance * inv[0][0],
+            residual_variance * inv[0][1],
+            residual_variance * inv[0][2],
+        ],
+        [
+            residual_variance * inv[1][0],
+            residual_variance * inv[1][1],
+            residual_variance * inv[1][2],
+        ],
+        [
+            residual_variance * inv[2][0],
+            residual_variance * inv[2][1],
+            residual_variance * inv[2][2],
+        ],
+    ];
+
+    // Compute condition number using Frobenius norm approximation
+    // Condition number ≈ max_eigenvalue / min_eigenvalue
+    // For 3x3, we can use a simpler approximation based on diagonal elements
+    let diag_max = h[0][0].max(h[1][1]).max(h[2][2]);
+    let diag_min = h[0][0].min(h[1][1]).min(h[2][2]);
+    let condition_number = if diag_min > 1e-10 {
+        diag_max / diag_min
+    } else {
+        f32::MAX
+    };
+
+    (covariance, condition_number)
 }
 
 /// Solve a 3x3 linear system Ax = b using Cramer's rule.
@@ -317,6 +418,7 @@ fn compute_residual(correspondences: &CorrespondenceSet, lines: &[Line2D], pose:
 ///
 /// This version uses `LineCollection` with pre-computed normals and inverse
 /// lengths, avoiding redundant sqrt computations in the inner loop.
+/// Also uses weighted least squares when correspondences have weights.
 ///
 /// # Performance
 ///
@@ -333,12 +435,15 @@ pub fn optimize_pose_fast(
             iterations: 0,
             residual: 0.0,
             converged: true,
+            covariance: IDENTITY_COVARIANCE,
+            condition_number: 1.0,
         };
     }
 
     let mut pose = initial_pose;
     let mut converged = false;
     let mut iterations = 0;
+    let mut final_hessian = [[0.0f32; 3]; 3];
 
     // Pre-fetch normals for all lines used in correspondences
     let (normal_xs, normal_ys) = lines.normals();
@@ -347,8 +452,8 @@ pub fn optimize_pose_fast(
     for iter in 0..config.max_iterations {
         iterations = iter + 1;
 
-        // Build linear system using pre-computed normals
-        let (h, g, residual) = build_linear_system_fast(
+        // Build weighted linear system using pre-computed normals
+        let (h, g, residual) = build_linear_system_fast_weighted(
             correspondences,
             lines,
             normal_xs,
@@ -356,6 +461,7 @@ pub fn optimize_pose_fast(
             inv_lengths,
             &pose,
         );
+        final_hessian = h;
 
         // Solve for Δx using direct 3x3 solve
         let Some(delta) = solve_3x3(&h, &g, config.regularization) else {
@@ -383,16 +489,23 @@ pub fn optimize_pose_fast(
 
     let final_residual = compute_residual_fast(correspondences, lines, inv_lengths, &pose);
 
+    // Compute covariance from inverse Hessian
+    let residual_variance = final_residual * final_residual;
+    let (covariance, condition_number) =
+        compute_covariance(&final_hessian, residual_variance, config.regularization);
+
     GaussNewtonResult {
         pose,
         iterations,
         residual: final_residual,
         converged,
+        covariance,
+        condition_number,
     }
 }
 
-/// Build linear system using pre-computed normals (no sqrt in inner loop).
-fn build_linear_system_fast(
+/// Build weighted linear system using pre-computed normals.
+fn build_linear_system_fast_weighted(
     correspondences: &CorrespondenceSet,
     lines: &LineCollection,
     normal_xs: &[f32],
@@ -408,12 +521,13 @@ fn build_linear_system_fast(
 
     let mut h = [[0.0f32; 3]; 3];
     let mut g = [0.0f32; 3];
-    let mut sum_sq_error = 0.0f32;
-    let mut count = 0;
+    let mut sum_weighted_sq_error = 0.0f32;
+    let mut sum_weights = 0.0f32;
 
     for corr in correspondences.iter() {
         let p = corr.point;
         let line_idx = corr.line_idx;
+        let weight = corr.weight;
 
         // Transform point by current pose
         let tx = p.x * cos - p.y * sin + pose.x;
@@ -423,13 +537,7 @@ fn build_linear_system_fast(
         let nx = normal_xs[line_idx];
         let ny = normal_ys[line_idx];
 
-        // Compute signed distance using pre-computed values
-        // signed_distance = (tx - start_x) * (-dy/len) + (ty - start_y) * (dx/len)
-        //                 = (tx - start_x) * nx + (ty - start_y) * ny
-        // But normal is perpendicular to direction, so:
-        // d = dot(transformed - start, perpendicular_direction) / length
-        //   = cross(transformed - start, direction) / length
-        //   = cross(transformed - start, direction) * inv_length
+        // Compute residual
         let sx = lines.start_xs[line_idx];
         let sy = lines.start_ys[line_idx];
         let ex = lines.end_xs[line_idx];
@@ -440,33 +548,29 @@ fn build_linear_system_fast(
         let to_px = tx - sx;
         let to_py = ty - sy;
 
-        // Cross product gives signed perpendicular distance * length
         let cross = dx * to_py - dy * to_px;
         let residual = cross * inv_lengths[line_idx];
 
-        sum_sq_error += residual * residual;
-        count += 1;
+        sum_weighted_sq_error += weight * residual * residual;
+        sum_weights += weight;
 
         // Jacobian using pre-computed normal
-        // j0 = n_x, j1 = n_y
-        // j2 = n_x * (-p.x * sin - p.y * cos) + n_y * (p.x * cos - p.y * sin)
-        //    = n_x * (p.x * neg_sin + p.y * neg_cos) + n_y * (p.x * cos + p.y * neg_sin)
         let j0 = nx;
         let j1 = ny;
         let j2 = nx * (p.x * neg_sin + p.y * neg_cos) + ny * (p.x * cos + p.y * neg_sin);
 
-        // Accumulate H = J^T·J (symmetric, so only compute upper triangle + diagonal)
-        h[0][0] += j0 * j0;
-        h[0][1] += j0 * j1;
-        h[0][2] += j0 * j2;
-        h[1][1] += j1 * j1;
-        h[1][2] += j1 * j2;
-        h[2][2] += j2 * j2;
+        // Accumulate weighted H = J^T·W·J (symmetric)
+        h[0][0] += weight * j0 * j0;
+        h[0][1] += weight * j0 * j1;
+        h[0][2] += weight * j0 * j2;
+        h[1][1] += weight * j1 * j1;
+        h[1][2] += weight * j1 * j2;
+        h[2][2] += weight * j2 * j2;
 
-        // Accumulate g = J^T·r
-        g[0] += j0 * residual;
-        g[1] += j1 * residual;
-        g[2] += j2 * residual;
+        // Accumulate weighted g = J^T·W·r
+        g[0] += weight * j0 * residual;
+        g[1] += weight * j1 * residual;
+        g[2] += weight * j2 * residual;
     }
 
     // Fill symmetric entries
@@ -474,8 +578,8 @@ fn build_linear_system_fast(
     h[2][0] = h[0][2];
     h[2][1] = h[1][2];
 
-    let rms_error = if count > 0 {
-        (sum_sq_error / count as f32).sqrt()
+    let rms_error = if sum_weights > 0.0 {
+        (sum_weighted_sq_error / sum_weights).sqrt()
     } else {
         0.0
     };

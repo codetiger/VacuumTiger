@@ -5,7 +5,13 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo test --features integration-tests -- --nocapture
+//! # Run all scenarios
+//! cargo test --features integration-tests -- yaml_tests --nocapture
+//!
+//! # Run a single scenario by name
+//! cargo test --features integration-tests -- test_static_scan --nocapture
+//! cargo test --features integration-tests -- test_straight_line --nocapture
+//! cargo test --features integration-tests -- test_loop_closure --nocapture
 //! ```
 //!
 //! # Adding New Scenarios
@@ -25,6 +31,101 @@
 //! ```
 
 use crate::yaml_runner;
+
+/// Run a single scenario by filename (without .yaml extension)
+fn run_single_scenario(name: &str) {
+    env_logger::try_init().ok();
+
+    let scenario_path = format!(
+        "{}/tests/integration/scenarios/{}.yaml",
+        env!("CARGO_MANIFEST_DIR"),
+        name
+    );
+
+    println!("\n--- Running scenario: {} ---", name);
+
+    match yaml_runner::run_scenario(&scenario_path) {
+        Ok(result) => {
+            println!("{}", result.metrics.summary());
+            println!(
+                "Ground truth: ({:.2}, {:.2}, {:.1}°)",
+                result.ground_truth_pose.x,
+                result.ground_truth_pose.y,
+                result.ground_truth_pose.theta.to_degrees()
+            );
+            println!(
+                "SLAM pose:    ({:.2}, {:.2}, {:.1}°)",
+                result.final_pose.x,
+                result.final_pose.y,
+                result.final_pose.theta.to_degrees()
+            );
+            println!("Observations: {}", result.observations);
+            println!("Sim time:     {:.2}s", result.sim_time);
+        }
+        Err(e) => {
+            panic!("Scenario {} failed: {}", name, e);
+        }
+    }
+}
+
+// Individual scenario tests - run with: cargo test --features integration-tests -- test_<name>
+
+#[test]
+fn test_static_scan() {
+    run_single_scenario("static_scan_test");
+}
+
+#[test]
+fn test_straight_line() {
+    run_single_scenario("straight_line_test");
+}
+
+#[test]
+fn test_pure_rotation() {
+    run_single_scenario("pure_rotation_test");
+}
+
+#[test]
+fn test_loop_closure() {
+    run_single_scenario("loop_closure_test");
+}
+
+#[test]
+fn test_medium_room_perimeter() {
+    run_single_scenario("medium_room_perimeter");
+}
+
+#[test]
+fn test_medium_room_exploration() {
+    run_single_scenario("medium_room_exploration");
+}
+
+#[test]
+fn test_medium_room_obstacles() {
+    run_single_scenario("medium_room_obstacles");
+}
+
+#[test]
+fn test_simple_room_straight_line() {
+    run_single_scenario("simple_room_straight_line");
+}
+
+// New stress-test scenarios for ICP convergence and drift validation
+
+#[test]
+fn test_icp_sparse_corridor() {
+    run_single_scenario("icp_sparse_corridor");
+}
+
+#[test]
+fn test_drift_long_path() {
+    run_single_scenario("drift_long_path");
+}
+
+#[test]
+fn test_drift_continuous_curve() {
+    run_single_scenario("drift_continuous_curve");
+}
 
 #[test]
 fn test_yaml_scenarios() {

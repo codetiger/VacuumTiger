@@ -18,10 +18,15 @@ pub struct Correspondence {
     pub distance: f32,
     /// Projection parameter t along the line (0 = start, 1 = end).
     pub projection_t: f32,
+    /// Weight for this correspondence (1/σ² based on measurement uncertainty).
+    /// Higher weight = more reliable measurement. Default: 1.0
+    pub weight: f32,
+    /// Range from sensor to this point (meters). Used for weight computation.
+    pub range: f32,
 }
 
 impl Correspondence {
-    /// Create a new correspondence.
+    /// Create a new correspondence with default weight (1.0).
     #[inline]
     pub fn new(
         point_idx: usize,
@@ -36,6 +41,30 @@ impl Correspondence {
             point,
             distance,
             projection_t,
+            weight: 1.0,
+            range: 0.0,
+        }
+    }
+
+    /// Create a new correspondence with explicit weight and range.
+    #[inline]
+    pub fn with_weight(
+        point_idx: usize,
+        line_idx: usize,
+        point: Point2D,
+        distance: f32,
+        projection_t: f32,
+        weight: f32,
+        range: f32,
+    ) -> Self {
+        Self {
+            point_idx,
+            line_idx,
+            point,
+            distance,
+            projection_t,
+            weight,
+            range,
         }
     }
 
@@ -136,6 +165,30 @@ impl CorrespondenceSet {
         (sum_sq / self.len() as f32).sqrt()
     }
 
+    /// Get the weighted RMS correspondence distance.
+    /// Uses correspondence weights for proper uncertainty-weighted averaging.
+    pub fn weighted_rms_distance(&self) -> f32 {
+        if self.is_empty() {
+            return 0.0;
+        }
+        let mut sum_weighted_sq = 0.0f32;
+        let mut sum_weights = 0.0f32;
+        for c in &self.correspondences {
+            sum_weighted_sq += c.weight * c.distance * c.distance;
+            sum_weights += c.weight;
+        }
+        if sum_weights > 0.0 {
+            (sum_weighted_sq / sum_weights).sqrt()
+        } else {
+            self.rms_distance() // fallback to unweighted
+        }
+    }
+
+    /// Get the total weight of all correspondences.
+    pub fn total_weight(&self) -> f32 {
+        self.correspondences.iter().map(|c| c.weight).sum()
+    }
+
     /// Get the maximum correspondence distance.
     pub fn max_distance(&self) -> f32 {
         self.correspondences
@@ -166,7 +219,44 @@ impl CorrespondenceSet {
     pub fn iter(&self) -> impl Iterator<Item = &Correspondence> {
         self.correspondences.iter()
     }
+
+    /// Apply weights to correspondences based on range using a noise model.
+    ///
+    /// The range for each correspondence is computed from the original robot-frame points
+    /// (magnitude of the point vector). Weights are computed as 1/σ² where σ is the
+    /// range-dependent measurement uncertainty.
+    ///
+    /// # Arguments
+    /// * `robot_frame_points` - Original scan points in robot frame (for range computation)
+    /// * `noise_model` - Lidar noise model for weight computation
+    pub fn apply_weights(
+        &mut self,
+        robot_frame_points: &[crate::core::Point2D],
+        noise_model: &crate::config::LidarNoiseModel,
+    ) {
+        for corr in &mut self.correspondences {
+            if corr.point_idx < robot_frame_points.len() {
+                let p = robot_frame_points[corr.point_idx];
+                let range = (p.x * p.x + p.y * p.y).sqrt();
+                corr.range = range;
+                corr.weight = noise_model.weight(range);
+            }
+        }
+    }
+
+    /// Create a new set with weights applied based on range.
+    pub fn with_weights(
+        mut self,
+        robot_frame_points: &[crate::core::Point2D],
+        noise_model: &crate::config::LidarNoiseModel,
+    ) -> Self {
+        self.apply_weights(robot_frame_points, noise_model);
+        self
+    }
 }
+
+/// 3x3 covariance matrix for pose uncertainty [x, y, theta].
+pub type PoseCovariance = [[f32; 3]; 3];
 
 /// Result of a scan matching operation.
 #[derive(Clone, Debug)]
@@ -183,10 +273,21 @@ pub struct MatchResult {
     pub rms_error: f32,
     /// Match confidence (0.0 to 1.0).
     pub confidence: f32,
+    /// Pose covariance matrix [x, y, theta].
+    /// Computed from the Hessian of the Gauss-Newton optimization.
+    pub covariance: PoseCovariance,
+    /// Condition number of the Hessian matrix.
+    /// High values (>100) indicate degenerate geometry (e.g., single wall).
+    pub condition_number: f32,
+    /// Whether coarse search was used for initialization.
+    pub used_coarse_search: bool,
 }
 
+/// Identity covariance matrix (no uncertainty information).
+pub const IDENTITY_COVARIANCE: PoseCovariance = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
 impl MatchResult {
-    /// Create a new match result.
+    /// Create a new match result with default covariance (backward compatible).
     pub fn new(
         pose: crate::core::Pose2D,
         correspondences: CorrespondenceSet,
@@ -203,6 +304,35 @@ impl MatchResult {
             converged,
             rms_error,
             confidence,
+            covariance: IDENTITY_COVARIANCE,
+            condition_number: 1.0,
+            used_coarse_search: false,
+        }
+    }
+
+    /// Create a new match result with full covariance information.
+    pub fn with_covariance(
+        pose: crate::core::Pose2D,
+        correspondences: CorrespondenceSet,
+        iterations: usize,
+        converged: bool,
+        covariance: PoseCovariance,
+        condition_number: f32,
+        used_coarse_search: bool,
+    ) -> Self {
+        let rms_error = correspondences.rms_distance();
+        let confidence = Self::compute_confidence(&correspondences, converged);
+
+        Self {
+            pose,
+            correspondences,
+            iterations,
+            converged,
+            rms_error,
+            confidence,
+            covariance,
+            condition_number,
+            used_coarse_search,
         }
     }
 
@@ -232,6 +362,22 @@ impl MatchResult {
     /// Check if this is a good match.
     pub fn is_good_match(&self, min_confidence: f32) -> bool {
         self.converged && self.confidence >= min_confidence
+    }
+
+    /// Check if the geometry is degenerate (e.g., single wall).
+    /// Returns true if condition number exceeds the threshold.
+    pub fn is_degenerate(&self, threshold: f32) -> bool {
+        self.condition_number > threshold
+    }
+
+    /// Get the position uncertainty (sqrt of x,y diagonal covariance elements).
+    pub fn position_uncertainty(&self) -> f32 {
+        (self.covariance[0][0] + self.covariance[1][1]).sqrt()
+    }
+
+    /// Get the orientation uncertainty (sqrt of theta diagonal covariance element).
+    pub fn orientation_uncertainty(&self) -> f32 {
+        self.covariance[2][2].sqrt()
     }
 }
 

@@ -1,0 +1,44 @@
+# Loop Closure Test (Square Trajectory)
+#
+# Robot traces a square path and returns to starting position.
+# This tests cumulative drift and loop closure accuracy.
+#
+# Starting at (2, 2) in 8m x 8m room, trace a 2m square:
+# - Move 2m forward
+# - Turn 90 degrees CCW
+# - Repeat 4 times to return to start
+#
+# Expected: Final pose within 15cm/5 degrees of starting pose
+
+name: "loop_closure_square"
+map: "maps/medium_room.yaml"
+
+start_pose:
+  x: 2.0
+  y: 2.0
+  theta: 0.0  # Facing right (+X)
+
+path:
+  # Leg 1: Move forward 2m (now at x=4, y=2)
+  - {left: 2.0, right: 2.0}
+
+  # Turn 90 degrees CCW (now facing +Y)
+  - {left: -0.183, right: 0.183}
+
+  # Leg 2: Move forward 2m (now at x=4, y=4)
+  - {left: 2.0, right: 2.0}
+
+  # Turn 90 degrees CCW (now facing -X)
+  - {left: -0.183, right: 0.183}
+
+  # Leg 3: Move forward 2m (now at x=2, y=4)
+  - {left: 2.0, right: 2.0}
+
+  # Turn 90 degrees CCW (now facing -Y)
+  - {left: -0.183, right: 0.183}
+
+  # Leg 4: Move forward 2m (back to x=2, y=2)
+  - {left: 2.0, right: 2.0}
+
+  # Final turn to restore original orientation (facing +X)
+  - {left: -0.183, right: 0.183}

@@ -271,56 +271,6 @@ fn compute_openness_simd(
     open_count as f32 / 3.0
 }
 
-/// Compute "openness" score for a frontier (non-SIMD version for single queries).
-///
-/// Openness measures how much unknown space is in the direction
-/// perpendicular to the line at the frontier endpoint.
-///
-/// This is the scalar fallback used in tests. For batch operations,
-/// use `compute_openness_simd` through `rank_frontiers()`.
-#[allow(dead_code)]
-fn compute_openness(frontier: &Frontier, lines: &[Line2D]) -> f32 {
-    if frontier.line_idx >= lines.len() {
-        return 0.0;
-    }
-
-    let line = &lines[frontier.line_idx];
-
-    // Get direction pointing away from the line
-    let outward_dir = if frontier.is_start {
-        // At start, outward is opposite to line direction
-        -line.unit_direction()
-    } else {
-        // At end, outward is along line direction
-        line.unit_direction()
-    };
-
-    // Also consider the perpendicular direction
-    let perp = Point2D::new(-outward_dir.y, outward_dir.x);
-
-    // Check distances in outward and perpendicular directions
-    let check_distance = 2.0; // meters
-    let probe_outward = frontier.point + outward_dir * check_distance;
-    let probe_left = frontier.point + perp * check_distance;
-    let probe_right = frontier.point - perp * check_distance;
-
-    // Count how many probe points are far from any line
-    let mut open_count = 0;
-
-    for probe in [probe_outward, probe_left, probe_right] {
-        let min_dist = lines
-            .iter()
-            .map(|l| l.distance_to_point(probe))
-            .fold(f32::MAX, f32::min);
-
-        if min_dist > 1.0 {
-            open_count += 1;
-        }
-    }
-
-    open_count as f32 / 3.0
-}
-
 /// Get the best frontier for exploration.
 ///
 /// Convenience function that detects, filters, and ranks frontiers,
@@ -400,6 +350,47 @@ pub fn cluster_centroid(cluster: &[Frontier]) -> Option<Point2D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Compute "openness" score for a frontier.
+    fn compute_openness(frontier: &Frontier, lines: &[Line2D]) -> f32 {
+        if frontier.line_idx >= lines.len() {
+            return 0.0;
+        }
+
+        let line = &lines[frontier.line_idx];
+
+        // Get direction pointing away from the line
+        let outward_dir = if frontier.is_start {
+            -line.unit_direction()
+        } else {
+            line.unit_direction()
+        };
+
+        // Also consider the perpendicular direction
+        let perp = Point2D::new(-outward_dir.y, outward_dir.x);
+
+        // Check distances in outward and perpendicular directions
+        let check_distance = 2.0;
+        let probe_outward = frontier.point + outward_dir * check_distance;
+        let probe_left = frontier.point + perp * check_distance;
+        let probe_right = frontier.point - perp * check_distance;
+
+        // Count how many probe points are far from any line
+        let mut open_count = 0;
+
+        for probe in [probe_outward, probe_left, probe_right] {
+            let min_dist = lines
+                .iter()
+                .map(|l| l.distance_to_point(probe))
+                .fold(f32::MAX, f32::min);
+
+            if min_dist > 1.0 {
+                open_count += 1;
+            }
+        }
+
+        open_count as f32 / 3.0
+    }
 
     fn make_partial_room() -> Vec<Line2D> {
         // Room with one side open (no top wall)

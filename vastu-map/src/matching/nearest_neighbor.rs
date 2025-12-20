@@ -11,7 +11,13 @@
 //! - `find_correspondences_spatial`: O(n×log(m)) using R-tree spatial index
 //!
 //! Use `find_correspondences_spatial` for large maps (>50 lines).
+//!
+//! # Weighted Correspondences
+//!
+//! For uncertainty-aware matching, use `find_correspondences_weighted` which
+//! computes weights based on range using a LidarNoiseModel.
 
+use crate::config::LidarNoiseModel;
 use crate::core::Point2D;
 use crate::features::{Line2D, LineCollection};
 use crate::integration::SpatialIndex;
@@ -195,6 +201,92 @@ pub fn find_correspondences_batch(
                 }
             } else {
                 result.push(Correspondence::new(point_idx, line_idx, point, distance, t));
+            }
+        }
+
+        if config.unique_per_point
+            && let Some(corr) = best_corr
+        {
+            result.push(corr);
+        }
+    }
+
+    result
+}
+
+/// Find correspondences with range-based weights using LineCollection.
+///
+/// Computes weights for each correspondence based on the range from sensor
+/// to the point, using the provided noise model. Closer points are weighted
+/// higher as they have less measurement uncertainty.
+///
+/// # Arguments
+/// * `points` - Scan points in world frame
+/// * `ranges` - Range (distance from sensor) for each point
+/// * `lines` - Map lines in SoA format
+/// * `noise_model` - Lidar noise model for weight computation
+/// * `config` - Matching configuration
+///
+/// # Returns
+/// Set of weighted correspondences.
+pub fn find_correspondences_weighted(
+    points: &[Point2D],
+    ranges: &[f32],
+    lines: &LineCollection,
+    noise_model: &LidarNoiseModel,
+    config: &NearestNeighborConfig,
+) -> CorrespondenceSet {
+    if points.is_empty() || lines.is_empty() {
+        return CorrespondenceSet::new();
+    }
+
+    debug_assert_eq!(
+        points.len(),
+        ranges.len(),
+        "points and ranges must have same length"
+    );
+
+    let mut result = CorrespondenceSet::with_capacity(points.len());
+    let min_t = -config.max_projection_extension;
+    let max_t = 1.0 + config.max_projection_extension;
+    let n_lines = lines.len();
+
+    for (point_idx, (&point, &range)) in points.iter().zip(ranges.iter()).enumerate() {
+        // Compute distances to all lines at once (SIMD-friendly)
+        let distances = lines.distances_to_point(point);
+        let projections = lines.project_point(point);
+
+        // Compute weight for this point based on its range
+        let weight = noise_model.weight(range);
+
+        let mut best_distance = config.max_distance;
+        let mut best_corr: Option<Correspondence> = None;
+
+        for line_idx in 0..n_lines {
+            let t = projections[line_idx];
+            let distance = distances[line_idx];
+
+            // Check projection bounds
+            if t < min_t || t > max_t {
+                continue;
+            }
+
+            // Check distance threshold
+            if distance > config.max_distance {
+                continue;
+            }
+
+            if config.unique_per_point {
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_corr = Some(Correspondence::with_weight(
+                        point_idx, line_idx, point, distance, t, weight, range,
+                    ));
+                }
+            } else {
+                result.push(Correspondence::with_weight(
+                    point_idx, line_idx, point, distance, t, weight, range,
+                ));
             }
         }
 

@@ -10,7 +10,8 @@ use crate::integration::{
     AssociationConfig, MergerConfig, SpatialIndex, batch_merge, create_new_line, find_associations,
     find_unmatched_scan_lines,
 };
-use crate::matching::{IcpConfig, match_scan};
+use crate::loop_closure::{LoopClosure, LoopClosureConfig, LoopClosureDetector};
+use crate::matching::{IcpConfig, PointToLineIcp};
 use crate::query::{FrontierConfig, OccupancyConfig, detect_frontiers, query_occupancy, raycast};
 use crate::{Frontier, Map, ObserveResult, Occupancy, Path};
 
@@ -38,6 +39,9 @@ pub struct VectorMapConfig {
     /// Configuration for occupancy queries.
     pub occupancy: OccupancyConfig,
 
+    /// Configuration for loop closure detection.
+    pub loop_closure: LoopClosureConfig,
+
     /// Minimum match confidence to use scan matching result.
     /// Below this, odometry is used instead.
     /// Default: 0.3
@@ -47,6 +51,10 @@ pub struct VectorMapConfig {
     /// Set to false for localization-only mode.
     /// Default: true
     pub mapping_enabled: bool,
+
+    /// Whether loop closure detection is enabled.
+    /// Default: true
+    pub loop_closure_enabled: bool,
 }
 
 impl Default for VectorMapConfig {
@@ -59,8 +67,10 @@ impl Default for VectorMapConfig {
             merger: MergerConfig::default(),
             frontier: FrontierConfig::default(),
             occupancy: OccupancyConfig::default(),
+            loop_closure: LoopClosureConfig::default(),
             min_match_confidence: 0.3,
             mapping_enabled: true,
+            loop_closure_enabled: true,
         }
     }
 }
@@ -80,6 +90,12 @@ impl VectorMapConfig {
     /// Builder-style setter for mapping enabled.
     pub fn with_mapping_enabled(mut self, enabled: bool) -> Self {
         self.mapping_enabled = enabled;
+        self
+    }
+
+    /// Builder-style setter for loop closure enabled.
+    pub fn with_loop_closure_enabled(mut self, enabled: bool) -> Self {
+        self.loop_closure_enabled = enabled;
         self
     }
 }
@@ -133,11 +149,22 @@ pub struct VectorMap {
 
     /// Number of observations processed.
     observation_count: usize,
+
+    /// Loop closure detector.
+    loop_detector: LoopClosureDetector,
+
+    /// Detected loop closures.
+    loop_closures: Vec<LoopClosure>,
+
+    /// Persistent ICP matcher (preserves state across scans for adaptive coarse search).
+    icp_matcher: PointToLineIcp,
 }
 
 impl VectorMap {
     /// Create a new empty VectorMap.
     pub fn new(config: VectorMapConfig) -> Self {
+        let loop_detector = LoopClosureDetector::new(config.loop_closure.clone());
+        let icp_matcher = PointToLineIcp::with_config(config.matching.clone());
         Self {
             config,
             lines: Vec::new(),
@@ -147,6 +174,9 @@ impl VectorMap {
             map_bounds: None,
             current_pose: Pose2D::identity(),
             observation_count: 0,
+            loop_detector,
+            loop_closures: Vec::new(),
+            icp_matcher,
         }
     }
 
@@ -178,6 +208,28 @@ impl VectorMap {
     /// Get the feature set (lines and corners).
     pub fn features(&self) -> FeatureSet {
         FeatureSet::from_features(&self.lines, &self.corners)
+    }
+
+    /// Get detected loop closures.
+    ///
+    /// These can be used by an external pose graph optimizer to correct drift.
+    pub fn get_loop_closures(&self) -> &[LoopClosure] {
+        &self.loop_closures
+    }
+
+    /// Get the number of detected loop closures.
+    pub fn loop_closure_count(&self) -> usize {
+        self.loop_closures.len()
+    }
+
+    /// Get the loop closure detector (for advanced access).
+    pub fn loop_detector(&self) -> &LoopClosureDetector {
+        &self.loop_detector
+    }
+
+    /// Clear all loop closures.
+    pub fn clear_loop_closures(&mut self) {
+        self.loop_closures.clear();
     }
 
     /// Add a line to the map.
@@ -228,6 +280,7 @@ impl VectorMap {
     /// 1. Extracts features from the scan
     /// 2. Matches against the map (localization)
     /// 3. Updates the map with new features (mapping)
+    /// 4. Checks for loop closure (if enabled)
     fn process_scan(&mut self, scan: &PointCloud2D, odometry: Pose2D) -> ObserveResult {
         self.observation_count += 1;
 
@@ -239,29 +292,88 @@ impl VectorMap {
         // Apply odometry to get predicted pose
         let predicted_pose = self.current_pose.compose(odometry);
 
-        // Transform scan to world frame using predicted pose
-        let world_scan = scan.transform(&predicted_pose);
-        let scan_points: Vec<Point2D> = world_scan.iter().collect();
+        // Get robot-frame scan points for weighted ICP matching
+        let robot_frame_points: Vec<Point2D> = scan.iter().collect();
 
-        // Try scan matching
-        let match_result = match_scan(&scan_points, &self.lines, Pose2D::identity());
+        // Try scan matching using persistent ICP matcher with weighted correspondences
+        // Uses robot-frame points for range-based weighting and predicted_pose for transform
+        let match_result = self.icp_matcher.match_scan_robot_frame(
+            &robot_frame_points,
+            &self.lines,
+            predicted_pose,
+        );
 
-        // Determine final pose
-        let (final_pose, confidence) = if match_result.converged
+        // Update ICP matcher's confidence state for adaptive coarse search triggering
+        self.icp_matcher
+            .update_last_confidence(match_result.confidence);
+
+        // Determine final pose and capture ICP stats
+        // Note: match_scan_robot_frame returns world-frame pose directly (not a delta)
+        //
+        // Sanity checks to prevent bad ICP matches from introducing drift:
+        // 1. ICP must converge with sufficient confidence
+        // 2. Condition number must not indicate degenerate geometry (>100 = single wall)
+        // 3. ICP pose must not deviate too far from odometry prediction
+        //    (prevents jumping to wrong local minima)
+        let icp_valid = if match_result.converged
             && match_result.confidence >= self.config.min_match_confidence
         {
-            // Apply match correction to predicted pose
-            let corrected = predicted_pose.compose(match_result.pose);
-            (corrected, match_result.confidence)
+            // Check for degenerate geometry
+            if match_result.condition_number > 100.0 {
+                log::debug!(
+                    "Rejecting ICP match: degenerate geometry (cond={})",
+                    match_result.condition_number
+                );
+                false
+            } else {
+                // Check if ICP pose is reasonable (not too far from prediction)
+                // Allow up to 0.2m translation and 10° rotation deviation
+                let dx = match_result.pose.x - predicted_pose.x;
+                let dy = match_result.pose.y - predicted_pose.y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let dtheta =
+                    crate::core::math::angle_diff(match_result.pose.theta, predicted_pose.theta)
+                        .abs();
+
+                if dist > 0.2 || dtheta > 0.175 {
+                    // 0.175 rad ≈ 10°
+                    log::debug!(
+                        "Rejecting ICP match: large deviation (dist={:.3}m, dtheta={:.1}°)",
+                        dist,
+                        dtheta.to_degrees()
+                    );
+                    false
+                } else {
+                    true
+                }
+            }
+        } else {
+            false
+        };
+
+        let (final_pose, confidence, icp_iterations, icp_converged) = if icp_valid {
+            // Use optimized world-frame pose from ICP
+            (
+                match_result.pose,
+                match_result.confidence,
+                match_result.iterations,
+                match_result.converged,
+            )
         } else {
             // Fall back to odometry
-            (predicted_pose, 0.0)
+            (
+                predicted_pose,
+                0.0,
+                match_result.iterations,
+                match_result.converged,
+            )
         };
 
         self.current_pose = final_pose;
 
-        // Extract features from scan
-        let features = self.extract_features(&world_scan);
+        // Extract features from robot-frame scan, transform to world using final pose
+        // This preserves angular ordering required by split-merge algorithm
+        let features = self.extract_features(scan, &final_pose);
 
         // Update map if mapping is enabled
         let (features_added, features_merged) = if self.config.mapping_enabled {
@@ -270,12 +382,37 @@ impl VectorMap {
             (0, 0)
         };
 
+        // Check for loop closure if enabled
+        let loop_closure_detected = if self.config.loop_closure_enabled {
+            // Get scan points in robot frame for ICP verification
+            let robot_points: Vec<Point2D> = scan.iter().collect();
+            let feature_lines = features.lines();
+            let feature_corners = features.corners();
+
+            if let Some(loop_closure) = self.loop_detector.process(
+                final_pose,
+                &feature_lines,
+                &feature_corners,
+                &robot_points,
+            ) {
+                self.loop_closures.push(loop_closure);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         ObserveResult {
             pose: final_pose,
             confidence,
             features_extracted: features.lines().len(),
             features_added,
             features_merged,
+            icp_iterations,
+            icp_converged,
+            loop_closure_detected,
         }
     }
 
@@ -283,11 +420,9 @@ impl VectorMap {
     fn initialize_from_scan(&mut self, scan: &PointCloud2D, odometry: Pose2D) -> ObserveResult {
         self.current_pose = odometry;
 
-        // Transform scan to world frame
-        let world_scan = scan.transform(&odometry);
-
-        // Extract features
-        let features = self.extract_features(&world_scan);
+        // Extract features from robot-frame scan, transform to world using odometry
+        // This preserves angular ordering required by split-merge algorithm
+        let features = self.extract_features(scan, &odometry);
 
         // Add all features to map
         let num_lines = features.lines().len();
@@ -298,26 +433,49 @@ impl VectorMap {
             self.corners.push(corner);
         }
 
+        // Initialize first keyframe if loop closure is enabled
+        if self.config.loop_closure_enabled {
+            let robot_points: Vec<Point2D> = scan.iter().collect();
+            let feature_lines = features.lines();
+            let feature_corners = features.corners();
+            self.loop_detector.force_keyframe(
+                odometry,
+                &feature_lines,
+                &feature_corners,
+                &robot_points,
+            );
+        }
+
         ObserveResult {
             pose: odometry,
             confidence: 0.0, // No match on first scan
             features_extracted: num_lines,
             features_added: num_lines,
             features_merged: 0,
+            icp_iterations: 0, // No ICP on first scan
+            icp_converged: false,
+            loop_closure_detected: false,
         }
     }
 
     /// Extract features from a scan.
-    fn extract_features(&self, scan: &PointCloud2D) -> FeatureSet {
-        let points: Vec<Point2D> = scan.iter().collect();
+    ///
+    /// The scan must be in robot-local frame (not world frame) to preserve
+    /// angular ordering for the split-merge line extraction algorithm.
+    /// Lines are extracted in robot frame, then transformed to world frame.
+    fn extract_features(&self, scan_robot_frame: &PointCloud2D, pose: &Pose2D) -> FeatureSet {
+        let points: Vec<Point2D> = scan_robot_frame.iter().collect();
 
-        // Extract lines
-        let lines = extract_lines(&points, &self.config.extraction);
+        // Extract lines in robot frame (preserves angular ordering for split-merge)
+        let lines_robot = extract_lines(&points, &self.config.extraction);
 
-        // Extract corners from lines
-        let corners = detect_corners(&lines, &self.config.corner);
+        // Transform lines to world frame
+        let lines_world: Vec<Line2D> = lines_robot.iter().map(|l| l.transform(pose)).collect();
 
-        FeatureSet::from_features(&lines, &corners)
+        // Extract corners from world-frame lines
+        let corners = detect_corners(&lines_world, &self.config.corner);
+
+        FeatureSet::from_features(&lines_world, &corners)
     }
 
     /// Integrate new features into the map.
@@ -456,6 +614,9 @@ impl Map for VectorMap {
         self.map_bounds = None;
         self.current_pose = Pose2D::identity();
         self.observation_count = 0;
+        self.loop_detector.clear();
+        self.loop_closures.clear();
+        self.icp_matcher.update_last_confidence(1.0); // Reset ICP state
     }
 }
 
@@ -482,7 +643,6 @@ mod tests {
         PointCloud2D { xs, ys }
     }
 
-    #[allow(dead_code)]
     fn make_room_scan() -> PointCloud2D {
         // Simulate a scan from center of a 4x4 room
         let mut xs = Vec::new();
@@ -644,40 +804,6 @@ mod tests {
         let features = map.features();
 
         assert_eq!(features.lines().len(), 2);
-    }
-
-    // === Additional full-cycle integration tests ===
-
-    /// Create a scan simulating walls of a square room from a given position.
-    #[allow(dead_code)]
-    fn make_scan_from_position(_pos: Point2D, room_size: f32) -> PointCloud2D {
-        let half = room_size / 2.0;
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
-
-        // Generate points for each wall relative to position
-        let walls = [
-            (Point2D::new(-half, -half), Point2D::new(half, -half)), // Bottom
-            (Point2D::new(half, -half), Point2D::new(half, half)),   // Right
-            (Point2D::new(half, half), Point2D::new(-half, half)),   // Top
-            (Point2D::new(-half, half), Point2D::new(-half, -half)), // Left
-        ];
-
-        for (start, end) in walls {
-            // Generate 15 points along each wall
-            for i in 0..15 {
-                let t = i as f32 / 14.0;
-                let point = Point2D::new(
-                    start.x + (end.x - start.x) * t,
-                    start.y + (end.y - start.y) * t,
-                );
-                // Transform to world coordinates (assuming pos is robot position)
-                xs.push(point.x);
-                ys.push(point.y);
-            }
-        }
-
-        PointCloud2D { xs, ys }
     }
 
     #[test]
