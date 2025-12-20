@@ -1,26 +1,13 @@
 //! 4-wide f32 SIMD vector type.
 //!
-//! This implementation is designed for LLVM auto-vectorization on ARMv7 NEON.
-//! The struct uses 16-byte alignment to match NEON's 128-bit registers.
+//! This implementation is designed for LLVM auto-vectorization.
+//! The struct uses 16-byte alignment to match common 128-bit SIMD registers.
 //!
-//! # Target Platform
+//! # Design
 //!
-//! Baseline: Allwinner A33 (Cortex-A7)
-//! - ARMv7-A architecture
-//! - NEON 128-bit SIMD (16 Q-registers)
-//! - VFPv4 with FMA support
-//!
-//! # NEON Instruction Mapping
-//!
-//! | Rust Operation | NEON Intrinsic | Cycles |
-//! |----------------|----------------|--------|
-//! | `Float4 + Float4` | `vaddq_f32` | 1 |
-//! | `Float4 - Float4` | `vsubq_f32` | 1 |
-//! | `Float4 * Float4` | `vmulq_f32` | 1 |
-//! | `Float4::min()` | `vminq_f32` | 1 |
-//! | `Float4::max()` | `vmaxq_f32` | 1 |
-//! | `Float4::splat()` | `vdupq_n_f32` | 1 |
-//! | `mul_add()` | `vfmaq_f32` | 1 |
+//! Uses standard Rust operations that LLVM can auto-vectorize for the target
+//! platform. No platform-specific intrinsics are used—users can configure
+//! appropriate compiler flags for their target architecture.
 
 use std::ops::{Add, AddAssign, Mul, Sub};
 
@@ -30,14 +17,12 @@ use std::ops::{Add, AddAssign, Mul, Sub};
 ///
 /// Uses `#[repr(C, align(16))]` to ensure:
 /// - C-compatible memory layout for predictable access patterns
-/// - 16-byte alignment matching NEON's 128-bit (16-byte) Q-registers
+/// - 16-byte alignment matching common 128-bit SIMD registers
 ///
 /// # Auto-vectorization
 ///
 /// All methods use `#[inline(always)]` to encourage LLVM to inline
-/// and recognize vectorizable patterns. When compiled with
-/// `-C target-feature=+neon -C target-cpu=cortex-a7`, LLVM will
-/// typically emit NEON instructions for these operations.
+/// and recognize vectorizable patterns for the target architecture.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C, align(16))]
 pub struct Float4(pub [f32; 4]);
@@ -56,8 +41,6 @@ impl Float4 {
     }
 
     /// Creates a `Float4` with all elements set to the same value.
-    ///
-    /// This is equivalent to NEON's `vdupq_n_f32` intrinsic.
     ///
     /// # Example
     /// ```
@@ -95,8 +78,6 @@ impl Float4 {
     /// Returns a new vector where each element is the minimum of the
     /// corresponding elements in `self` and `other`.
     ///
-    /// This is equivalent to NEON's `vminq_f32` intrinsic.
-    ///
     /// # Example
     /// ```
     /// use vastu_map::simd::Float4;
@@ -120,8 +101,6 @@ impl Float4 {
     /// Returns a new vector where each element is the maximum of the
     /// corresponding elements in `self` and `other`.
     ///
-    /// This is equivalent to NEON's `vmaxq_f32` intrinsic.
-    ///
     /// # Example
     /// ```
     /// use vastu_map::simd::Float4;
@@ -143,8 +122,7 @@ impl Float4 {
     /// Fused multiply-add: `(self * a) + b`.
     ///
     /// Computes `self * a + b` with better precision and performance than
-    /// separate multiply and add operations. On ARM NEON, this maps to
-    /// `vfmaq_f32` (VFPv4).
+    /// separate multiply and add operations.
     ///
     /// # Example
     /// ```
@@ -219,8 +197,6 @@ impl Float4 {
     /// Returns a new vector where each element is the absolute value of
     /// the corresponding element in `self`.
     ///
-    /// This is equivalent to NEON's `vabsq_f32` intrinsic.
-    ///
     /// # Example
     /// ```
     /// use vastu_map::simd::Float4;
@@ -242,9 +218,6 @@ impl Float4 {
     ///
     /// Returns a new vector where each element is the reciprocal of
     /// the corresponding element in `self`.
-    ///
-    /// On ARM NEON, this maps to `vrecpeq_f32` + `vrecpsq_f32` for
-    /// fast approximation with refinement.
     ///
     /// # Example
     /// ```
@@ -268,8 +241,6 @@ impl Add for Float4 {
     type Output = Self;
 
     /// Element-wise addition.
-    ///
-    /// This is equivalent to NEON's `vaddq_f32` intrinsic.
     #[inline(always)]
     fn add(self, rhs: Self) -> Self {
         Self([
@@ -285,8 +256,6 @@ impl Sub for Float4 {
     type Output = Self;
 
     /// Element-wise subtraction.
-    ///
-    /// This is equivalent to NEON's `vsubq_f32` intrinsic.
     #[inline(always)]
     fn sub(self, rhs: Self) -> Self {
         Self([
@@ -302,8 +271,6 @@ impl Mul for Float4 {
     type Output = Self;
 
     /// Element-wise multiplication.
-    ///
-    /// This is equivalent to NEON's `vmulq_f32` intrinsic.
     #[inline(always)]
     fn mul(self, rhs: Self) -> Self {
         Self([

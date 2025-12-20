@@ -51,7 +51,7 @@
 //!                             end_ys:   [y2, y2, y2, ...]
 //! ```
 //!
-//! SoA enables processing 4 lines per NEON instruction.
+//! SoA enables processing 4 lines per SIMD instruction.
 
 pub mod corner;
 pub mod descriptors;

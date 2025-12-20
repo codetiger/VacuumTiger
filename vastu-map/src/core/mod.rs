@@ -66,7 +66,7 @@
 //!
 //! [`PointCloud2D`] uses Struct-of-Arrays (SoA) layout for SIMD efficiency:
 //! - `xs: Vec<f32>` and `ys: Vec<f32>` stored separately
-//! - Enables 4-wide NEON operations on ARM
+//! - Enables 4-wide SIMD operations via auto-vectorization
 //! - Cache-friendly for sequential access patterns
 
 pub mod bounds;

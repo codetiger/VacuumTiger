@@ -4,7 +4,7 @@
 //! - `PolarScan`: Raw lidar scan in polar coordinates
 //! - `PointCloud2D`: Cartesian point cloud with SoA (Struct of Arrays) layout
 //!
-//! The SoA layout is optimized for SIMD operations on ARM NEON.
+//! The SoA layout is optimized for SIMD auto-vectorization.
 
 use super::point::Point2D;
 use super::pose::Pose2D;
@@ -82,7 +82,7 @@ impl PolarScan {
 /// Cartesian point cloud with SoA (Struct of Arrays) layout.
 ///
 /// This layout enables efficient SIMD operations:
-/// - Transform operations can process 4 points per NEON instruction
+/// - Transform operations can process 4 points per SIMD instruction
 /// - Memory access patterns are cache-friendly for sequential processing
 ///
 /// Coordinate frame follows ROS REP-103:
@@ -192,8 +192,7 @@ impl PointCloud2D {
     /// This is SIMD-optimized: processes 4 points per iteration using Float4.
     ///
     /// # Performance
-    /// Uses fused multiply-add (FMA) operations which map directly to
-    /// ARM NEON `vfmaq_f32` instructions on VFPv4 hardware.
+    /// Uses fused multiply-add (FMA) operations for efficient SIMD execution.
     pub fn transform(&self, pose: &Pose2D) -> Self {
         let n = self.len();
         let mut result = Self::with_capacity(n);

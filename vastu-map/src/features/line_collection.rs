@@ -1,6 +1,6 @@
 //! Line collection with SoA (Struct of Arrays) layout for SIMD operations.
 //!
-//! This layout enables efficient batch operations on ARM NEON:
+//! This layout enables efficient batch operations via SIMD:
 //! - 4 floats per line = clean SIMD alignment
 //! - Batch distance computations
 //! - Parallel transforms

@@ -2,7 +2,7 @@
 name = "vastu-map"
 version = "0.1.0"
 edition = "2024"
-description = "Feature-based 2D SLAM library optimized for ARM NEON"
+description = "Feature-based 2D SLAM library with SIMD-friendly data layouts"
 license = "MIT"
 
 [features]

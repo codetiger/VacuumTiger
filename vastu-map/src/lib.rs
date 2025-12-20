@@ -1,14 +1,14 @@
 //! # Vastu-Map: Feature-Based 2D SLAM Library
 //!
 //! A high-performance SLAM (Simultaneous Localization and Mapping) library
-//! optimized for ARM NEON and designed for indoor robot navigation.
+//! with SIMD-friendly data layouts, designed for indoor robot navigation.
 //!
 //! ## Features
 //!
 //! - **VectorMap Representation**: Uses line segments and corners instead of
 //!   occupancy grids for memory-efficient mapping
 //! - **Full SLAM Pipeline**: Localization and mapping integrated into a clean API
-//! - **SIMD Optimized**: Designed for ARM NEON auto-vectorization (also works on x86)
+//! - **SIMD Optimized**: Data layouts designed for LLVM auto-vectorization (works on ARM, x86, etc.)
 //! - **SoA Data Layout**: Struct-of-Arrays for cache-friendly SIMD operations
 //!
 //! ## Quick Start
@@ -102,11 +102,11 @@
 //!               └────────────────┘
 //! ```
 //!
-//! ## Target Platform
+//! ## SIMD and Portability
 //!
-//! Primary target: ARM Cortex-A7 with NEON and VFPv4 (Allwinner A33).
-//! The library uses auto-vectorization patterns that LLVM can optimize
-//! for various SIMD architectures.
+//! The library uses LLVM auto-vectorization patterns that work across different
+//! architectures. No platform-specific intrinsics are used—users can configure
+//! compiler flags appropriate for their target platform.
 
 pub mod config;
 pub mod core;
