@@ -16,31 +16,31 @@ start_pose:
 
 path:
   # Initial scan
-  - {left: -0.732, right: 0.732}
+  - {left: -0.732, right: 0.732, speed: 0.4}
 
   # Side 1: Move right along bottom (6m)
-  - {left: 6.0, right: 6.0}
+  - {left: 6.0, right: 6.0, speed: 0.5}
 
-  # Turn left 90° (CCW)
-  - {left: -0.183, right: 0.183}
+  # Turn left 90 degrees (CCW)
+  - {left: -0.183, right: 0.183, speed: 0.4}
 
   # Side 2: Move up along right side (6m)
-  - {left: 6.0, right: 6.0}
+  - {left: 6.0, right: 6.0, speed: 0.5}
 
-  # Turn left 90°
-  - {left: -0.183, right: 0.183}
+  # Turn left 90 degrees
+  - {left: -0.183, right: 0.183, speed: 0.4}
 
   # Side 3: Move left along top (6m)
-  - {left: 6.0, right: 6.0}
+  - {left: 6.0, right: 6.0, speed: 0.5}
 
-  # Turn left 90°
-  - {left: -0.183, right: 0.183}
+  # Turn left 90 degrees
+  - {left: -0.183, right: 0.183, speed: 0.4}
 
   # Side 4: Move down along left side (6m)
-  - {left: 6.0, right: 6.0}
+  - {left: 6.0, right: 6.0, speed: 0.5}
 
-  # Turn left 90° (back to original heading)
-  - {left: -0.183, right: 0.183}
+  # Turn left 90 degrees (back to original heading)
+  - {left: -0.183, right: 0.183, speed: 0.4}
 
   # Final scan
-  - {left: -0.732, right: 0.732}
+  - {left: -0.732, right: 0.732, speed: 0.4}

@@ -17,4 +17,4 @@ start_pose:
 
 path:
   # Move forward 0.5m (both wheels equal distance = straight line)
-  - {left: 0.5, right: 0.5}
+  - {left: 0.5, right: 0.5, speed: 0.4}

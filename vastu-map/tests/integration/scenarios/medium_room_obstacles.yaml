@@ -19,34 +19,34 @@ start_pose:
 
 path:
   # Scan from center
-  - {left: -0.732, right: 0.732}
+  - {left: -0.732, right: 0.732, speed: 0.4}
 
   # Move toward table area
-  - {left: -0.366, right: 0.366}  # Turn 180°
-  - {left: 1.5, right: 1.5}       # Move toward (2.5, 4)
-  - {left: -0.183, right: 0.183}  # Turn left 90°
-  - {left: 1.5, right: 1.5}       # Move toward table
+  - {left: -0.366, right: 0.366, speed: 0.4}  # Turn 180 degrees
+  - {left: 1.5, right: 1.5, speed: 0.4}       # Move toward (2.5, 4)
+  - {left: -0.183, right: 0.183, speed: 0.4}  # Turn left 90 degrees
+  - {left: 1.0, right: 1.0, speed: 0.4}       # Move toward table (2.5, 3)
 
   # Scan near table
-  - {left: -0.732, right: 0.732}
+  - {left: -0.732, right: 0.732, speed: 0.4}
 
   # Navigate to pillar area
-  - {left: 0.183, right: -0.183}  # Turn right 90°
-  - {left: 4.0, right: 4.0}       # Move across to pillar side
+  - {left: 0.183, right: -0.183, speed: 0.4}  # Turn right 90 degrees
+  - {left: 3.5, right: 3.5, speed: 0.4}       # Move across to pillar side (6, 3)
 
   # Scan near pillar
-  - {left: -0.732, right: 0.732}
+  - {left: -0.732, right: 0.732, speed: 0.4}
 
   # Move up toward L-shape
-  - {left: -0.183, right: 0.183}  # Turn left 90°
-  - {left: 3.0, right: 3.0}       # Move up
+  - {left: -0.183, right: 0.183, speed: 0.4}  # Turn left 90 degrees
+  - {left: 2.0, right: 2.0, speed: 0.4}       # Move up to (6, 5)
 
   # Scan near L-shape
-  - {left: -0.732, right: 0.732}
+  - {left: -0.732, right: 0.732, speed: 0.4}
 
   # Navigate to small box area
-  - {left: 0.366, right: -0.366}  # Turn right 180°
-  - {left: 3.0, right: 3.0}       # Move toward small box
+  - {left: 0.366, right: -0.366, speed: 0.4}  # Turn right 180 degrees
+  - {left: 2.5, right: 2.5, speed: 0.4}       # Move toward small box (3.5, 5)
 
   # Final scan
-  - {left: -0.732, right: 0.732}
+  - {left: -0.732, right: 0.732, speed: 0.4}

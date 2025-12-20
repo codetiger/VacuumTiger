@@ -15,8 +15,8 @@ pub struct ScenarioConfig {
     /// Starting pose
     #[serde(default)]
     pub start_pose: PoseConfig,
-    /// Path as wheel distance commands
-    pub path: Vec<WheelCommand>,
+    /// Path as commands (wheel movements or stops)
+    pub path: Vec<PathCommand>,
 }
 
 /// Robot pose configuration.
@@ -58,6 +58,22 @@ pub struct WheelCommand {
     pub left: f32,
     /// Right wheel distance in meters (positive = forward)
     pub right: f32,
+    /// Optional speed in m/s (defaults to 0.2 m/s if not specified)
+    #[serde(default)]
+    pub speed: Option<f32>,
+}
+
+/// Path command - either a wheel command or a stop command.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum PathCommand {
+    /// Stop for a specified duration in seconds
+    Stop {
+        /// Duration to stay stationary in seconds
+        stop: f32,
+    },
+    /// Wheel distance command
+    Wheel(WheelCommand),
 }
 
 fn default_2_5() -> f32 {
@@ -85,8 +101,14 @@ path:
         let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
         assert_eq!(config.name, "test_scenario");
         assert_eq!(config.path.len(), 2);
-        assert_eq!(config.path[0].left, 0.5);
-        assert_eq!(config.path[0].right, 0.5);
+        match &config.path[0] {
+            PathCommand::Wheel(cmd) => {
+                assert_eq!(cmd.left, 0.5);
+                assert_eq!(cmd.right, 0.5);
+                assert!(cmd.speed.is_none());
+            }
+            _ => panic!("Expected Wheel command"),
+        }
     }
 
     #[test]
@@ -102,5 +124,65 @@ path:
         assert_eq!(config.start_pose.x, 2.5);
         assert_eq!(config.start_pose.y, 2.5);
         assert_eq!(config.start_pose.theta, 0.0);
+    }
+
+    #[test]
+    fn test_wheel_command_with_speed() {
+        let yaml = r#"
+name: "speed_test"
+map: "test.yaml"
+path:
+  - {left: 1.0, right: 1.0, speed: 0.5}
+"#;
+
+        let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
+        match &config.path[0] {
+            PathCommand::Wheel(cmd) => {
+                assert_eq!(cmd.left, 1.0);
+                assert_eq!(cmd.right, 1.0);
+                assert_eq!(cmd.speed, Some(0.5));
+            }
+            _ => panic!("Expected Wheel command"),
+        }
+    }
+
+    #[test]
+    fn test_stop_command() {
+        let yaml = r#"
+name: "stop_test"
+map: "test.yaml"
+path:
+  - {stop: 5.0}
+"#;
+
+        let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
+        match &config.path[0] {
+            PathCommand::Stop { stop } => {
+                assert_eq!(*stop, 5.0);
+            }
+            _ => panic!("Expected Stop command"),
+        }
+    }
+
+    #[test]
+    fn test_mixed_commands() {
+        let yaml = r#"
+name: "mixed_test"
+map: "test.yaml"
+path:
+  - {left: 1.0, right: 1.0}
+  - {stop: 2.0}
+  - {left: 0.5, right: 0.5, speed: 0.3}
+"#;
+
+        let config: ScenarioConfig = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
+        assert_eq!(config.path.len(), 3);
+
+        // First: wheel without speed
+        assert!(matches!(&config.path[0], PathCommand::Wheel(cmd) if cmd.speed.is_none()));
+        // Second: stop
+        assert!(matches!(&config.path[1], PathCommand::Stop { stop } if *stop == 2.0));
+        // Third: wheel with speed
+        assert!(matches!(&config.path[2], PathCommand::Wheel(cmd) if cmd.speed == Some(0.3)));
     }
 }

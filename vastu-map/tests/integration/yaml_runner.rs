@@ -4,7 +4,7 @@
 
 use crate::harness::{HarnessConfig, TestHarness, TestResult};
 use crate::path_generator::PathSegment;
-use crate::yaml_config::{ScenarioConfig, WheelCommand};
+use crate::yaml_config::{PathCommand, ScenarioConfig};
 use std::path::Path;
 
 /// Wheel base of the robot in meters (from RobotConfig default).
@@ -46,7 +46,7 @@ pub fn run_scenario<P: AsRef<Path>>(
         ..Default::default()
     };
 
-    let path = convert_wheel_commands(&config.path);
+    let path = convert_path_commands(&config.path);
 
     // Ensure output directory exists
     std::fs::create_dir_all("results").ok();
@@ -57,36 +57,45 @@ pub fn run_scenario<P: AsRef<Path>>(
     Ok(harness.run_path(&path))
 }
 
-/// Convert wheel distance commands to PathSegments.
+/// Convert path commands to PathSegments.
 ///
-/// Uses differential drive kinematics:
-/// - linear_dist = (left + right) / 2
-/// - angular_dist = (right - left) / wheel_base
-fn convert_wheel_commands(commands: &[WheelCommand]) -> Vec<PathSegment> {
+/// Handles both wheel commands and stop commands:
+/// - Wheel commands use differential drive kinematics
+/// - Stop commands create stationary segments
+fn convert_path_commands(commands: &[PathCommand]) -> Vec<PathSegment> {
     commands
         .iter()
-        .filter_map(|cmd| {
-            // Calculate linear and angular distances
-            let linear_dist = (cmd.left + cmd.right) / 2.0;
-            let angular_dist = (cmd.right - cmd.left) / WHEEL_BASE; // radians
-
-            // Calculate duration based on max wheel distance
-            let max_wheel_dist = cmd.left.abs().max(cmd.right.abs());
-            if max_wheel_dist < 0.001 {
-                return None; // Skip zero-distance commands
+        .filter_map(|cmd| match cmd {
+            PathCommand::Stop { stop } => {
+                if *stop < 0.001 {
+                    return None; // Skip zero-duration stops
+                }
+                Some(PathSegment::stop(*stop))
             }
+            PathCommand::Wheel(wheel) => {
+                // Calculate linear and angular distances
+                let linear_dist = (wheel.left + wheel.right) / 2.0;
+                let angular_dist = (wheel.right - wheel.left) / WHEEL_BASE; // radians
 
-            let duration = max_wheel_dist / DEFAULT_SPEED;
+                // Calculate duration based on max wheel distance and speed
+                let max_wheel_dist = wheel.left.abs().max(wheel.right.abs());
+                if max_wheel_dist < 0.001 {
+                    return None; // Skip zero-distance commands
+                }
 
-            // Calculate velocities
-            let linear_vel = linear_dist / duration;
-            let angular_vel = angular_dist / duration;
+                let speed = wheel.speed.unwrap_or(DEFAULT_SPEED);
+                let duration = max_wheel_dist / speed;
 
-            Some(PathSegment {
-                linear_vel,
-                angular_vel,
-                duration,
-            })
+                // Calculate velocities
+                let linear_vel = linear_dist / duration;
+                let angular_vel = angular_dist / duration;
+
+                Some(PathSegment {
+                    linear_vel,
+                    angular_vel,
+                    duration,
+                })
+            }
         })
         .collect()
 }
@@ -139,14 +148,16 @@ pub fn run_all_scenarios<P: AsRef<Path>>(dir: P) -> Vec<(String, Result<TestResu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::yaml_config::WheelCommand;
 
     #[test]
     fn test_wheel_command_forward() {
-        let commands = vec![WheelCommand {
+        let commands = vec![PathCommand::Wheel(WheelCommand {
             left: 1.0,
             right: 1.0,
-        }];
-        let segments = convert_wheel_commands(&commands);
+            speed: None,
+        })];
+        let segments = convert_path_commands(&commands);
 
         assert_eq!(segments.len(), 1);
         let seg = &segments[0];
@@ -161,11 +172,12 @@ mod tests {
     fn test_wheel_command_rotate() {
         // 90 degree turn: left = -0.183, right = 0.183
         let turn_dist = std::f32::consts::FRAC_PI_2 * WHEEL_BASE / 2.0;
-        let commands = vec![WheelCommand {
+        let commands = vec![PathCommand::Wheel(WheelCommand {
             left: -turn_dist,
             right: turn_dist,
-        }];
-        let segments = convert_wheel_commands(&commands);
+            speed: None,
+        })];
+        let segments = convert_path_commands(&commands);
 
         assert_eq!(segments.len(), 1);
         let seg = &segments[0];
@@ -179,11 +191,12 @@ mod tests {
     #[test]
     fn test_wheel_command_arc() {
         // Arc motion: different wheel distances
-        let commands = vec![WheelCommand {
+        let commands = vec![PathCommand::Wheel(WheelCommand {
             left: 0.5,
             right: 0.7,
-        }];
-        let segments = convert_wheel_commands(&commands);
+            speed: None,
+        })];
+        let segments = convert_path_commands(&commands);
 
         assert_eq!(segments.len(), 1);
         let seg = &segments[0];
@@ -196,18 +209,99 @@ mod tests {
     #[test]
     fn test_skip_zero_commands() {
         let commands = vec![
-            WheelCommand {
+            PathCommand::Wheel(WheelCommand {
                 left: 0.0,
                 right: 0.0,
-            },
-            WheelCommand {
+                speed: None,
+            }),
+            PathCommand::Wheel(WheelCommand {
                 left: 1.0,
                 right: 1.0,
-            },
+                speed: None,
+            }),
         ];
-        let segments = convert_wheel_commands(&commands);
+        let segments = convert_path_commands(&commands);
 
         // Zero command should be skipped
         assert_eq!(segments.len(), 1);
+    }
+
+    #[test]
+    fn test_wheel_command_with_speed() {
+        // 1m forward at 0.5 m/s should take 2 seconds
+        let commands = vec![PathCommand::Wheel(WheelCommand {
+            left: 1.0,
+            right: 1.0,
+            speed: Some(0.5),
+        })];
+        let segments = convert_path_commands(&commands);
+
+        assert_eq!(segments.len(), 1);
+        let seg = &segments[0];
+
+        assert!((seg.linear_vel - 0.5).abs() < 0.01);
+        assert!(seg.angular_vel.abs() < 0.01);
+        assert!((seg.duration - 2.0).abs() < 0.01); // 1.0m / 0.5m/s = 2s
+    }
+
+    #[test]
+    fn test_stop_command() {
+        let commands = vec![PathCommand::Stop { stop: 5.0 }];
+        let segments = convert_path_commands(&commands);
+
+        assert_eq!(segments.len(), 1);
+        let seg = &segments[0];
+
+        assert!(seg.linear_vel.abs() < 0.001);
+        assert!(seg.angular_vel.abs() < 0.001);
+        assert!((seg.duration - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_skip_zero_stop() {
+        let commands = vec![
+            PathCommand::Stop { stop: 0.0 },
+            PathCommand::Wheel(WheelCommand {
+                left: 1.0,
+                right: 1.0,
+                speed: None,
+            }),
+        ];
+        let segments = convert_path_commands(&commands);
+
+        // Zero-duration stop should be skipped
+        assert_eq!(segments.len(), 1);
+    }
+
+    #[test]
+    fn test_mixed_commands() {
+        let commands = vec![
+            PathCommand::Wheel(WheelCommand {
+                left: 1.0,
+                right: 1.0,
+                speed: None,
+            }),
+            PathCommand::Stop { stop: 2.0 },
+            PathCommand::Wheel(WheelCommand {
+                left: 0.5,
+                right: 0.5,
+                speed: Some(0.25),
+            }),
+        ];
+        let segments = convert_path_commands(&commands);
+
+        assert_eq!(segments.len(), 3);
+
+        // First: forward at default speed
+        assert!((segments[0].linear_vel - DEFAULT_SPEED).abs() < 0.01);
+        assert!((segments[0].duration - 5.0).abs() < 0.01);
+
+        // Second: stop for 2 seconds
+        assert!(segments[1].linear_vel.abs() < 0.001);
+        assert!((segments[1].duration - 2.0).abs() < 0.01);
+
+        // Third: forward at 0.25 m/s for 2 seconds
+        assert!((segments[2].linear_vel - 0.25).abs() < 0.01);
+        assert!((segments[2].duration - 2.0).abs() < 0.01); // 0.5m / 0.25m/s = 2s
     }
 }

@@ -21,7 +21,7 @@ start_pose:
   theta: 1.5708  # Facing +Y (down the corridor)
 
 path:
-  # Move 3m down the corridor
-  - {left: 1.0, right: 1.0}
-  - {left: 1.0, right: 1.0}
-  - {left: 1.0, right: 1.0}
+  # Move 3m down the corridor in 1m segments
+  - {left: 1.0, right: 1.0, speed: 0.4}
+  - {left: 1.0, right: 1.0, speed: 0.4}
+  - {left: 1.0, right: 1.0, speed: 0.4}

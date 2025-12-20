@@ -22,36 +22,36 @@ start_pose:
 
 path:
   # Leg 1: 4m forward (now at x=6, y=6)
-  - {left: 4.0, right: 4.0}
+  - {left: 4.0, right: 4.0, speed: 0.5}
 
-  # Turn 90° CCW (now facing +Y)
-  - {left: -0.183, right: 0.183}
+  # Turn 90 degrees CCW (now facing +Y)
+  - {left: -0.183, right: 0.183, speed: 0.4}
 
   # Leg 2: 4m forward (now at x=6, y=10)
-  - {left: 4.0, right: 4.0}
+  - {left: 4.0, right: 4.0, speed: 0.5}
 
-  # Turn 90° CW (now facing +X)
-  - {left: 0.183, right: -0.183}
+  # Turn 90 degrees CW (now facing +X)
+  - {left: 0.183, right: -0.183, speed: 0.4}
 
   # Leg 3: 4m forward (now at x=10, y=10)
-  - {left: 4.0, right: 4.0}
+  - {left: 4.0, right: 4.0, speed: 0.5}
 
-  # Turn 90° CCW (now facing +Y)
-  - {left: -0.183, right: 0.183}
+  # Turn 90 degrees CW (now facing -Y)
+  - {left: 0.183, right: -0.183, speed: 0.4}
 
-  # Leg 4: 2m forward (now at x=10, y=8) - shortened to stay in bounds
-  - {left: 2.0, right: 2.0}
+  # Leg 4: 2m forward (now at x=10, y=8)
+  - {left: 2.0, right: 2.0, speed: 0.5}
 
-  # Turn 90° CW (now facing -X)
-  - {left: 0.183, right: -0.183}
+  # Turn 90 degrees CW (now facing -X)
+  - {left: 0.183, right: -0.183, speed: 0.4}
 
   # Leg 5: 4m forward (now at x=6, y=8)
-  - {left: 4.0, right: 4.0}
+  - {left: 4.0, right: 4.0, speed: 0.5}
 
-  # Turn 90° CCW (now facing -Y)
-  - {left: -0.183, right: 0.183}
+  # Turn 90 degrees CCW (now facing -Y)
+  - {left: -0.183, right: 0.183, speed: 0.4}
 
-  # Leg 6: 2m forward (final position)
-  - {left: 2.0, right: 2.0}
+  # Leg 6: 2m forward (final position at x=6, y=6)
+  - {left: 2.0, right: 2.0, speed: 0.5}
 
   # Total: 4+4+4+2+4+2 = 20m of travel

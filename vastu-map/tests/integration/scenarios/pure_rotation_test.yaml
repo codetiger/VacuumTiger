@@ -21,13 +21,13 @@ path:
   # turn_dist = wheel_base * theta / 2 = 0.233 * (pi/2) / 2 = 0.183m
 
   # 90 degrees CCW (turn left)
-  - {left: -0.183, right: 0.183}
+  - {left: -0.183, right: 0.183, speed: 0.4}
 
   # Another 90 degrees CCW (now at 180 degrees)
-  - {left: -0.183, right: 0.183}
+  - {left: -0.183, right: 0.183, speed: 0.4}
 
   # Another 90 degrees CCW (now at 270 degrees)
-  - {left: -0.183, right: 0.183}
+  - {left: -0.183, right: 0.183, speed: 0.4}
 
   # Final 90 degrees CCW (back to 0 degrees)
-  - {left: -0.183, right: 0.183}
+  - {left: -0.183, right: 0.183, speed: 0.4}

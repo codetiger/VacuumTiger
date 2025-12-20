@@ -15,28 +15,28 @@ start_pose:
   theta: 0.0
 
 path:
-  # Initial 360° rotation to scan surroundings
-  # 360° = 2π * 0.233 / 2 = 0.732m per wheel
-  - {left: -0.732, right: 0.732}
+  # Initial 360 degree rotation to scan surroundings
+  # 360 degrees = 2*pi * 0.233 / 2 = 0.732m per wheel
+  - {left: -0.732, right: 0.732, speed: 0.4}
 
   # Move forward 1m
-  - {left: 1.0, right: 1.0}
+  - {left: 1.0, right: 1.0, speed: 0.4}
 
-  # Turn right 90° and move
-  # 90° = π/2 * 0.233 / 2 = 0.183m
-  - {left: 0.183, right: -0.183}
-  - {left: 1.5, right: 1.5}
+  # Turn right 90 degrees and move
+  # 90 degrees = pi/2 * 0.233 / 2 = 0.183m
+  - {left: 0.183, right: -0.183, speed: 0.4}
+  - {left: 1.5, right: 1.5, speed: 0.4}
 
-  # Turn right 90° and move back
-  - {left: 0.183, right: -0.183}
-  - {left: 1.0, right: 1.0}
+  # Turn right 90 degrees and move back
+  - {left: 0.183, right: -0.183, speed: 0.4}
+  - {left: 1.0, right: 1.0, speed: 0.4}
 
   # Another rotation to scan
-  - {left: -0.732, right: 0.732}
+  - {left: -0.732, right: 0.732, speed: 0.4}
 
   # Explore other direction
-  - {left: 0.183, right: -0.183}
-  - {left: 2.0, right: 2.0}
+  - {left: 0.183, right: -0.183, speed: 0.4}
+  - {left: 2.0, right: 2.0, speed: 0.4}
 
   # Final rotation
-  - {left: -0.732, right: 0.732}
+  - {left: -0.732, right: 0.732, speed: 0.4}

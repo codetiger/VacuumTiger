@@ -1,8 +1,7 @@
-# Static Scan Test (Minimal Motion)
+# Static Scan Test
 #
-# Robot stays nearly stationary for ~5 seconds while continuously scanning.
-# Uses tiny forward movements (2cm each) to generate scan time.
-# Total movement: 50cm forward over 5 seconds (negligible for SLAM testing)
+# Robot stays stationary for 5 seconds while continuously scanning.
+# Uses the stop command for clean static observation.
 #
 # At 5Hz lidar rate, this produces ~25 scans.
 # Expected: Position error < 10cm, orientation error < 5 degrees
@@ -10,7 +9,7 @@
 # Use this to verify:
 # - Feature extraction consistency
 # - ICP convergence behavior
-# - Map building accuracy without significant motion
+# - Map building accuracy without motion
 
 name: "static_scan_5s"
 map: "maps/medium_room.yaml"
@@ -21,32 +20,5 @@ start_pose:
   theta: 0.0  # Facing right (+X), center of 8m x 8m room
 
 path:
-  # 25 segments × 0.02m = 0.5m total movement
-  # Each segment: duration = 0.02m / 0.2m/s = 0.1s
-  # Total duration: 25 × 0.1s = 2.5s (~12-13 lidar scans)
-  # Double the segments for ~5s and ~25 scans
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
-  - {left: 0.04, right: 0.04}
+  # Stay stationary for 5 seconds
+  - {stop: 5.0}
