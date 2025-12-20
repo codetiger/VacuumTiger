@@ -5,17 +5,13 @@
 
 use vastu_map::core::Pose2D;
 
-/// Odometry noise/drift configuration.
+/// Odometry drift configuration.
 #[derive(Clone, Debug)]
 pub struct OdometryConfig {
     /// Systematic drift per meter traveled (e.g., 0.02 = 2% drift)
     pub drift_per_meter: f32,
     /// Angular drift per radian rotated
     pub angular_drift_per_rad: f32,
-    /// Random position noise standard deviation (meters)
-    pub position_noise_stddev: f32,
-    /// Random angular noise standard deviation (radians)
-    pub angular_noise_stddev: f32,
 }
 
 impl Default for OdometryConfig {
@@ -23,26 +19,14 @@ impl Default for OdometryConfig {
         Self {
             drift_per_meter: 0.0,
             angular_drift_per_rad: 0.0,
-            position_noise_stddev: 0.0,
-            angular_noise_stddev: 0.0,
         }
     }
 }
 
 impl OdometryConfig {
-    /// Create a clean odometry config with no drift or noise.
+    /// Create a clean odometry config with no drift.
     pub fn clean() -> Self {
         Self::default()
-    }
-
-    /// Create a noisy odometry config for testing robustness.
-    pub fn noisy() -> Self {
-        Self {
-            drift_per_meter: 0.02,        // 2% systematic drift
-            angular_drift_per_rad: 0.01,  // 1% angular drift
-            position_noise_stddev: 0.005, // 5mm random noise
-            angular_noise_stddev: 0.002,  // ~0.1 degree noise
-        }
     }
 }
 
@@ -146,38 +130,6 @@ impl OdometryEstimator {
         self.accumulated_pose.theta = normalize_angle(self.accumulated_pose.theta);
 
         self.accumulated_pose
-    }
-
-    /// Get the relative pose change since the last call to `relative_update`.
-    ///
-    /// This is useful for feeding to VectorMap::observe() which expects
-    /// relative odometry.
-    pub fn relative_update(&mut self, left_ticks: u16, right_ticks: u16) -> Pose2D {
-        let prev_pose = self.accumulated_pose;
-        let new_pose = self.update(left_ticks, right_ticks);
-
-        // Compute relative transformation
-        let dx = new_pose.x - prev_pose.x;
-        let dy = new_pose.y - prev_pose.y;
-        let dtheta = normalize_angle(new_pose.theta - prev_pose.theta);
-
-        // Transform back to robot frame (inverse rotation)
-        let cos_theta = prev_pose.theta.cos();
-        let sin_theta = prev_pose.theta.sin();
-        let dx_robot = dx * cos_theta + dy * sin_theta;
-        let dy_robot = -dx * sin_theta + dy * cos_theta;
-
-        Pose2D::new(dx_robot, dy_robot, dtheta)
-    }
-
-    /// Get the current accumulated pose estimate.
-    pub fn pose(&self) -> Pose2D {
-        self.accumulated_pose
-    }
-
-    /// Reset the odometry to a given pose.
-    pub fn reset(&mut self, pose: Pose2D) {
-        self.accumulated_pose = pose;
     }
 }
 

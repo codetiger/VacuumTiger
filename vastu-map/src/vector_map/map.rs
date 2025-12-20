@@ -1,7 +1,7 @@
 //! VectorMap: The main SLAM map implementation.
 
 use crate::core::{Bounds, Point2D, PointCloud2D, Pose2D};
-use crate::extraction::{detect_corners, extract_lines};
+use crate::extraction::{detect_corners, extract_lines, extract_lines_hybrid};
 use crate::features::{Corner2D, FeatureSet, Line2D};
 use crate::integration::{
     batch_merge, create_new_line, find_associations, find_unmatched_scan_lines,
@@ -322,8 +322,18 @@ impl VectorMap {
     fn extract_features(&self, scan_robot_frame: &PointCloud2D, pose: &Pose2D) -> FeatureSet {
         let points: Vec<Point2D> = scan_robot_frame.iter().collect();
 
-        // Extract lines in robot frame (preserves angular ordering for split-merge)
-        let lines_robot = extract_lines(&points, &self.config.extraction);
+        // Extract lines in robot frame
+        let lines_robot = if self.config.use_hybrid_extraction {
+            // Hybrid: RANSAC for dominant lines, then split-merge for remaining
+            extract_lines_hybrid(
+                &points,
+                &self.config.ransac_extraction,
+                &self.config.extraction,
+            )
+        } else {
+            // Default: split-merge (preserves angular ordering)
+            extract_lines(&points, &self.config.extraction)
+        };
 
         // Transform lines to world frame
         let lines_world: Vec<Line2D> = lines_robot.iter().map(|l| l.transform(pose)).collect();

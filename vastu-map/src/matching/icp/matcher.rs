@@ -13,7 +13,7 @@ use super::super::nearest_neighbor::{
 use super::super::ransac::RansacConfig;
 use super::super::ransac::estimate_pose_ransac;
 use super::super::scratch::IcpScratchSpace;
-use super::config::{CoarseSearchConfig, IcpConfig, OutlierRejection};
+use super::config::{CoarseSearchConfig, IcpConfig};
 
 /// Point-to-Line ICP matcher.
 ///
@@ -222,8 +222,9 @@ impl PointToLineIcp {
                 );
             }
 
-            // 2. Reject outliers
-            let filtered = self.reject_outliers(&correspondences, lines);
+            // 2. Filter by max distance and apply IRLS weights
+            let mut filtered = self.filter_by_max_distance(&correspondences);
+            self.apply_irls_weights(&mut filtered);
 
             if filtered.len() < self.config.min_correspondences {
                 return MatchResult::with_covariance(
@@ -237,7 +238,7 @@ impl PointToLineIcp {
                 );
             }
 
-            // 3. Optimize pose using Gauss-Newton (with covariance output)
+            // 3. Optimize pose using Gauss-Newton with weighted correspondences
             let gn_result = optimize_pose(&filtered, lines, Pose2D::identity(), &self.gn_config);
             final_covariance = gn_result.covariance;
             final_condition_number = gn_result.condition_number;
@@ -307,6 +308,17 @@ impl PointToLineIcp {
     ) -> MatchResult {
         if robot_frame_points.is_empty() || lines.is_empty() {
             return MatchResult::new(initial_pose, CorrespondenceSet::new(), 0, false);
+        }
+
+        // Use multi-resolution ICP if enabled
+        if self.config.multi_resolution.enabled {
+            return match_scan_multiresolution(
+                robot_frame_points,
+                lines,
+                initial_pose,
+                &self.config.multi_resolution,
+                &self.config,
+            );
         }
 
         // Convert lines to collection for batch operations
@@ -383,8 +395,10 @@ impl PointToLineIcp {
                 );
             }
 
-            // 2. Reject outliers
-            let filtered = self.reject_outliers(&correspondences, lines);
+            // 2. Filter by max distance and apply IRLS weights
+            // Note: Range-based weights already applied above via apply_weights()
+            let mut filtered = self.filter_by_max_distance(&correspondences);
+            self.apply_irls_weights(&mut filtered);
 
             if filtered.len() < self.config.min_correspondences {
                 return MatchResult::with_covariance(
@@ -398,7 +412,7 @@ impl PointToLineIcp {
                 );
             }
 
-            // 3. Optimize pose using Gauss-Newton (uses weighted correspondences)
+            // 3. Optimize pose using Gauss-Newton with weighted correspondences
             let gn_result = optimize_pose(&filtered, lines, Pose2D::identity(), &self.gn_config);
             final_covariance = gn_result.covariance;
             final_condition_number = gn_result.condition_number;
@@ -474,8 +488,6 @@ impl PointToLineIcp {
             return MatchResult::new(initial_pose, CorrespondenceSet::new(), 0, false);
         }
 
-        // Convert to Line2D for outlier rejection (uses Line2D methods)
-        let lines_vec = lines.to_lines();
         let mut pose = initial_pose;
         let mut prev_pose = pose;
         let mut final_correspondences = CorrespondenceSet::new();
@@ -513,9 +525,10 @@ impl PointToLineIcp {
                 );
             }
 
-            // 2. Get correspondences and reject outliers
+            // 2. Get correspondences, filter by distance, and apply IRLS weights
             let correspondences = scratch.correspondences();
-            let filtered = self.reject_outliers(correspondences, &lines_vec);
+            let mut filtered = self.filter_by_max_distance(correspondences);
+            self.apply_irls_weights(&mut filtered);
 
             if filtered.len() < self.config.min_correspondences {
                 return MatchResult::with_covariance(
@@ -529,7 +542,7 @@ impl PointToLineIcp {
                 );
             }
 
-            // 3. Optimize pose using fast Gauss-Newton (uses pre-computed normals)
+            // 3. Optimize pose using fast Gauss-Newton with weighted correspondences
             let gn_result =
                 optimize_pose_fast(&filtered, lines, Pose2D::identity(), &self.gn_config);
             final_covariance = gn_result.covariance;
@@ -596,24 +609,28 @@ impl PointToLineIcp {
         }
     }
 
-    /// Reject outliers from correspondences.
-    fn reject_outliers(
-        &self,
-        correspondences: &CorrespondenceSet,
-        lines: &[Line2D],
-    ) -> CorrespondenceSet {
-        match &self.config.outlier_rejection {
-            OutlierRejection::None => correspondences.clone(),
-            OutlierRejection::DistanceThreshold(threshold) => {
-                correspondences.filter_by_distance(*threshold)
-            }
-            OutlierRejection::Ransac(config) => {
-                match estimate_pose_ransac(correspondences, lines, config) {
-                    Some(result) => result.inliers,
-                    None => correspondences.filter_by_distance(0.2),
-                }
-            }
+    /// Apply IRLS robust weights to correspondences.
+    ///
+    /// Multiplies each correspondence weight by a robust weight computed
+    /// from its residual (distance). This down-weights outliers softly
+    /// rather than removing them entirely.
+    fn apply_irls_weights(&self, correspondences: &mut CorrespondenceSet) {
+        if !self.config.use_irls || self.config.robust_cost.is_none() {
+            return;
         }
+
+        for corr in correspondences.iter_mut() {
+            let robust_weight = self.config.robust_cost.weight(corr.distance);
+            corr.weight *= robust_weight; // Multiply range-based weight with robust weight
+        }
+    }
+
+    /// Filter correspondences by max correspondence distance.
+    ///
+    /// This is a hard filter applied before IRLS weighting to remove
+    /// obviously bad correspondences (beyond max search distance).
+    fn filter_by_max_distance(&self, correspondences: &CorrespondenceSet) -> CorrespondenceSet {
+        correspondences.filter_by_distance(self.config.max_correspondence_distance)
     }
 }
 
@@ -648,10 +665,97 @@ pub fn match_scan_with_config(
     icp.match_scan(points, lines, initial_pose)
 }
 
+/// Match scan using multi-resolution (coarse-to-fine) ICP.
+///
+/// This method improves convergence by starting with subsampled points
+/// (coarse level) and progressively refining with more points (fine level).
+/// Useful when the initial pose guess may be poor.
+///
+/// # Arguments
+/// * `points` - Scan points in robot frame
+/// * `lines` - Map lines in world frame
+/// * `initial_pose` - Initial pose estimate
+/// * `multi_config` - Multi-resolution pyramid configuration
+/// * `icp_config` - Base ICP configuration (iterations overridden per level)
+///
+/// # Returns
+/// Match result with optimized pose from finest level.
+///
+/// # Example
+/// ```rust,ignore
+/// use vastu_map::matching::{match_scan_multiresolution, MultiResolutionConfig, IcpConfig};
+///
+/// let multi_config = MultiResolutionConfig::enabled()
+///     .with_levels(3)
+///     .with_iterations(vec![3, 5, 10]);
+/// let icp_config = IcpConfig::default();
+///
+/// let result = match_scan_multiresolution(
+///     &points, &lines, initial_pose, &multi_config, &icp_config
+/// );
+/// ```
+pub fn match_scan_multiresolution(
+    points: &[Point2D],
+    lines: &[Line2D],
+    initial_pose: Pose2D,
+    multi_config: &super::config::MultiResolutionConfig,
+    icp_config: &IcpConfig,
+) -> MatchResult {
+    if points.is_empty() || lines.is_empty() {
+        return MatchResult::new(initial_pose, CorrespondenceSet::new(), 0, false);
+    }
+
+    // If multi-resolution disabled, fall back to standard ICP
+    if !multi_config.enabled || multi_config.levels == 0 {
+        return match_scan_with_config(points, lines, initial_pose, icp_config.clone());
+    }
+
+    let mut pose = initial_pose;
+    let mut total_iterations = 0;
+    let mut final_result = None;
+
+    // Process from coarsest (level 0) to finest (level N-1)
+    for level in 0..multi_config.levels {
+        let subsample = multi_config.subsample_for_level(level);
+        let level_iterations = multi_config.iterations_for_level(level);
+
+        // Subsample points deterministically using step_by
+        let subsampled: Vec<Point2D> = points.iter().step_by(subsample.max(1)).copied().collect();
+
+        // Skip if too few points after subsampling
+        if subsampled.len() < icp_config.min_correspondences {
+            continue;
+        }
+
+        // Configure ICP for this level
+        let mut level_config = icp_config.clone();
+        level_config.max_iterations = level_iterations;
+
+        // Run ICP at this level
+        let icp = PointToLineIcp::with_config(level_config);
+        let result = icp.match_scan(&subsampled, lines, pose);
+
+        // Update pose for next level
+        pose = result.pose;
+        total_iterations += result.iterations;
+        final_result = Some(result);
+    }
+
+    // Return result from finest level (or initial if no levels ran)
+    match final_result {
+        Some(mut result) => {
+            result.iterations = total_iterations;
+            result
+        }
+        None => MatchResult::new(pose, CorrespondenceSet::new(), 0, false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::Point2D;
+    use crate::matching::RobustCostFunction;
     use approx::assert_relative_eq;
 
     fn make_room_lines() -> Vec<Line2D> {
@@ -764,7 +868,7 @@ mod tests {
     }
 
     #[test]
-    fn test_icp_with_ransac() {
+    fn test_icp_with_tukey_robust_cost() {
         let lines = make_room_lines();
         let mut points = make_scan_points_at_origin();
 
@@ -773,33 +877,37 @@ mod tests {
         points.push(Point2D::new(-10.0, -10.0));
         points.push(Point2D::new(5.0, -5.0));
 
+        // Use Tukey for aggressive outlier rejection (zero weight beyond cutoff)
         let config = IcpConfig::default()
-            .with_outlier_rejection(OutlierRejection::Ransac(RansacConfig::default()));
+            .with_robust_cost(RobustCostFunction::Tukey { c: 0.1 })
+            .with_irls(true);
 
         let icp = PointToLineIcp::with_config(config);
         let result = icp.match_scan(&points, &lines, Pose2D::identity());
 
-        // Should still converge despite outliers
+        // Should still converge despite outliers (they get zero weight)
         assert!(result.converged);
     }
 
     #[test]
-    fn test_icp_distance_threshold() {
+    fn test_icp_with_huber_robust_cost() {
         let lines = make_room_lines();
         let mut points = make_scan_points_at_origin();
 
         // Add outliers far from lines
         points.push(Point2D::new(0.0, 0.0)); // Center - far from all walls
 
-        let config =
-            IcpConfig::default().with_outlier_rejection(OutlierRejection::DistanceThreshold(0.5));
+        // Use Huber for soft outlier down-weighting
+        let config = IcpConfig::default()
+            .with_robust_cost(RobustCostFunction::Huber { delta: 0.03 })
+            .with_irls(true);
 
         let icp = PointToLineIcp::with_config(config);
         let result = icp.match_scan(&points, &lines, Pose2D::identity());
 
         assert!(result.converged);
-        // Center point should be filtered out
-        assert!(result.correspondences.len() < points.len());
+        // Outlier should have low weight but still be included
+        assert!(!result.correspondences.is_empty());
     }
 
     #[test]

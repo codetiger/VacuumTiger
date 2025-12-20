@@ -19,10 +19,12 @@
 
 use crate::config::LidarNoiseModel;
 use crate::core::Point2D;
-use crate::features::{Line2D, LineCollection};
+use crate::features::{Corner2D, Line2D, LineCollection};
 use crate::integration::SpatialIndex;
 
-use super::correspondence::{Correspondence, CorrespondenceSet};
+use super::correspondence::{
+    CornerCorrespondence, CornerCorrespondenceSet, Correspondence, CorrespondenceSet,
+};
 
 /// Configuration for nearest neighbor matching.
 ///
@@ -505,6 +507,151 @@ pub fn find_correspondences_with_angle(
     result
 }
 
+/// Configuration for corner correspondence matching.
+#[derive(Clone, Debug)]
+pub struct CornerMatchConfig {
+    /// Maximum distance from point to corner for a valid correspondence (meters).
+    /// Default: 0.15m (15cm)
+    pub max_distance: f32,
+
+    /// Whether to only keep the best correspondence per point.
+    /// Default: true
+    pub unique_per_point: bool,
+}
+
+impl Default for CornerMatchConfig {
+    fn default() -> Self {
+        Self {
+            max_distance: 0.15,
+            unique_per_point: true,
+        }
+    }
+}
+
+impl CornerMatchConfig {
+    /// Create a new configuration with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Builder-style setter for maximum distance.
+    pub fn with_max_distance(mut self, max_distance: f32) -> Self {
+        self.max_distance = max_distance;
+        self
+    }
+
+    /// Builder-style setter for unique per point.
+    pub fn with_unique_per_point(mut self, unique: bool) -> Self {
+        self.unique_per_point = unique;
+        self
+    }
+}
+
+/// Find correspondences between scan points and map corners.
+///
+/// Uses simple nearest-neighbor matching to associate scan points with
+/// map corners within a distance threshold.
+///
+/// # Arguments
+/// * `points` - Scan points in world frame (after initial pose transform)
+/// * `corners` - Map corners to match against
+/// * `config` - Matching configuration
+///
+/// # Returns
+/// Set of corner correspondences, where each point is matched to its
+/// nearest corner within the distance threshold.
+///
+/// # Example
+/// ```rust,ignore
+/// use vastu_map::matching::{find_corner_correspondences, CornerMatchConfig};
+///
+/// let corners = vec![/* map corners */];
+/// let points = vec![/* scan points in world frame */];
+/// let config = CornerMatchConfig::default();
+///
+/// let corrs = find_corner_correspondences(&points, &corners, &config);
+/// println!("Found {} corner matches", corrs.len());
+/// ```
+pub fn find_corner_correspondences(
+    points: &[Point2D],
+    corners: &[Corner2D],
+    config: &CornerMatchConfig,
+) -> CornerCorrespondenceSet {
+    if points.is_empty() || corners.is_empty() {
+        return CornerCorrespondenceSet::new();
+    }
+
+    let mut result = CornerCorrespondenceSet::with_capacity(corners.len().min(points.len()));
+    let max_dist_sq = config.max_distance * config.max_distance;
+
+    for (point_idx, &point) in points.iter().enumerate() {
+        let mut best_distance_sq = max_dist_sq;
+        let mut best_corner_idx: Option<usize> = None;
+
+        for (corner_idx, corner) in corners.iter().enumerate() {
+            let dx = point.x - corner.position.x;
+            let dy = point.y - corner.position.y;
+            let distance_sq = dx * dx + dy * dy;
+
+            if distance_sq < best_distance_sq {
+                best_distance_sq = distance_sq;
+                best_corner_idx = Some(corner_idx);
+
+                // Early exit if we find a very close match
+                if distance_sq < 0.001 {
+                    break;
+                }
+            }
+        }
+
+        if let Some(corner_idx) = best_corner_idx {
+            let distance = best_distance_sq.sqrt();
+            let corner = &corners[corner_idx];
+            result.push(CornerCorrespondence::new(
+                point_idx,
+                corner_idx,
+                point,
+                corner.position,
+                distance,
+            ));
+        }
+    }
+
+    result
+}
+
+/// Find corner correspondences with weighting based on range.
+///
+/// Similar to `find_corner_correspondences`, but applies weights based on
+/// the range from the sensor to each point using a lidar noise model.
+///
+/// # Arguments
+/// * `points` - Scan points in world frame
+/// * `robot_frame_points` - Original scan points in robot frame (for range computation)
+/// * `corners` - Map corners to match against
+/// * `config` - Matching configuration
+/// * `noise_model` - Lidar noise model for weight computation
+pub fn find_corner_correspondences_weighted(
+    points: &[Point2D],
+    robot_frame_points: &[Point2D],
+    corners: &[Corner2D],
+    config: &CornerMatchConfig,
+    noise_model: &LidarNoiseModel,
+) -> CornerCorrespondenceSet {
+    let mut result = find_corner_correspondences(points, corners, config);
+
+    // Apply weights based on range
+    for corr in result.iter_mut() {
+        if corr.point_idx < robot_frame_points.len() {
+            let p = robot_frame_points[corr.point_idx];
+            let range = (p.x * p.x + p.y * p.y).sqrt();
+            corr.weight = noise_model.weight(range);
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -908,5 +1055,94 @@ mod tests {
 
         // Should match all three lines (distances: 0.1, 0.0, 0.1)
         assert_eq!(corrs.len(), 3, "Should match all 3 parallel lines");
+    }
+
+    // === Corner correspondence tests ===
+
+    fn make_corner(x: f32, y: f32) -> Corner2D {
+        Corner2D::new(Point2D::new(x, y), 0, 1, std::f32::consts::FRAC_PI_2)
+    }
+
+    #[test]
+    fn test_find_corner_correspondences_basic() {
+        let corners = vec![
+            make_corner(0.0, 0.0),
+            make_corner(5.0, 0.0),
+            make_corner(5.0, 5.0),
+            make_corner(0.0, 5.0),
+        ];
+
+        // Point near corner 0
+        let points = vec![Point2D::new(0.05, 0.02)];
+
+        let config = CornerMatchConfig::default();
+        let corrs = find_corner_correspondences(&points, &corners, &config);
+
+        assert_eq!(corrs.len(), 1);
+        assert_eq!(corrs.correspondences[0].corner_idx, 0);
+        // Distance should be sqrt(0.05^2 + 0.02^2) ≈ 0.054
+        assert!(corrs.correspondences[0].distance < 0.06);
+    }
+
+    #[test]
+    fn test_find_corner_correspondences_multiple_points() {
+        let corners = vec![
+            make_corner(0.0, 0.0),
+            make_corner(5.0, 0.0),
+            make_corner(5.0, 5.0),
+            make_corner(0.0, 5.0),
+        ];
+
+        // Points near each corner
+        let points = vec![
+            Point2D::new(0.05, 0.02), // Near corner 0
+            Point2D::new(4.98, 0.01), // Near corner 1
+            Point2D::new(5.02, 4.97), // Near corner 2
+            Point2D::new(0.01, 5.03), // Near corner 3
+        ];
+
+        let config = CornerMatchConfig::default();
+        let corrs = find_corner_correspondences(&points, &corners, &config);
+
+        assert_eq!(corrs.len(), 4);
+        // Check that each point matched the expected corner
+        assert_eq!(corrs.correspondences[0].corner_idx, 0);
+        assert_eq!(corrs.correspondences[1].corner_idx, 1);
+        assert_eq!(corrs.correspondences[2].corner_idx, 2);
+        assert_eq!(corrs.correspondences[3].corner_idx, 3);
+    }
+
+    #[test]
+    fn test_find_corner_correspondences_no_match() {
+        let corners = vec![make_corner(0.0, 0.0)];
+        let points = vec![Point2D::new(1.0, 1.0)]; // Too far from corner
+
+        let config = CornerMatchConfig::default().with_max_distance(0.1);
+        let corrs = find_corner_correspondences(&points, &corners, &config);
+
+        assert!(corrs.is_empty());
+    }
+
+    #[test]
+    fn test_find_corner_correspondences_empty_inputs() {
+        let config = CornerMatchConfig::default();
+
+        // Empty points
+        let corrs1 = find_corner_correspondences(&[], &[make_corner(0.0, 0.0)], &config);
+        assert!(corrs1.is_empty());
+
+        // Empty corners
+        let corrs2 = find_corner_correspondences(&[Point2D::new(0.0, 0.0)], &[], &config);
+        assert!(corrs2.is_empty());
+    }
+
+    #[test]
+    fn test_corner_match_config_builder() {
+        let config = CornerMatchConfig::new()
+            .with_max_distance(0.2)
+            .with_unique_per_point(false);
+
+        assert_eq!(config.max_distance, 0.2);
+        assert!(!config.unique_per_point);
     }
 }

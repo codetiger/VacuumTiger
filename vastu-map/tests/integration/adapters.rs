@@ -3,7 +3,7 @@
 //! sangam-io's lidar simulator produces `Vec<(f32, f32, u8)>` which maps
 //! directly to vastu-map's `PolarScan.points` format.
 
-use vastu_map::core::{PointCloud2D, PolarScan, Pose2D};
+use vastu_map::core::{PointCloud2D, PolarScan};
 
 /// Convert lidar scan data from sangam-io format to vastu-map PointCloud2D.
 ///
@@ -42,11 +42,6 @@ pub fn lidar_to_point_cloud_full(
 ) -> PointCloud2D {
     let polar = PolarScan { points: lidar_data };
     polar.to_cartesian(min_quality, min_range, max_range)
-}
-
-/// Create a vastu-map Pose2D from physics state.
-pub fn physics_to_pose(x: f32, y: f32, theta: f32) -> Pose2D {
-    Pose2D::new(x, y, theta)
 }
 
 #[cfg(test)]

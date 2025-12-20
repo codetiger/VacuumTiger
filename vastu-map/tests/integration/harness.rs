@@ -46,6 +46,8 @@ pub struct HarnessConfig {
     pub dt: f32,
     /// Lidar scan interval (in simulation steps)
     pub lidar_interval: usize,
+    /// Fast mode: skip intermediate physics, run only at lidar rate (~22x speedup)
+    pub fast_mode: bool,
 }
 
 impl Default for HarnessConfig {
@@ -75,6 +77,7 @@ impl Default for HarnessConfig {
             max_range: 8.0,
             dt: 1.0 / 110.0,    // 110Hz simulation
             lidar_interval: 22, // ~5Hz lidar (110/22 = 5)
+            fast_mode: true,    // Skip physics substeps for faster tests
         }
     }
 }
@@ -135,20 +138,10 @@ pub struct ObservationRecord {
     pub truth_pose: Pose2D,
     /// Estimated pose from SLAM.
     pub slam_pose: Pose2D,
-    /// Simulation time at this observation.
-    pub sim_time: f32,
-    /// Observation index (0-based).
-    pub observation_idx: usize,
-    /// ICP iterations for this observation.
-    pub icp_iterations: usize,
-    /// Whether ICP converged.
-    pub icp_converged: bool,
     /// Match confidence (0.0-1.0).
     pub confidence: f32,
     /// Drift magnitude (translation error in meters).
     pub drift_translation: f32,
-    /// Drift magnitude (rotation error in radians).
-    pub drift_rotation: f32,
     /// Lidar scan at this observation (robot frame) - stored at intervals for visualization.
     pub scan: Option<vastu_map::core::PointCloud2D>,
 }
@@ -171,56 +164,19 @@ impl TrajectoryHistory {
         &mut self,
         truth_pose: Pose2D,
         slam_pose: Pose2D,
-        sim_time: f32,
-        icp_iterations: usize,
-        icp_converged: bool,
         confidence: f32,
         scan: Option<vastu_map::core::PointCloud2D>,
     ) {
         let drift_translation =
             ((truth_pose.x - slam_pose.x).powi(2) + (truth_pose.y - slam_pose.y).powi(2)).sqrt();
-        let drift_rotation = normalize_angle(truth_pose.theta - slam_pose.theta).abs();
 
         self.observations.push(ObservationRecord {
             truth_pose,
             slam_pose,
-            sim_time,
-            observation_idx: self.observations.len(),
-            icp_iterations,
-            icp_converged,
             confidence,
             drift_translation,
-            drift_rotation,
             scan,
         });
-    }
-
-    /// Get ground truth path as a list of poses.
-    pub fn ground_truth_path(&self) -> Vec<Pose2D> {
-        self.observations.iter().map(|o| o.truth_pose).collect()
-    }
-
-    /// Get estimated path as a list of poses.
-    pub fn estimated_path(&self) -> Vec<Pose2D> {
-        self.observations.iter().map(|o| o.slam_pose).collect()
-    }
-
-    /// Get maximum drift (translation error) across all observations.
-    pub fn max_drift(&self) -> f32 {
-        self.observations
-            .iter()
-            .map(|o| o.drift_translation)
-            .fold(0.0, f32::max)
-    }
-
-    /// Check if trajectory is empty.
-    pub fn is_empty(&self) -> bool {
-        self.observations.is_empty()
-    }
-
-    /// Get number of observations.
-    pub fn len(&self) -> usize {
-        self.observations.len()
     }
 }
 
@@ -306,25 +262,47 @@ impl TestHarness {
 
     /// Run a single path segment.
     fn run_segment(&mut self, segment: &PathSegment) {
-        let steps = (segment.duration / self.config.dt) as usize;
+        if self.config.fast_mode {
+            // Fast mode: skip intermediate physics, run only at lidar rate (~22x speedup)
+            // Each step covers the time of one lidar interval
+            let lidar_dt = self.config.dt * self.config.lidar_interval as f32;
+            let lidar_steps = (segment.duration / lidar_dt).max(1.0) as usize;
 
-        for _ in 0..steps {
-            // Update physics
-            self.physics.update(
-                self.config.dt,
-                segment.linear_vel,
-                segment.angular_vel,
-                &self.map,
-                &self.config.robot,
-            );
+            for _ in 0..lidar_steps {
+                // Single physics update covering the full lidar interval
+                self.physics.update(
+                    lidar_dt,
+                    segment.linear_vel,
+                    segment.angular_vel,
+                    &self.map,
+                    &self.config.robot,
+                );
 
-            self.tick_count += 1;
-            self.sim_time += self.config.dt;
-
-            // Generate lidar scan at configured interval
-            if self.tick_count >= self.config.lidar_interval {
-                self.tick_count = 0;
+                self.sim_time += lidar_dt;
                 self.process_lidar_scan();
+            }
+        } else {
+            // Normal mode: full physics simulation at configured rate
+            let steps = (segment.duration / self.config.dt) as usize;
+
+            for _ in 0..steps {
+                // Update physics
+                self.physics.update(
+                    self.config.dt,
+                    segment.linear_vel,
+                    segment.angular_vel,
+                    &self.map,
+                    &self.config.robot,
+                );
+
+                self.tick_count += 1;
+                self.sim_time += self.config.dt;
+
+                // Generate lidar scan at configured interval
+                if self.tick_count >= self.config.lidar_interval {
+                    self.tick_count = 0;
+                    self.process_lidar_scan();
+                }
             }
         }
     }
@@ -385,15 +363,8 @@ impl TestHarness {
             None
         };
 
-        self.trajectory.record(
-            current_truth,
-            result.pose,
-            self.sim_time,
-            result.icp_iterations,
-            result.icp_converged,
-            result.confidence,
-            scan_to_store,
-        );
+        self.trajectory
+            .record(current_truth, result.pose, result.confidence, scan_to_store);
 
         log::debug!(
             "Observation {}: truth=({:.2}, {:.2}, {:.1}°), slam=({:.2}, {:.2}, {:.1}°), conf={:.2}, icp_iters={}",

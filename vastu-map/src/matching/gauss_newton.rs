@@ -1,7 +1,12 @@
-//! Gauss-Newton solver for point-to-line ICP.
+//! Levenberg-Marquardt solver for point-to-line ICP.
 //!
 //! Solves the nonlinear least squares problem of finding the pose
 //! that minimizes the sum of squared point-to-line distances.
+//!
+//! Uses Levenberg-Marquardt algorithm for robust convergence. LM blends
+//! between Gauss-Newton (fast convergence near solution) and gradient
+//! descent (robust far from solution). Set `lm_initial_lambda = 0.0`
+//! to disable LM damping and use pure Gauss-Newton.
 //!
 //! # Performance
 //!
@@ -17,7 +22,10 @@ use crate::features::{Line2D, LineCollection};
 
 use super::correspondence::CorrespondenceSet;
 
-/// Configuration for Gauss-Newton solver.
+/// Configuration for Levenberg-Marquardt solver.
+///
+/// LM blends between Gauss-Newton and gradient descent for robust convergence.
+/// Set `lm_initial_lambda = 0.0` to disable LM damping (pure Gauss-Newton).
 #[derive(Clone, Debug)]
 pub struct GaussNewtonConfig {
     /// Maximum number of iterations.
@@ -41,6 +49,23 @@ pub struct GaussNewtonConfig {
     /// Regularization factor for ill-conditioned systems.
     /// Default: 1e-4
     pub regularization: f32,
+
+    /// Initial LM damping factor (λ).
+    /// Set to 0.0 to disable LM and use pure Gauss-Newton.
+    /// Default: 0.001
+    pub lm_initial_lambda: f32,
+
+    /// Factor to scale λ up (on bad step) or down (on good step).
+    /// Default: 10.0
+    pub lm_lambda_factor: f32,
+
+    /// Minimum λ value (floor after successful steps).
+    /// Default: 1e-7
+    pub lm_min_lambda: f32,
+
+    /// Maximum λ value (triggers failure if exceeded).
+    /// Default: 1e7
+    pub lm_max_lambda: f32,
 }
 
 impl Default for GaussNewtonConfig {
@@ -52,6 +77,11 @@ impl Default for GaussNewtonConfig {
             convergence_threshold_sq: convergence_threshold * convergence_threshold,
             min_eigenvalue_ratio: 1e-6,
             regularization: 1e-4,
+            // LM parameters
+            lm_initial_lambda: 0.001,
+            lm_lambda_factor: 10.0,
+            lm_min_lambda: 1e-7,
+            lm_max_lambda: 1e7,
         }
     }
 }
@@ -72,6 +102,19 @@ impl GaussNewtonConfig {
     pub fn with_convergence_threshold(mut self, threshold: f32) -> Self {
         self.convergence_threshold = threshold;
         self.convergence_threshold_sq = threshold * threshold;
+        self
+    }
+
+    /// Builder-style setter for initial LM lambda.
+    /// Set to 0.0 to disable LM (pure Gauss-Newton).
+    pub fn with_lm_lambda(mut self, lambda: f32) -> Self {
+        self.lm_initial_lambda = lambda;
+        self
+    }
+
+    /// Disable LM damping (use pure Gauss-Newton).
+    pub fn without_lm(mut self) -> Self {
+        self.lm_initial_lambda = 0.0;
         self
     }
 }
@@ -343,6 +386,91 @@ fn compute_covariance(
     (covariance, condition_number)
 }
 
+/// Compute covariance matrix with degrees-of-freedom correction.
+///
+/// Uses unbiased variance estimate: σ² = Σw·r² / (n - 3)
+/// where n is the number of correspondences and 3 is the number of parameters.
+fn compute_covariance_with_dof(
+    hessian: &[[f32; 3]; 3],
+    sum_weighted_sq_residuals: f32,
+    num_correspondences: usize,
+    regularization: f32,
+) -> (PoseCovariance, f32) {
+    // Degrees of freedom correction: n - 3 (3 parameters: x, y, theta)
+    let n = num_correspondences as f32;
+    let dof = (n - 3.0).max(1.0);
+
+    // Unbiased variance estimate
+    let sigma_sq = sum_weighted_sq_residuals / dof;
+
+    // Add regularization to diagonal
+    let mut h = *hessian;
+    h[0][0] += regularization;
+    h[1][1] += regularization;
+    h[2][2] += regularization;
+
+    // Compute determinant
+    let det = h[0][0] * (h[1][1] * h[2][2] - h[1][2] * h[2][1])
+        - h[0][1] * (h[1][0] * h[2][2] - h[1][2] * h[2][0])
+        + h[0][2] * (h[1][0] * h[2][1] - h[1][1] * h[2][0]);
+
+    if det.abs() < 1e-10 {
+        // Singular matrix - return identity covariance with high condition number
+        return (IDENTITY_COVARIANCE, f32::MAX);
+    }
+
+    let inv_det = 1.0 / det;
+
+    // Compute inverse (H⁻¹)
+    let inv = [
+        [
+            (h[1][1] * h[2][2] - h[1][2] * h[2][1]) * inv_det,
+            (h[0][2] * h[2][1] - h[0][1] * h[2][2]) * inv_det,
+            (h[0][1] * h[1][2] - h[0][2] * h[1][1]) * inv_det,
+        ],
+        [
+            (h[1][2] * h[2][0] - h[1][0] * h[2][2]) * inv_det,
+            (h[0][0] * h[2][2] - h[0][2] * h[2][0]) * inv_det,
+            (h[0][2] * h[1][0] - h[0][0] * h[1][2]) * inv_det,
+        ],
+        [
+            (h[1][0] * h[2][1] - h[1][1] * h[2][0]) * inv_det,
+            (h[0][1] * h[2][0] - h[0][0] * h[2][1]) * inv_det,
+            (h[0][0] * h[1][1] - h[0][1] * h[1][0]) * inv_det,
+        ],
+    ];
+
+    // Scale by unbiased variance to get covariance: Cov = σ² × H⁻¹
+    let covariance = [
+        [
+            sigma_sq * inv[0][0],
+            sigma_sq * inv[0][1],
+            sigma_sq * inv[0][2],
+        ],
+        [
+            sigma_sq * inv[1][0],
+            sigma_sq * inv[1][1],
+            sigma_sq * inv[1][2],
+        ],
+        [
+            sigma_sq * inv[2][0],
+            sigma_sq * inv[2][1],
+            sigma_sq * inv[2][2],
+        ],
+    ];
+
+    // Compute condition number
+    let diag_max = h[0][0].max(h[1][1]).max(h[2][2]);
+    let diag_min = h[0][0].min(h[1][1]).min(h[2][2]);
+    let condition_number = if diag_min > 1e-10 {
+        diag_max / diag_min
+    } else {
+        f32::MAX
+    };
+
+    (covariance, condition_number)
+}
+
 /// Solve a 3x3 linear system Ax = b using Cramer's rule.
 ///
 /// Returns None if the matrix is singular.
@@ -421,11 +549,19 @@ fn compute_residual(correspondences: &CorrespondenceSet, lines: &[Line2D], pose:
 // Fast versions using pre-computed LineCollection normals
 // ============================================================================
 
-/// Optimize pose using pre-computed normals (faster hot-path version).
+/// Optimize pose using Levenberg-Marquardt with pre-computed normals.
 ///
 /// This version uses `LineCollection` with pre-computed normals and inverse
 /// lengths, avoiding redundant sqrt computations in the inner loop.
-/// Also uses weighted least squares when correspondences have weights.
+/// Uses LM damping for robust convergence from poor initial guesses.
+///
+/// # Algorithm
+///
+/// LM adds damping (λI) to the Hessian diagonal:
+/// - Good step (error decreases): accept step, decrease λ
+/// - Bad step (error increases): reject step, increase λ
+///
+/// Set `config.lm_initial_lambda = 0.0` to disable LM (pure Gauss-Newton).
 ///
 /// # Performance
 ///
@@ -447,20 +583,30 @@ pub fn optimize_pose_fast(
         };
     }
 
+    // Pre-fetch normals for all lines used in correspondences
+    let (normal_xs, normal_ys) = lines.normals();
+    let inv_lengths = lines.inv_lengths();
+
     let mut pose = initial_pose;
     let mut converged = false;
     let mut iterations = 0;
     let mut final_hessian = [[0.0f32; 3]; 3];
+    let mut final_sum_weighted_sq = 0.0f32;
 
-    // Pre-fetch normals for all lines used in correspondences
-    let (normal_xs, normal_ys) = lines.normals();
-    let inv_lengths = lines.inv_lengths();
+    // LM state
+    let use_lm = config.lm_initial_lambda > 0.0;
+    let mut lambda = config.lm_initial_lambda;
+    let mut prev_residual = if use_lm {
+        compute_residual_fast(correspondences, lines, inv_lengths, &pose)
+    } else {
+        f32::MAX
+    };
 
     for iter in 0..config.max_iterations {
         iterations = iter + 1;
 
         // Build weighted linear system using pre-computed normals
-        let (h, g, residual) = build_linear_system_fast_weighted(
+        let (h, g, sum_weighted_sq, _sum_weights) = build_linear_system_fast_weighted_extended(
             correspondences,
             lines,
             normal_xs,
@@ -469,37 +615,77 @@ pub fn optimize_pose_fast(
             &pose,
         );
         final_hessian = h;
+        final_sum_weighted_sq = sum_weighted_sq;
+
+        // Add LM damping to Hessian diagonal
+        let mut h_damped = h;
+        if use_lm {
+            h_damped[0][0] += lambda;
+            h_damped[1][1] += lambda;
+            h_damped[2][2] += lambda;
+        }
 
         // Solve for Δx using direct 3x3 solve
-        let Some(delta) = solve_3x3(&h, &g, config.regularization) else {
+        let Some(delta) = solve_3x3(&h_damped, &g, config.regularization) else {
             break;
         };
 
-        // Update pose
-        pose.x += delta[0];
-        pose.y += delta[1];
-        pose.theta += delta[2];
-        pose.theta = crate::core::math::normalize_angle(pose.theta);
+        // Compute trial pose
+        let trial_pose = Pose2D::new(
+            pose.x + delta[0],
+            pose.y + delta[1],
+            crate::core::math::normalize_angle(pose.theta + delta[2]),
+        );
 
-        // Check convergence using squared comparison to avoid sqrt()
-        let delta_norm_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
-        if delta_norm_sq < config.convergence_threshold_sq {
-            converged = true;
-            break;
-        }
+        if use_lm {
+            // Evaluate step quality
+            let trial_residual =
+                compute_residual_fast(correspondences, lines, inv_lengths, &trial_pose);
 
-        if residual < config.convergence_threshold {
-            converged = true;
-            break;
+            if trial_residual < prev_residual {
+                // Good step - accept and decrease lambda
+                pose = trial_pose;
+                prev_residual = trial_residual;
+                lambda = (lambda / config.lm_lambda_factor).max(config.lm_min_lambda);
+
+                // Check convergence
+                let delta_norm_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+                if delta_norm_sq < config.convergence_threshold_sq {
+                    converged = true;
+                    break;
+                }
+            } else {
+                // Bad step - reject and increase lambda
+                lambda *= config.lm_lambda_factor;
+                if lambda > config.lm_max_lambda {
+                    // Failed to converge
+                    break;
+                }
+                // Don't update pose, try again with higher damping
+                continue;
+            }
+        } else {
+            // Pure Gauss-Newton (no LM damping)
+            pose = trial_pose;
+
+            // Check convergence
+            let delta_norm_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+            if delta_norm_sq < config.convergence_threshold_sq {
+                converged = true;
+                break;
+            }
         }
     }
 
     let final_residual = compute_residual_fast(correspondences, lines, inv_lengths, &pose);
 
-    // Compute covariance from inverse Hessian
-    let residual_variance = final_residual * final_residual;
-    let (covariance, condition_number) =
-        compute_covariance(&final_hessian, residual_variance, config.regularization);
+    // Compute covariance with DOF correction
+    let (covariance, condition_number) = compute_covariance_with_dof(
+        &final_hessian,
+        final_sum_weighted_sq,
+        correspondences.len(),
+        config.regularization,
+    );
 
     GaussNewtonResult {
         pose,
@@ -512,14 +698,15 @@ pub fn optimize_pose_fast(
 }
 
 /// Build weighted linear system using pre-computed normals.
-fn build_linear_system_fast_weighted(
+/// Returns (H, g, sum_weighted_sq_error, sum_weights) for covariance computation.
+fn build_linear_system_fast_weighted_extended(
     correspondences: &CorrespondenceSet,
     lines: &LineCollection,
     normal_xs: &[f32],
     normal_ys: &[f32],
     inv_lengths: &[f32],
     pose: &Pose2D,
-) -> ([[f32; 3]; 3], [f32; 3], f32) {
+) -> ([[f32; 3]; 3], [f32; 3], f32, f32) {
     let (sin, cos) = pose.theta.sin_cos();
 
     // Pre-compute -sin and -cos for Jacobian
@@ -585,13 +772,7 @@ fn build_linear_system_fast_weighted(
     h[2][0] = h[0][2];
     h[2][1] = h[1][2];
 
-    let rms_error = if sum_weights > 0.0 {
-        (sum_weighted_sq_error / sum_weights).sqrt()
-    } else {
-        0.0
-    };
-
-    (h, g, rms_error)
+    (h, g, sum_weighted_sq_error, sum_weights)
 }
 
 /// Compute RMS residual using pre-computed inverse lengths.

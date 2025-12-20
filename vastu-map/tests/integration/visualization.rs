@@ -38,10 +38,6 @@ mod colors {
     pub const LIDAR_SCAN: &str = "#56B4E9";
     /// Lidar scan history - lighter, semi-transparent
     pub const LIDAR_SCAN_HISTORY: &str = "#56B4E9";
-    /// High confidence - green
-    pub const CONFIDENCE_HIGH: &str = "#00FF00";
-    /// Low confidence - red
-    pub const CONFIDENCE_LOW: &str = "#FF0000";
 }
 
 /// Interval for displaying drift vectors (every Nth observation).
@@ -462,69 +458,6 @@ impl Visualizer {
         group
     }
 
-    /// Render the SLAM result to an SVG file (legacy method for backward compatibility).
-    pub fn render(
-        &self,
-        slam: &VectorMap,
-        map: &SimulationMap,
-        final_pose: Pose2D,
-        truth_pose: Pose2D,
-        last_scan: Option<&PointCloud2D>,
-    ) {
-        // Compute bounds from map
-        let map_width_m = map.width() as f32 * map.resolution();
-        let map_height_m = map.height() as f32 * map.resolution();
-
-        let width = (map_width_m * self.scale + 2.0 * self.margin) as i32;
-        let height = (map_height_m * self.scale + 2.0 * self.margin) as i32;
-
-        // Create document
-        let mut doc = Document::new()
-            .set("width", width)
-            .set("height", height)
-            .set("viewBox", (0, 0, width, height));
-
-        // Background
-        doc = doc.add(
-            Rectangle::new()
-                .set("x", 0)
-                .set("y", 0)
-                .set("width", width)
-                .set("height", height)
-                .set("fill", "white"),
-        );
-
-        // Map walls (gray)
-        let map_group = self.render_map_walls(map, height as f32);
-        doc = doc.add(map_group);
-
-        // Lidar scan points (cyan) - transformed to world frame using final pose
-        if let Some(scan) = last_scan {
-            let scan_group = self.render_lidar_scan(scan, final_pose, height as f32);
-            doc = doc.add(scan_group);
-        }
-
-        // Detected walls (blue solid)
-        let detected_group = self.render_detected(slam, height as f32);
-        doc = doc.add(detected_group);
-
-        // Poses
-        let pose_group = self.render_poses(final_pose, truth_pose, height as f32);
-        doc = doc.add(pose_group);
-
-        // Legend
-        let legend = self.render_legend(last_scan.is_some());
-        doc = doc.add(legend);
-
-        // Ensure output directory exists
-        if let Some(parent) = std::path::Path::new(&self.output_path).parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-
-        // Save
-        svg::save(&self.output_path, &doc).expect("Failed to save SVG");
-    }
-
     /// Render map walls by sampling the occupancy grid.
     fn render_map_walls(&self, map: &SimulationMap, svg_height: f32) -> Group {
         let mut group = Group::new().set("id", "map_walls");
@@ -625,23 +558,6 @@ impl Visualizer {
         ));
 
         group
-    }
-
-    fn render_legend(&self, has_scan: bool) -> Group {
-        let legend_text = if has_scan {
-            "Blue=Detected, Cyan=LidarScan, Gray=MapWalls, Green=TruePose, Red=EstimatedPose"
-        } else {
-            "Blue=Detected, Gray=MapWalls, Green=TruePose, Red=EstimatedPose"
-        };
-
-        Group::new().set("id", "legend").add(
-            Text::new(legend_text)
-                .set("x", 10)
-                .set("y", 20)
-                .set("font-size", 12)
-                .set("font-family", "monospace")
-                .set("fill", "black"),
-        )
     }
 
     fn transform_point(

@@ -220,6 +220,11 @@ impl CorrespondenceSet {
         self.correspondences.iter()
     }
 
+    /// Iterate over correspondences mutably.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Correspondence> {
+        self.correspondences.iter_mut()
+    }
+
     /// Apply weights to correspondences based on range using a noise model.
     ///
     /// The range for each correspondence is computed from the original robot-frame points
@@ -252,6 +257,166 @@ impl CorrespondenceSet {
     ) -> Self {
         self.apply_weights(robot_frame_points, noise_model);
         self
+    }
+}
+
+/// A correspondence between a scan point and a map corner.
+///
+/// Used for point-to-point constraints in ICP, which provide
+/// better angular accuracy than point-to-line constraints alone.
+#[derive(Clone, Copy, Debug)]
+pub struct CornerCorrespondence {
+    /// Index of the point in the scan.
+    pub point_idx: usize,
+    /// Index of the corner in the map.
+    pub corner_idx: usize,
+    /// The scan point position (in world frame after initial transform).
+    pub point: Point2D,
+    /// The map corner position.
+    pub corner: Point2D,
+    /// Distance from point to corner.
+    pub distance: f32,
+    /// Weight for this correspondence (1/σ² based on measurement uncertainty).
+    pub weight: f32,
+}
+
+impl CornerCorrespondence {
+    /// Create a new corner correspondence with default weight (1.0).
+    #[inline]
+    pub fn new(
+        point_idx: usize,
+        corner_idx: usize,
+        point: Point2D,
+        corner: Point2D,
+        distance: f32,
+    ) -> Self {
+        Self {
+            point_idx,
+            corner_idx,
+            point,
+            corner,
+            distance,
+            weight: 1.0,
+        }
+    }
+
+    /// Create a new corner correspondence with explicit weight.
+    #[inline]
+    pub fn with_weight(
+        point_idx: usize,
+        corner_idx: usize,
+        point: Point2D,
+        corner: Point2D,
+        distance: f32,
+        weight: f32,
+    ) -> Self {
+        Self {
+            point_idx,
+            corner_idx,
+            point,
+            corner,
+            distance,
+            weight,
+        }
+    }
+
+    /// Check if this is a valid correspondence (within distance threshold).
+    #[inline]
+    pub fn is_valid(&self, max_distance: f32) -> bool {
+        self.distance <= max_distance
+    }
+}
+
+/// Collection of corner correspondences for a scan match.
+#[derive(Clone, Debug, Default)]
+pub struct CornerCorrespondenceSet {
+    /// All corner correspondences found.
+    pub correspondences: Vec<CornerCorrespondence>,
+}
+
+impl CornerCorrespondenceSet {
+    /// Create a new empty corner correspondence set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create with capacity.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            correspondences: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Add a correspondence.
+    #[inline]
+    pub fn push(&mut self, corr: CornerCorrespondence) {
+        self.correspondences.push(corr);
+    }
+
+    /// Number of correspondences.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.correspondences.len()
+    }
+
+    /// Check if empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.correspondences.is_empty()
+    }
+
+    /// Filter correspondences by maximum distance.
+    pub fn filter_by_distance(&self, max_distance: f32) -> Self {
+        Self {
+            correspondences: self
+                .correspondences
+                .iter()
+                .filter(|c| c.distance <= max_distance)
+                .copied()
+                .collect(),
+        }
+    }
+
+    /// Get the mean correspondence distance.
+    pub fn mean_distance(&self) -> f32 {
+        if self.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = self.correspondences.iter().map(|c| c.distance).sum();
+        sum / self.len() as f32
+    }
+
+    /// Get the RMS (root mean square) correspondence distance.
+    pub fn rms_distance(&self) -> f32 {
+        if self.is_empty() {
+            return 0.0;
+        }
+        let sum_sq: f32 = self
+            .correspondences
+            .iter()
+            .map(|c| c.distance * c.distance)
+            .sum();
+        (sum_sq / self.len() as f32).sqrt()
+    }
+
+    /// Get the total weight of all correspondences.
+    pub fn total_weight(&self) -> f32 {
+        self.correspondences.iter().map(|c| c.weight).sum()
+    }
+
+    /// Clear all correspondences.
+    pub fn clear(&mut self) {
+        self.correspondences.clear();
+    }
+
+    /// Iterate over correspondences.
+    pub fn iter(&self) -> impl Iterator<Item = &CornerCorrespondence> {
+        self.correspondences.iter()
+    }
+
+    /// Iterate over correspondences mutably.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut CornerCorrespondence> {
+        self.correspondences.iter_mut()
     }
 }
 
@@ -463,5 +628,113 @@ mod tests {
         // confidence ≈ 0.82
         assert!(result.confidence > 0.5);
         assert!(result.is_good_match(0.3));
+    }
+
+    #[test]
+    fn test_corner_correspondence_new() {
+        let point = Point2D::new(1.0, 2.0);
+        let corner = Point2D::new(1.1, 2.05);
+        let corr = CornerCorrespondence::new(0, 1, point, corner, 0.1);
+
+        assert_eq!(corr.point_idx, 0);
+        assert_eq!(corr.corner_idx, 1);
+        assert_eq!(corr.distance, 0.1);
+        assert_eq!(corr.weight, 1.0);
+        assert!(corr.is_valid(0.15));
+        assert!(!corr.is_valid(0.05));
+    }
+
+    #[test]
+    fn test_corner_correspondence_with_weight() {
+        let point = Point2D::new(1.0, 2.0);
+        let corner = Point2D::new(1.1, 2.05);
+        let corr = CornerCorrespondence::with_weight(0, 1, point, corner, 0.1, 0.5);
+
+        assert_eq!(corr.weight, 0.5);
+    }
+
+    #[test]
+    fn test_corner_correspondence_set_statistics() {
+        let mut set = CornerCorrespondenceSet::new();
+        set.push(CornerCorrespondence::new(
+            0,
+            0,
+            Point2D::zero(),
+            Point2D::new(0.1, 0.0),
+            0.1,
+        ));
+        set.push(CornerCorrespondence::new(
+            1,
+            1,
+            Point2D::zero(),
+            Point2D::new(0.2, 0.0),
+            0.2,
+        ));
+        set.push(CornerCorrespondence::new(
+            2,
+            2,
+            Point2D::zero(),
+            Point2D::new(0.3, 0.0),
+            0.3,
+        ));
+
+        assert_eq!(set.len(), 3);
+        assert!(!set.is_empty());
+        assert!((set.mean_distance() - 0.2).abs() < 1e-6);
+
+        // RMS = sqrt((0.01 + 0.04 + 0.09) / 3) = sqrt(0.14/3) ≈ 0.216
+        assert!((set.rms_distance() - 0.216).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_corner_correspondence_set_filter() {
+        let mut set = CornerCorrespondenceSet::new();
+        set.push(CornerCorrespondence::new(
+            0,
+            0,
+            Point2D::zero(),
+            Point2D::new(0.05, 0.0),
+            0.05,
+        ));
+        set.push(CornerCorrespondence::new(
+            1,
+            1,
+            Point2D::zero(),
+            Point2D::new(0.15, 0.0),
+            0.15,
+        ));
+        set.push(CornerCorrespondence::new(
+            2,
+            2,
+            Point2D::zero(),
+            Point2D::new(0.25, 0.0),
+            0.25,
+        ));
+
+        let filtered = set.filter_by_distance(0.1);
+        assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn test_corner_correspondence_set_total_weight() {
+        let mut set = CornerCorrespondenceSet::new();
+        set.push(CornerCorrespondence::with_weight(
+            0,
+            0,
+            Point2D::zero(),
+            Point2D::new(0.1, 0.0),
+            0.1,
+            0.5,
+        ));
+        set.push(CornerCorrespondence::with_weight(
+            1,
+            1,
+            Point2D::zero(),
+            Point2D::new(0.2, 0.0),
+            0.2,
+            0.3,
+        ));
+
+        assert!((set.total_weight() - 0.8).abs() < 1e-6);
     }
 }

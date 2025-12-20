@@ -8,8 +8,9 @@
 //! - **Correspondence**: Types for point-to-line associations
 //! - **Nearest Neighbor**: Find correspondences by distance
 //! - **RANSAC**: Robust pose estimation with outlier rejection
-//! - **Gauss-Newton**: Nonlinear least squares optimization
-//! - **Point-to-Line ICP**: Full scan matching pipeline
+//! - **Gauss-Newton/Levenberg-Marquardt**: Nonlinear least squares optimization
+//! - **Robust Cost Functions**: M-estimators for outlier rejection (Huber, Cauchy, Tukey)
+//! - **Point-to-Line ICP**: Full scan matching pipeline with IRLS support
 //! - **Scratch Space**: Pre-allocated buffers for zero-allocation ICP
 //!
 //! # Usage
@@ -63,24 +64,28 @@ pub mod gauss_newton;
 pub mod icp;
 pub mod nearest_neighbor;
 pub mod ransac;
+pub mod robust;
 pub mod scratch;
 pub mod traits;
 
 // Re-export main types
 pub use correspondence::{
-    Correspondence, CorrespondenceSet, IDENTITY_COVARIANCE, MatchResult, PoseCovariance,
+    CornerCorrespondence, CornerCorrespondenceSet, Correspondence, CorrespondenceSet,
+    IDENTITY_COVARIANCE, MatchResult, PoseCovariance,
 };
 pub use gauss_newton::{GaussNewtonConfig, GaussNewtonResult, optimize_pose_fast};
 pub use nearest_neighbor::{
-    NearestNeighborConfig, find_correspondences, find_correspondences_batch,
+    CornerMatchConfig, NearestNeighborConfig, find_corner_correspondences,
+    find_corner_correspondences_weighted, find_correspondences, find_correspondences_batch,
     find_correspondences_spatial, find_correspondences_weighted, find_correspondences_with_angle,
 };
 // Re-export from icp submodule
 pub use icp::{
-    CoarseSearchConfig, IcpConfig, OutlierRejection, PointToLineIcp, match_scan,
-    match_scan_with_config,
+    CoarseSearchConfig, IcpConfig, MultiResolutionConfig, PointToLineIcp, match_scan,
+    match_scan_multiresolution, match_scan_with_config,
 };
 pub use ransac::{RansacConfig, RansacResult, estimate_pose_ransac};
+pub use robust::RobustCostFunction;
 pub use scratch::IcpScratchSpace;
 // Re-export traits
 pub use traits::ScanMatcher;

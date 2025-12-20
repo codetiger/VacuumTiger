@@ -1,6 +1,6 @@
 //! Configuration for VectorMap.
 
-use crate::extraction::{CornerConfig, SplitMergeConfig};
+use crate::extraction::{CornerConfig, RansacLineConfig, SplitMergeConfig};
 use crate::integration::{AssociationConfig, MergerConfig};
 use crate::loop_closure::LoopClosureConfig;
 use crate::matching::IcpConfig;
@@ -9,8 +9,18 @@ use crate::query::{FrontierConfig, OccupancyConfig};
 /// Configuration for VectorMap.
 #[derive(Clone, Debug)]
 pub struct VectorMapConfig {
-    /// Configuration for line extraction.
+    /// Configuration for line extraction (split-merge).
     pub extraction: SplitMergeConfig,
+
+    /// Configuration for RANSAC line extraction.
+    /// Used when `use_hybrid_extraction` is true.
+    pub ransac_extraction: RansacLineConfig,
+
+    /// Whether to use hybrid RANSAC + split-merge extraction.
+    /// When true, RANSAC extracts dominant lines first, then split-merge
+    /// processes remaining points. This is more robust to outliers.
+    /// Default: true
+    pub use_hybrid_extraction: bool,
 
     /// Configuration for corner detection.
     pub corner: CornerConfig,
@@ -52,6 +62,8 @@ impl Default for VectorMapConfig {
     fn default() -> Self {
         Self {
             extraction: SplitMergeConfig::default(),
+            ransac_extraction: RansacLineConfig::default(),
+            use_hybrid_extraction: true,
             corner: CornerConfig::default(),
             matching: IcpConfig::default(),
             association: AssociationConfig::default(),
@@ -190,6 +202,25 @@ impl VectorMapConfig {
     /// Builder-style setter for loop closure enabled.
     pub fn with_loop_closure_enabled(mut self, enabled: bool) -> Self {
         self.loop_closure_enabled = enabled;
+        self
+    }
+
+    /// Builder-style setter for hybrid RANSAC + split-merge extraction.
+    ///
+    /// When enabled, line extraction uses RANSAC to find dominant lines first,
+    /// then split-merge to process remaining points. This is more robust to
+    /// outliers and cluttered environments.
+    pub fn with_hybrid_extraction(mut self, enabled: bool) -> Self {
+        self.use_hybrid_extraction = enabled;
+        self
+    }
+
+    /// Builder-style setter for multi-resolution ICP.
+    ///
+    /// When enabled, scan matching uses coarse-to-fine matching with
+    /// subsampled point clouds for faster convergence from poor initial guesses.
+    pub fn with_multi_resolution_icp(mut self, enabled: bool) -> Self {
+        self.matching.multi_resolution.enabled = enabled;
         self
     }
 }

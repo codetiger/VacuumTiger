@@ -115,11 +115,13 @@ pub mod features;
 pub mod integration;
 pub mod loop_closure;
 pub mod matching;
+pub mod motion_model;
 pub mod query;
 pub mod simd;
 pub mod vector_map;
 
 // Re-export main types at crate root
+pub use motion_model::MotionModel;
 pub use vector_map::{VectorMap, VectorMapConfig};
 
 // Re-export extensibility traits
