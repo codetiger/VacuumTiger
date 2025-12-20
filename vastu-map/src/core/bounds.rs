@@ -1,4 +1,33 @@
-//! Bounding box type for map extents.
+//! Axis-aligned bounding box for spatial operations.
+//!
+//! [`Bounds`] represents a rectangular region in 2D space, commonly used for:
+//! - Map extent tracking (how large is the explored area)
+//! - Spatial queries (is a point inside a region)
+//! - Collision detection (do two regions overlap)
+//! - Viewport clipping (what's visible on screen)
+//!
+//! # Usage
+//!
+//! ```rust
+//! use vastu_map::core::{Bounds, Point2D};
+//!
+//! // Create bounds from corner points
+//! let bounds = Bounds::new(
+//!     Point2D::new(0.0, 0.0),   // min corner
+//!     Point2D::new(10.0, 8.0),  // max corner
+//! );
+//!
+//! // Query properties
+//! assert_eq!(bounds.width(), 10.0);
+//! assert_eq!(bounds.height(), 8.0);
+//! assert!(bounds.contains(Point2D::new(5.0, 4.0)));
+//!
+//! // Expand dynamically as robot explores
+//! let mut map_bounds = Bounds::empty();
+//! map_bounds.expand_to_include(Point2D::new(1.0, 1.0));
+//! map_bounds.expand_to_include(Point2D::new(-2.0, 3.0));
+//! // Now bounds: min=(-2, 1), max=(1, 3)
+//! ```
 
 use super::point::Point2D;
 

@@ -365,7 +365,7 @@ impl PointCloud2D {
         Some(Point2D::new(sum_x / n as f32, sum_y / n as f32))
     }
 
-    /// Convert to Vec<Point2D> (AoS layout).
+    /// Convert to `Vec<Point2D>` (AoS layout).
     pub fn to_points(&self) -> Vec<Point2D> {
         self.xs
             .iter()

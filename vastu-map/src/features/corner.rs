@@ -186,7 +186,7 @@ impl CornerCollection {
         }
     }
 
-    /// Convert to Vec<Corner2D>.
+    /// Convert to `Vec<Corner2D>`.
     pub fn to_corners(&self) -> Vec<Corner2D> {
         (0..self.len())
             .map(|i| {

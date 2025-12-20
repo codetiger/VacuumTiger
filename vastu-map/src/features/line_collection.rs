@@ -199,7 +199,7 @@ impl LineCollection {
         }
     }
 
-    /// Convert to Vec<Line2D>.
+    /// Convert to `Vec<Line2D>`.
     pub fn to_lines(&self) -> Vec<Line2D> {
         (0..self.len())
             .map(|i| {

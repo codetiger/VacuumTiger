@@ -53,7 +53,54 @@
 //! - [`matching`]: Scan-to-map matching algorithms (ICP, RANSAC)
 //! - [`integration`]: Map integration and merging
 //! - [`query`]: Map queries (raycast, occupancy, frontiers)
+//! - [`loop_closure`]: Loop closure detection with keyframes
 //! - [`vector_map`]: Main VectorMap implementation
+//!
+//! ## Data Flow
+//!
+//! ```text
+//!                          ┌─────────────────┐
+//!                          │   Lidar Scan    │
+//!                          │  (PolarScan)    │
+//!                          └────────┬────────┘
+//!                                   │ to_cartesian()
+//!                                   ▼
+//!                          ┌─────────────────┐
+//!                          │  PointCloud2D   │
+//!                          │   (SoA layout)  │
+//!                          └────────┬────────┘
+//!                                   │
+//!              ┌────────────────────┼────────────────────┐
+//!              │                    │                    │
+//!              ▼                    ▼                    ▼
+//!     ┌────────────────┐   ┌────────────────┐   ┌────────────────┐
+//!     │   Extraction   │   │    Matching    │   │  Loop Closure  │
+//!     │  (Split-Merge) │   │  (Point-Line   │   │  (Keyframes +  │
+//!     │                │   │      ICP)      │   │  Descriptors)  │
+//!     └───────┬────────┘   └───────┬────────┘   └───────┬────────┘
+//!             │                    │                    │
+//!             ▼                    ▼                    │
+//!     ┌────────────────┐   ┌────────────────┐           │
+//!     │  Lines/Corners │   │  Matched Pose  │           │
+//!     │  (FeatureSet)  │   │  + Confidence  │           │
+//!     └───────┬────────┘   └───────┬────────┘           │
+//!             │                    │                    │
+//!             └──────────┬─────────┘                    │
+//!                        │                              │
+//!                        ▼                              │
+//!               ┌────────────────┐                      │
+//!               │  Integration   │◄─────────────────────┘
+//!               │ (Merge/Add to  │   Loop constraints
+//!               │  VectorMap)    │
+//!               └───────┬────────┘
+//!                       │
+//!                       ▼
+//!               ┌────────────────┐
+//!               │   VectorMap    │──► Query (raycast, occupancy)
+//!               │   (Lines +     │──► Frontiers (exploration)
+//!               │   Corners)     │──► Path Planning
+//!               └────────────────┘
+//! ```
 //!
 //! ## Target Platform
 //!
