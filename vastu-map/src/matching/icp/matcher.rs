@@ -246,11 +246,13 @@ impl PointToLineIcp {
             pose = pose.compose(gn_result.pose);
 
             // 5. Check convergence
-            let delta_trans =
-                ((pose.x - prev_pose.x).powi(2) + (pose.y - prev_pose.y).powi(2)).sqrt();
+            // Using squared distance comparison to avoid sqrt()
+            let dx = pose.x - prev_pose.x;
+            let dy = pose.y - prev_pose.y;
+            let delta_trans_sq = dx * dx + dy * dy;
             let delta_rot = crate::core::math::angle_diff(pose.theta, prev_pose.theta).abs();
 
-            if delta_trans < self.config.convergence_threshold
+            if delta_trans_sq < self.config.convergence_threshold_sq
                 && delta_rot < self.config.convergence_threshold
             {
                 converged = true;
@@ -405,11 +407,13 @@ impl PointToLineIcp {
             pose = pose.compose(gn_result.pose);
 
             // 5. Check convergence
-            let delta_trans =
-                ((pose.x - prev_pose.x).powi(2) + (pose.y - prev_pose.y).powi(2)).sqrt();
+            // Using squared distance comparison to avoid sqrt()
+            let dx = pose.x - prev_pose.x;
+            let dy = pose.y - prev_pose.y;
+            let delta_trans_sq = dx * dx + dy * dy;
             let delta_rot = crate::core::math::angle_diff(pose.theta, prev_pose.theta).abs();
 
-            if delta_trans < self.config.convergence_threshold
+            if delta_trans_sq < self.config.convergence_threshold_sq
                 && delta_rot < self.config.convergence_threshold
             {
                 converged = true;
@@ -535,11 +539,13 @@ impl PointToLineIcp {
             pose = pose.compose(gn_result.pose);
 
             // 5. Check convergence
-            let delta_trans =
-                ((pose.x - prev_pose.x).powi(2) + (pose.y - prev_pose.y).powi(2)).sqrt();
+            // Using squared distance comparison to avoid sqrt()
+            let dx = pose.x - prev_pose.x;
+            let dy = pose.y - prev_pose.y;
+            let delta_trans_sq = dx * dx + dy * dy;
             let delta_rot = crate::core::math::angle_diff(pose.theta, prev_pose.theta).abs();
 
-            if delta_trans < self.config.convergence_threshold
+            if delta_trans_sq < self.config.convergence_threshold_sq
                 && delta_rot < self.config.convergence_threshold
             {
                 converged = true;

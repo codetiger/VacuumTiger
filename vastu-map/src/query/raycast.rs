@@ -101,17 +101,59 @@ pub fn raycast_detailed(
 /// Cast a ray using spatial index for efficiency.
 ///
 /// Uses the spatial index to only test lines in the ray's path.
+/// This is O(log n + k) where k is the number of candidate lines,
+/// compared to O(n) for the brute-force version.
 pub fn raycast_indexed(
     origin: Point2D,
     direction: Point2D,
     max_range: f32,
     lines: &[Line2D],
-    _index: &SpatialIndex,
+    index: &SpatialIndex,
 ) -> RaycastResult {
-    // For now, fall back to linear scan
-    // A more efficient implementation would use the R-tree to
-    // find candidate lines along the ray path
-    raycast_detailed(origin, direction, max_range, lines)
+    use crate::core::Bounds;
+
+    if lines.is_empty() {
+        return RaycastResult::miss(max_range);
+    }
+
+    let dir = direction.normalized();
+    let end_point = origin + dir * max_range;
+
+    // Compute the bounding box of the ray
+    let min_x = origin.x.min(end_point.x);
+    let max_x = origin.x.max(end_point.x);
+    let min_y = origin.y.min(end_point.y);
+    let max_y = origin.y.max(end_point.y);
+
+    // Query the spatial index for candidate lines
+    let bounds = Bounds::new(Point2D::new(min_x, min_y), Point2D::new(max_x, max_y));
+    let candidates = index.lines_in_bounds(&bounds);
+
+    if candidates.is_empty() {
+        return RaycastResult::miss(max_range);
+    }
+
+    // Test only candidate lines
+    let mut closest_dist = max_range;
+    let mut closest_line: Option<usize> = None;
+    let mut closest_point: Option<Point2D> = None;
+
+    for &idx in &candidates {
+        if let Some(line) = lines.get(idx)
+            && let Some(t) = line.ray_intersection(origin, dir)
+            && t > 0.0
+            && t < closest_dist
+        {
+            closest_dist = t;
+            closest_line = Some(idx);
+            closest_point = Some(origin + dir * t);
+        }
+    }
+
+    match closest_line {
+        Some(idx) => RaycastResult::hit(closest_dist, idx, closest_point.unwrap()),
+        None => RaycastResult::miss(max_range),
+    }
 }
 
 /// Cast multiple rays (e.g., for simulating a lidar).
@@ -324,5 +366,61 @@ mod tests {
 
         // Line is behind, should not hit
         assert_eq!(dist, 100.0);
+    }
+
+    #[test]
+    fn test_raycast_indexed_hit() {
+        let lines = make_room();
+        let index = SpatialIndex::new(&lines);
+        let origin = Point2D::zero();
+        let direction = Point2D::new(1.0, 0.0); // East
+
+        let result = raycast_indexed(origin, direction, 100.0, &lines, &index);
+
+        // Should hit right wall at x=5
+        assert!(result.hit);
+        assert_relative_eq!(result.distance, 5.0, epsilon = 0.01);
+        assert_eq!(result.line_idx, Some(1)); // Right wall
+    }
+
+    #[test]
+    fn test_raycast_indexed_miss() {
+        let lines = vec![Line2D::new(
+            Point2D::new(10.0, 0.0),
+            Point2D::new(10.0, 10.0),
+        )];
+        let index = SpatialIndex::new(&lines);
+        let origin = Point2D::zero();
+        let direction = Point2D::new(-1.0, 0.0); // West (away from line)
+
+        let result = raycast_indexed(origin, direction, 5.0, &lines, &index);
+
+        // Should miss (line is behind)
+        assert!(!result.hit);
+        assert_eq!(result.distance, 5.0);
+    }
+
+    #[test]
+    fn test_raycast_indexed_matches_brute_force() {
+        let lines = make_room();
+        let index = SpatialIndex::new(&lines);
+
+        // Test several directions
+        let origin = Point2D::zero();
+        let directions = [
+            Point2D::new(1.0, 0.0),              // East
+            Point2D::new(-1.0, 0.0),             // West
+            Point2D::new(0.0, 1.0),              // North
+            Point2D::new(0.0, -1.0),             // South
+            Point2D::new(1.0, 1.0).normalized(), // NE
+        ];
+
+        for dir in &directions {
+            let brute = raycast_detailed(origin, *dir, 100.0, &lines);
+            let indexed = raycast_indexed(origin, *dir, 100.0, &lines, &index);
+
+            assert_eq!(brute.hit, indexed.hit);
+            assert_relative_eq!(brute.distance, indexed.distance, epsilon = 0.01);
+        }
     }
 }

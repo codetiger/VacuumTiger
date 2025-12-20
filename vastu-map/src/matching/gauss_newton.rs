@@ -29,6 +29,10 @@ pub struct GaussNewtonConfig {
     /// Default: 1e-6
     pub convergence_threshold: f32,
 
+    /// Pre-computed squared convergence threshold for efficient comparison.
+    /// Avoids sqrt() in hot loop.
+    pub(crate) convergence_threshold_sq: f32,
+
     /// Minimum eigenvalue ratio for matrix conditioning.
     /// If smallest/largest eigenvalue < ratio, add regularization.
     /// Default: 1e-6
@@ -41,9 +45,11 @@ pub struct GaussNewtonConfig {
 
 impl Default for GaussNewtonConfig {
     fn default() -> Self {
+        let convergence_threshold = 1e-6;
         Self {
             max_iterations: 20,
-            convergence_threshold: 1e-6,
+            convergence_threshold,
+            convergence_threshold_sq: convergence_threshold * convergence_threshold,
             min_eigenvalue_ratio: 1e-6,
             regularization: 1e-4,
         }
@@ -65,6 +71,7 @@ impl GaussNewtonConfig {
     /// Builder-style setter for convergence threshold.
     pub fn with_convergence_threshold(mut self, threshold: f32) -> Self {
         self.convergence_threshold = threshold;
+        self.convergence_threshold_sq = threshold * threshold;
         self
     }
 }
@@ -155,9 +162,9 @@ pub fn optimize_pose(
         pose.theta += delta[2];
         pose.theta = crate::core::math::normalize_angle(pose.theta);
 
-        // Check convergence
-        let delta_norm = (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt();
-        if delta_norm < config.convergence_threshold {
+        // Check convergence using squared comparison to avoid sqrt()
+        let delta_norm_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+        if delta_norm_sq < config.convergence_threshold_sq {
             converged = true;
             break;
         }
@@ -474,9 +481,9 @@ pub fn optimize_pose_fast(
         pose.theta += delta[2];
         pose.theta = crate::core::math::normalize_angle(pose.theta);
 
-        // Check convergence
-        let delta_norm = (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt();
-        if delta_norm < config.convergence_threshold {
+        // Check convergence using squared comparison to avoid sqrt()
+        let delta_norm_sq = delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2];
+        if delta_norm_sq < config.convergence_threshold_sq {
             converged = true;
             break;
         }

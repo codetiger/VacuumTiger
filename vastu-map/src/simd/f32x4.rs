@@ -213,6 +213,55 @@ impl Float4 {
     pub fn horizontal_max(self) -> f32 {
         self.0[0].max(self.0[1]).max(self.0[2]).max(self.0[3])
     }
+
+    /// Element-wise absolute value.
+    ///
+    /// Returns a new vector where each element is the absolute value of
+    /// the corresponding element in `self`.
+    ///
+    /// This is equivalent to NEON's `vabsq_f32` intrinsic.
+    ///
+    /// # Example
+    /// ```
+    /// use vastu_map::simd::Float4;
+    /// let v = Float4::new([-1.0, 2.0, -3.0, 4.0]);
+    /// let abs = v.abs();
+    /// assert_eq!(abs.to_array(), [1.0, 2.0, 3.0, 4.0]);
+    /// ```
+    #[inline(always)]
+    pub fn abs(self) -> Self {
+        Self([
+            self.0[0].abs(),
+            self.0[1].abs(),
+            self.0[2].abs(),
+            self.0[3].abs(),
+        ])
+    }
+
+    /// Element-wise reciprocal (1.0 / x).
+    ///
+    /// Returns a new vector where each element is the reciprocal of
+    /// the corresponding element in `self`.
+    ///
+    /// On ARM NEON, this maps to `vrecpeq_f32` + `vrecpsq_f32` for
+    /// fast approximation with refinement.
+    ///
+    /// # Example
+    /// ```
+    /// use vastu_map::simd::Float4;
+    /// let v = Float4::new([1.0, 2.0, 4.0, 8.0]);
+    /// let recip = v.recip();
+    /// assert_eq!(recip.to_array(), [1.0, 0.5, 0.25, 0.125]);
+    /// ```
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        Self([
+            1.0 / self.0[0],
+            1.0 / self.0[1],
+            1.0 / self.0[2],
+            1.0 / self.0[3],
+        ])
+    }
 }
 
 impl Add for Float4 {
@@ -423,5 +472,32 @@ mod tests {
 
         assert_eq!(new_xs.to_array(), [0.0, 0.0, 0.0, 0.0]);
         assert_eq!(new_ys.to_array(), [1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_abs() {
+        let v = Float4::new([-1.0, 2.0, -3.0, 4.0]);
+        let abs = v.abs();
+        assert_eq!(abs.to_array(), [1.0, 2.0, 3.0, 4.0]);
+
+        // Test with all negative
+        let all_neg = Float4::new([-1.0, -2.0, -3.0, -4.0]);
+        assert_eq!(all_neg.abs().to_array(), [1.0, 2.0, 3.0, 4.0]);
+
+        // Test with zeros
+        let with_zeros = Float4::new([0.0, -0.0, 0.0, -0.0]);
+        let abs_zeros = with_zeros.abs().to_array();
+        assert!(abs_zeros.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn test_recip() {
+        let v = Float4::new([1.0, 2.0, 4.0, 8.0]);
+        let recip = v.recip();
+        assert_eq!(recip.to_array(), [1.0, 0.5, 0.25, 0.125]);
+
+        // Test with negative values
+        let neg = Float4::new([-1.0, -2.0, -4.0, -8.0]);
+        assert_eq!(neg.recip().to_array(), [-1.0, -0.5, -0.25, -0.125]);
     }
 }

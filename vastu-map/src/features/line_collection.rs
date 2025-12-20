@@ -284,12 +284,10 @@ impl LineCollection {
             let cross = to_px * dy - to_py * dx;
 
             // Distance = |cross| * inv_length (no sqrt needed!)
-            let cross_arr = cross.to_array();
-            let inv_len_arr = inv_len.to_array();
-
-            for j in 0..4 {
-                distances[base + j] = cross_arr[j].abs() * inv_len_arr[j];
-            }
+            // Using SIMD abs() for better vectorization
+            let abs_cross = cross.abs();
+            let dist_4 = abs_cross * inv_len;
+            distances[base..base + 4].copy_from_slice(&dist_4.to_array());
         }
 
         // Handle remainder (scalar) using pre-computed values
@@ -494,12 +492,10 @@ impl LineCollection {
             let cross = to_px * dy - to_py * dx;
 
             // Distance = |cross| * inv_length (no sqrt needed!)
-            let cross_arr = cross.to_array();
-            let inv_len_arr = inv_len.to_array();
-
-            for j in 0..4 {
-                buffer[base + j] = cross_arr[j].abs() * inv_len_arr[j];
-            }
+            // Using SIMD abs() for better vectorization
+            let abs_cross = cross.abs();
+            let dist_4 = abs_cross * inv_len;
+            buffer[base..base + 4].copy_from_slice(&dist_4.to_array());
         }
 
         // Handle remainder (scalar) using pre-computed values

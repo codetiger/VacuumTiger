@@ -16,6 +16,10 @@ pub struct IcpConfig {
     /// Default: 1e-4
     pub convergence_threshold: f32,
 
+    /// Pre-computed squared convergence threshold for efficient comparison.
+    /// Avoids sqrt() in hot loop by comparing squared distances.
+    pub(crate) convergence_threshold_sq: f32,
+
     /// Maximum correspondence distance (meters).
     /// Points farther than this from all lines are rejected.
     /// Default: 0.5m
@@ -68,9 +72,11 @@ pub enum OutlierRejection {
 
 impl Default for IcpConfig {
     fn default() -> Self {
+        let convergence_threshold = 1e-4;
         Self {
             max_iterations: 30,
-            convergence_threshold: 1e-4,
+            convergence_threshold,
+            convergence_threshold_sq: convergence_threshold * convergence_threshold,
             max_correspondence_distance: 0.5,
             outlier_rejection: OutlierRejection::DistanceThreshold(0.15),
             min_correspondences: 10,
@@ -99,6 +105,7 @@ impl IcpConfig {
     /// Builder-style setter for convergence threshold.
     pub fn with_convergence_threshold(mut self, threshold: f32) -> Self {
         self.convergence_threshold = threshold;
+        self.convergence_threshold_sq = threshold * threshold;
         self
     }
 
