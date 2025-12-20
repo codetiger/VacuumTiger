@@ -3,17 +3,60 @@
 //! This module provides descriptors for corners and scans that enable
 //! matching between different observations of the same place.
 //!
+//! # Geometric Concept: Shape Context Descriptors
+//!
+//! Shape context is a rich descriptor for 2D shapes that captures the spatial
+//! distribution of features relative to a reference point. This implementation
+//! adapts the technique for line-based SLAM.
+//!
+//! ## How It Works
+//!
+//! Given a corner point, we examine all lines within a radius and build histograms:
+//!
+//! ```text
+//!                    Angle Bins (8 bins, 45° each)
+//!
+//!                         bin 1
+//!                          │
+//!                   bin 0  │  bin 2
+//!                     ╲    │    ╱
+//!                      ╲   │   ╱
+//!                bin 7 ─── ● ─── bin 3    ← Corner position
+//!                      ╱   │   ╲
+//!                     ╱    │    ╲
+//!                   bin 6  │  bin 4
+//!                          │
+//!                        bin 5
+//!
+//!    Distance Bins (4 bins)
+//!    ┌─────┬─────┬─────┬─────────────┐
+//!    │0-0.5│0.5-1│1-2m │   2+m       │
+//!    └─────┴─────┴─────┴─────────────┘
+//! ```
+//!
+//! ## Matching
+//!
+//! Two corners are similar if their histograms are similar, regardless of
+//! the corner's absolute position or orientation. This enables recognizing
+//! the same place from different viewpoints.
+//!
+//! ## Distance Metric
+//!
+//! Chi-squared distance compares histograms: χ² = Σ (a_i - b_i)² / (a_i + b_i)
+//! - 0.0 = identical descriptors
+//! - Higher values = more different
+//!
 //! # Corner Descriptors
 //!
 //! Each corner is described by histograms of nearby line properties:
-//! - Angle histogram: orientation of nearby lines relative to corner
-//! - Distance histogram: distances to nearby lines
-//! - Length histogram: lengths of nearby lines
+//! - Angle histogram: orientation of nearby lines (8 bins, 45° each)
+//! - Distance histogram: distances to nearby lines (4 bins)
+//! - Length histogram: lengths of nearby lines (4 bins)
 //!
 //! # Scan Descriptors
 //!
 //! Aggregate descriptor for an entire scan, combining corner descriptors
-//! with global statistics.
+//! with global statistics (line count, corner count, total length).
 
 use crate::features::{Corner2D, Line2D};
 use std::f32::consts::PI;

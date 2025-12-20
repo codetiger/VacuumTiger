@@ -219,8 +219,47 @@ pub fn rank_frontiers(
 
 /// Compute "openness" score for a frontier using SIMD-optimized distance computation.
 ///
-/// Openness measures how much unknown space is in the direction
-/// perpendicular to the line at the frontier endpoint.
+/// # Geometric Concept: Openness Score
+///
+/// Openness measures how much unknown/unexplored space exists in the directions
+/// radiating from a frontier point. A frontier at a dead-end hallway has low openness,
+/// while a frontier at an open room entrance has high openness.
+///
+/// ## Algorithm
+///
+/// 1. **Determine outward direction**: For a frontier at the start of a line, the
+///    outward direction points opposite to the line direction. At the end of a line,
+///    it points along the line direction.
+///
+/// 2. **Cast probe points**: Three probe points are placed 2 meters from the frontier:
+///    - One in the outward direction (away from the line)
+///    - Two perpendicular to the line (left and right)
+///
+/// ```text
+///                    probe_left
+///                        •
+///                        |
+///     line endpoint ─────●─────• probe_outward
+///     (frontier)         |
+///                        •
+///                   probe_right
+/// ```
+///
+/// 3. **Check distances**: For each probe, compute the minimum distance to any map line.
+///    If the distance exceeds 1 meter, that direction is considered "open" (unexplored).
+///
+/// 4. **Score**: openness = (number of open probes) / 3.0
+///    - 0.0: All directions blocked by walls (dead end)
+///    - 0.33: One direction open
+///    - 0.67: Two directions open
+///    - 1.0: All directions open (wide open space)
+///
+/// ## Why This Matters
+///
+/// Frontiers with high openness are better exploration targets because:
+/// - They likely lead to larger unexplored areas
+/// - The robot has more maneuvering room
+/// - They're less likely to be false frontiers from noise
 fn compute_openness_simd(
     frontier: &Frontier,
     lines: &[Line2D],

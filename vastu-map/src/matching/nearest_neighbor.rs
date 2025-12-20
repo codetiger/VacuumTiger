@@ -25,16 +25,55 @@ use crate::integration::SpatialIndex;
 use super::correspondence::{Correspondence, CorrespondenceSet};
 
 /// Configuration for nearest neighbor matching.
+///
+/// # Geometric Concepts
+///
+/// ## Projection Parameter (t)
+///
+/// When a point P is matched against a line segment from A to B, we compute
+/// the projection parameter `t` where `t=0` means P projects onto A, and
+/// `t=1` means P projects onto B:
+///
+/// ```text
+///        P (point)
+///        |
+///        v  (perpendicular distance)
+///   A----+----B  (line segment)
+///   t=0  t=0.5  t=1
+/// ```
+///
+/// ## Projection Extension
+///
+/// The `max_projection_extension` parameter allows matching points that
+/// project slightly beyond the line endpoints. With extension=0.2:
+///
+/// ```text
+///   Valid projection range: [-0.2, 1.2]
+///
+///      |<-- 0.2 -->|<---- line ---->|<-- 0.2 -->|
+///   ---+===========A================B===========+---
+///     t=-0.2      t=0              t=1        t=1.2
+/// ```
+///
+/// This is useful because lidar points near corners may project just past
+/// the extracted line segment.
 #[derive(Clone, Debug)]
 pub struct NearestNeighborConfig {
-    /// Maximum distance for a valid correspondence (meters).
+    /// Maximum perpendicular distance for a valid correspondence (meters).
     /// Points farther than this from all lines are rejected.
     /// Default: 0.5m
     pub max_distance: f32,
 
-    /// Maximum projection parameter for valid correspondence.
-    /// Points whose projection falls outside [−extension, 1+extension] are rejected.
-    /// Default: 0.2 (allow 20% extension beyond endpoints)
+    /// Maximum projection extension beyond line endpoints.
+    ///
+    /// The projection parameter `t` normally ranges from 0 (at line start)
+    /// to 1 (at line end). This setting allows points to project up to
+    /// `extension` units beyond the endpoints:
+    /// - Valid range becomes `[-extension, 1+extension]`
+    /// - Value of 0.2 allows 20% extension beyond endpoints
+    /// - Value of 0.0 requires projection to fall exactly on the segment
+    ///
+    /// Default: 0.2
     pub max_projection_extension: f32,
 
     /// Whether to only keep the best correspondence per point.

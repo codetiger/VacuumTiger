@@ -75,6 +75,11 @@ pub mod vector_map;
 // Re-export main types at crate root
 pub use vector_map::{VectorMap, VectorMapConfig};
 
+// Re-export extensibility traits
+pub use extraction::{LineExtractor, SplitMergeExtractor};
+pub use loop_closure::LoopDetector;
+pub use matching::ScanMatcher;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Map Trait and Supporting Types
 // ─────────────────────────────────────────────────────────────────────────────

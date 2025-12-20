@@ -60,10 +60,11 @@
 
 pub mod correspondence;
 pub mod gauss_newton;
+pub mod icp;
 pub mod nearest_neighbor;
-pub mod point_to_line_icp;
 pub mod ransac;
 pub mod scratch;
+pub mod traits;
 
 // Re-export main types
 pub use correspondence::{
@@ -74,9 +75,12 @@ pub use nearest_neighbor::{
     NearestNeighborConfig, find_correspondences, find_correspondences_batch,
     find_correspondences_spatial, find_correspondences_weighted, find_correspondences_with_angle,
 };
-pub use point_to_line_icp::{
+// Re-export from icp submodule
+pub use icp::{
     CoarseSearchConfig, IcpConfig, OutlierRejection, PointToLineIcp, match_scan,
     match_scan_with_config,
 };
 pub use ransac::{RansacConfig, RansacResult, estimate_pose_ransac};
 pub use scratch::IcpScratchSpace;
+// Re-export traits
+pub use traits::ScanMatcher;

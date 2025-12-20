@@ -158,13 +158,32 @@ impl PointCloud2D {
         }
     }
 
-    /// Get a point by index (unchecked).
+    /// Get a point by index without bounds checking.
+    ///
+    /// This is useful in performance-critical loops where the caller
+    /// has already verified bounds (e.g., iterating with a known length).
     ///
     /// # Safety
-    /// Caller must ensure index is in bounds.
+    ///
+    /// The caller must ensure that `index < self.len()`. Violating this
+    /// invariant causes undefined behavior:
+    /// - In debug builds: May panic (depending on Vec implementation)
+    /// - In release builds: Reads from invalid memory locations
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let cloud = PointCloud2D::from_points(&[Point2D::new(1.0, 2.0)]);
+    /// let len = cloud.len();
+    /// for i in 0..len {
+    ///     // SAFETY: i is always < len, which equals cloud.len()
+    ///     let point = unsafe { cloud.get_unchecked(i) };
+    /// }
+    /// ```
     #[inline]
     pub unsafe fn get_unchecked(&self, index: usize) -> Point2D {
-        // SAFETY: Caller guarantees index is in bounds
+        // SAFETY: Caller guarantees index < self.len(), so both
+        // self.xs[index] and self.ys[index] are valid.
         unsafe { Point2D::new(*self.xs.get_unchecked(index), *self.ys.get_unchecked(index)) }
     }
 

@@ -26,6 +26,7 @@
 pub mod corner_detection;
 pub mod line_fitting;
 pub mod split_merge;
+pub mod traits;
 
 pub use corner_detection::{
     CornerConfig, deduplicate_corners, detect_all_corners, detect_corners,
@@ -35,6 +36,9 @@ pub use line_fitting::{
     compute_range_weights, fit_line, fit_line_from_sensor, fit_line_segment, fit_line_weighted,
     fitting_error, fitting_error_weighted, max_distance_point,
 };
+// Re-export from split_merge submodule
 pub use split_merge::{
     SplitMergeConfig, adaptive_split_threshold, extract_lines, extract_lines_from_sensor,
 };
+// Re-export traits
+pub use traits::{LineExtractor, SplitMergeExtractor};
