@@ -1,5 +1,7 @@
 //! VectorMap: The main SLAM map implementation.
 
+use std::time::Instant;
+
 use crate::core::{Bounds, Point2D, PointCloud2D, Pose2D};
 use crate::extraction::{detect_corners, extract_lines, extract_lines_hybrid};
 use crate::features::{Corner2D, FeatureSet, Line2D};
@@ -9,7 +11,7 @@ use crate::integration::{
 use crate::loop_closure::{LoopClosure, LoopClosureDetector};
 use crate::matching::PointToLineIcp;
 use crate::query::{detect_frontiers, query_occupancy, raycast};
-use crate::{Frontier, Map, ObserveResult, Occupancy, Path};
+use crate::{Frontier, Map, ObserveResult, Occupancy, Path, TimingBreakdown};
 
 use super::config::VectorMapConfig;
 use super::line_store::LineStore;
@@ -157,6 +159,9 @@ impl VectorMap {
     /// 3. Updates the map with new features (mapping)
     /// 4. Checks for loop closure (if enabled)
     fn process_scan(&mut self, scan: &PointCloud2D, odometry: Pose2D) -> ObserveResult {
+        let total_start = Instant::now();
+        let mut timing = TimingBreakdown::new();
+
         self.observation_count += 1;
 
         // If map is empty, use odometry and add all features
@@ -170,12 +175,14 @@ impl VectorMap {
         // Get robot-frame scan points for weighted ICP matching
         let robot_frame_points: Vec<Point2D> = scan.iter().collect();
 
-        // Try scan matching using persistent ICP matcher with weighted correspondences
+        // ─── ICP Matching ───
+        let icp_start = Instant::now();
         let match_result = self.icp_matcher.match_scan_robot_frame(
             &robot_frame_points,
             self.line_store.lines(),
             predicted_pose,
         );
+        timing.icp_matching_us = icp_start.elapsed().as_micros() as u64;
 
         // Update ICP matcher's confidence state for adaptive coarse search triggering
         self.icp_matcher
@@ -234,23 +241,24 @@ impl VectorMap {
 
         self.current_pose = final_pose;
 
-        // Extract features from robot-frame scan, transform to world using final pose
-        let features = self.extract_features(scan, &final_pose);
+        // ─── Feature Extraction ───
+        let features = self.extract_features_timed(scan, &final_pose, &mut timing);
 
-        // Update map if mapping is enabled
+        // ─── Feature Integration ───
         let (features_added, features_merged) = if self.config.mapping_enabled {
-            self.integrate_features(&features)
+            self.integrate_features_timed(&features, &mut timing)
         } else {
             (0, 0)
         };
 
-        // Check for loop closure if enabled
+        // ─── Loop Closure ───
         let loop_closure_detected = if self.config.loop_closure_enabled {
+            let lc_start = Instant::now();
             let robot_points: Vec<Point2D> = scan.iter().collect();
             let feature_lines = features.lines();
             let feature_corners = features.corners();
 
-            if let Some(loop_closure) = self.loop_detector.process(
+            let detected = if let Some(loop_closure) = self.loop_detector.process(
                 final_pose,
                 &feature_lines,
                 &feature_corners,
@@ -260,10 +268,14 @@ impl VectorMap {
                 true
             } else {
                 false
-            }
+            };
+            timing.loop_closure_us = lc_start.elapsed().as_micros() as u64;
+            detected
         } else {
             false
         };
+
+        timing.total_us = total_start.elapsed().as_micros() as u64;
 
         ObserveResult {
             pose: final_pose,
@@ -274,15 +286,19 @@ impl VectorMap {
             icp_iterations,
             icp_converged,
             loop_closure_detected,
+            timing,
         }
     }
 
     /// Initialize map from first scan.
     fn initialize_from_scan(&mut self, scan: &PointCloud2D, odometry: Pose2D) -> ObserveResult {
+        let total_start = Instant::now();
+        let mut timing = TimingBreakdown::new();
+
         self.current_pose = odometry;
 
         // Extract features from robot-frame scan, transform to world using odometry
-        let features = self.extract_features(scan, &odometry);
+        let features = self.extract_features_timed(scan, &odometry, &mut timing);
 
         // Add all features to map
         let num_lines = features.lines().len();
@@ -295,6 +311,7 @@ impl VectorMap {
 
         // Initialize first keyframe if loop closure is enabled
         if self.config.loop_closure_enabled {
+            let lc_start = Instant::now();
             let robot_points: Vec<Point2D> = scan.iter().collect();
             let feature_lines = features.lines();
             let feature_corners = features.corners();
@@ -304,7 +321,10 @@ impl VectorMap {
                 &feature_corners,
                 &robot_points,
             );
+            timing.loop_closure_us = lc_start.elapsed().as_micros() as u64;
         }
+
+        timing.total_us = total_start.elapsed().as_micros() as u64;
 
         ObserveResult {
             pose: odometry,
@@ -315,14 +335,21 @@ impl VectorMap {
             icp_iterations: 0,
             icp_converged: false,
             loop_closure_detected: false,
+            timing,
         }
     }
 
-    /// Extract features from a scan.
-    fn extract_features(&self, scan_robot_frame: &PointCloud2D, pose: &Pose2D) -> FeatureSet {
+    /// Extract features from a scan with timing.
+    fn extract_features_timed(
+        &self,
+        scan_robot_frame: &PointCloud2D,
+        pose: &Pose2D,
+        timing: &mut TimingBreakdown,
+    ) -> FeatureSet {
         let points: Vec<Point2D> = scan_robot_frame.iter().collect();
 
-        // Extract lines in robot frame
+        // ─── Line Extraction ───
+        let line_start = Instant::now();
         let lines_robot = if self.config.use_hybrid_extraction {
             // Hybrid: RANSAC for dominant lines, then split-merge for remaining
             extract_lines_hybrid(
@@ -337,30 +364,40 @@ impl VectorMap {
 
         // Transform lines to world frame
         let lines_world: Vec<Line2D> = lines_robot.iter().map(|l| l.transform(pose)).collect();
+        timing.line_extraction_us = line_start.elapsed().as_micros() as u64;
 
-        // Extract corners from world-frame lines
+        // ─── Corner Detection ───
+        let corner_start = Instant::now();
         let corners = detect_corners(&lines_world, &self.config.corner);
+        timing.corner_detection_us = corner_start.elapsed().as_micros() as u64;
 
         FeatureSet::from_features(&lines_world, &corners)
     }
 
-    /// Integrate new features into the map.
-    fn integrate_features(&mut self, features: &FeatureSet) -> (usize, usize) {
+    /// Integrate new features into the map with timing.
+    fn integrate_features_timed(
+        &mut self,
+        features: &FeatureSet,
+        timing: &mut TimingBreakdown,
+    ) -> (usize, usize) {
         let scan_lines: Vec<Line2D> = features.lines().to_vec();
 
         if scan_lines.is_empty() {
             return (0, 0);
         }
 
-        // Find associations
+        // ─── Association ───
+        let assoc_start = Instant::now();
         let associations = find_associations(
             &scan_lines,
             self.line_store.lines(),
             Some(self.line_store.index()),
             &self.config.association,
         );
+        timing.association_us = assoc_start.elapsed().as_micros() as u64;
 
-        // Merge matched lines
+        // ─── Merging ───
+        let merge_start = Instant::now();
         let merged = batch_merge(
             &scan_lines,
             self.line_store.lines_mut(),
@@ -368,8 +405,10 @@ impl VectorMap {
             &self.config.merger,
         );
         let features_merged = merged.len();
+        timing.merging_us = merge_start.elapsed().as_micros() as u64;
 
-        // Find and add unmatched lines
+        // ─── New Features ───
+        let new_start = Instant::now();
         let unmatched = find_unmatched_scan_lines(
             &scan_lines,
             self.line_store.lines(),
@@ -389,6 +428,7 @@ impl VectorMap {
 
         // Update corners
         self.update_corners();
+        timing.new_features_us = new_start.elapsed().as_micros() as u64;
 
         (features_added, features_merged)
     }

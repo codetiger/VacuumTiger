@@ -187,6 +187,44 @@ impl Default for Path {
     }
 }
 
+/// Timing breakdown for a single observation (all times in microseconds).
+#[derive(Debug, Clone, Default)]
+pub struct TimingBreakdown {
+    /// Time spent on ICP matching (µs).
+    pub icp_matching_us: u64,
+    /// Time spent on line extraction (µs).
+    pub line_extraction_us: u64,
+    /// Time spent on corner detection (µs).
+    pub corner_detection_us: u64,
+    /// Time spent on line association (µs).
+    pub association_us: u64,
+    /// Time spent on line merging (µs).
+    pub merging_us: u64,
+    /// Time spent finding new features (µs).
+    pub new_features_us: u64,
+    /// Time spent on loop closure detection (µs).
+    pub loop_closure_us: u64,
+    /// Total observation time (µs).
+    pub total_us: u64,
+}
+
+impl TimingBreakdown {
+    /// Create a new timing breakdown with all zeros.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get total feature extraction time (line + corner).
+    pub fn extraction_total_us(&self) -> u64 {
+        self.line_extraction_us + self.corner_detection_us
+    }
+
+    /// Get total integration time (association + merging + new features).
+    pub fn integration_total_us(&self) -> u64 {
+        self.association_us + self.merging_us + self.new_features_us
+    }
+}
+
 /// Result of observing a scan.
 #[derive(Debug, Clone)]
 pub struct ObserveResult {
@@ -206,6 +244,8 @@ pub struct ObserveResult {
     pub icp_converged: bool,
     /// Whether a loop closure was detected.
     pub loop_closure_detected: bool,
+    /// Timing breakdown for this observation.
+    pub timing: TimingBreakdown,
 }
 
 impl ObserveResult {
@@ -220,6 +260,7 @@ impl ObserveResult {
             icp_iterations: 0,
             icp_converged: false,
             loop_closure_detected: false,
+            timing: TimingBreakdown::default(),
         }
     }
 }

@@ -23,23 +23,6 @@ pub fn lidar_to_point_cloud(
     min_range: f32,
     max_range: f32,
 ) -> PointCloud2D {
-    // Use full 360° scan data - the split-merge algorithm handles this correctly
-    // after the infinite recursion fix in split_recursive()
-    let polar = PolarScan { points: lidar_data };
-    polar.to_cartesian(min_quality, min_range, max_range)
-}
-
-/// Convert lidar scan data without subsampling (for testing with known small datasets).
-///
-/// # Warning
-/// Only use this with small point clouds (<100 points) or datasets that
-/// don't form continuous loops.
-pub fn lidar_to_point_cloud_full(
-    lidar_data: Vec<(f32, f32, u8)>,
-    min_quality: u8,
-    min_range: f32,
-    max_range: f32,
-) -> PointCloud2D {
     let polar = PolarScan { points: lidar_data };
     polar.to_cartesian(min_quality, min_range, max_range)
 }
@@ -50,15 +33,14 @@ mod tests {
     use std::f32::consts::FRAC_PI_2;
 
     #[test]
-    fn test_lidar_to_point_cloud_full() {
-        // Test the full (unfiltered) conversion
+    fn test_lidar_to_point_cloud() {
         let lidar_data = vec![
             (0.0, 1.0, 100),                 // Forward, 1m
             (FRAC_PI_2, 2.0, 100),           // Left, 2m
             (std::f32::consts::PI, 1.5, 50), // Behind, low quality
         ];
 
-        let cloud = lidar_to_point_cloud_full(lidar_data, 60, 0.1, 10.0);
+        let cloud = lidar_to_point_cloud(lidar_data, 60, 0.1, 10.0);
 
         // Third point filtered by quality
         assert_eq!(cloud.len(), 2);
@@ -73,7 +55,7 @@ mod tests {
     }
 
     #[test]
-    fn test_lidar_to_point_cloud_full_360() {
+    fn test_lidar_to_point_cloud_360() {
         // Test that full 360 degree scan is preserved
         let lidar_data: Vec<_> = (0..360)
             .map(|i| {

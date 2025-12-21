@@ -3,8 +3,10 @@
 //! Computes error metrics comparing SLAM output against ground truth:
 //! - Position and orientation error
 //! - Wall accuracy (how close detected lines are to actual walls in map)
+//! - Timing statistics for algorithm performance
 
 use sangam_io::devices::mock::map_loader::SimulationMap;
+use vastu_map::TimingBreakdown;
 use vastu_map::VectorMap;
 use vastu_map::core::Pose2D;
 use vastu_map::features::Line2D;
@@ -46,6 +48,143 @@ impl ConvergenceStats {
             0.0
         } else {
             self.total_iterations as f32 / self.observation_count as f32
+        }
+    }
+}
+
+/// Single stage timing accumulator.
+#[derive(Debug, Clone, Default)]
+struct StageTiming {
+    total_us: u64,
+    min_us: u64,
+    max_us: u64,
+    count: usize,
+}
+
+impl StageTiming {
+    fn new() -> Self {
+        Self {
+            total_us: 0,
+            min_us: u64::MAX,
+            max_us: 0,
+            count: 0,
+        }
+    }
+
+    fn record(&mut self, us: u64) {
+        self.total_us += us;
+        self.min_us = self.min_us.min(us);
+        self.max_us = self.max_us.max(us);
+        self.count += 1;
+    }
+
+    fn avg_us(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.total_us as f64 / self.count as f64
+        }
+    }
+
+    fn min_display(&self) -> u64 {
+        if self.min_us == u64::MAX {
+            0
+        } else {
+            self.min_us
+        }
+    }
+}
+
+/// Accumulated timing statistics across all observations.
+#[derive(Debug, Clone, Default)]
+pub struct TimingStats {
+    icp_matching: StageTiming,
+    line_extraction: StageTiming,
+    corner_detection: StageTiming,
+    association: StageTiming,
+    merging: StageTiming,
+    new_features: StageTiming,
+    loop_closure: StageTiming,
+    total: StageTiming,
+}
+
+impl TimingStats {
+    /// Create a new empty timing stats tracker.
+    pub fn new() -> Self {
+        Self {
+            icp_matching: StageTiming::new(),
+            line_extraction: StageTiming::new(),
+            corner_detection: StageTiming::new(),
+            association: StageTiming::new(),
+            merging: StageTiming::new(),
+            new_features: StageTiming::new(),
+            loop_closure: StageTiming::new(),
+            total: StageTiming::new(),
+        }
+    }
+
+    /// Record timing from a single observation.
+    pub fn record(&mut self, timing: &TimingBreakdown) {
+        self.icp_matching.record(timing.icp_matching_us);
+        self.line_extraction.record(timing.line_extraction_us);
+        self.corner_detection.record(timing.corner_detection_us);
+        self.association.record(timing.association_us);
+        self.merging.record(timing.merging_us);
+        self.new_features.record(timing.new_features_us);
+        self.loop_closure.record(timing.loop_closure_us);
+        self.total.record(timing.total_us);
+    }
+
+    /// Get number of observations recorded.
+    pub fn observation_count(&self) -> usize {
+        self.total.count
+    }
+
+    /// Print a formatted timing summary.
+    pub fn print_summary(&self) {
+        let count = self.observation_count();
+        if count == 0 {
+            println!("No timing data collected.");
+            return;
+        }
+
+        println!("\n=== Timing Summary ({} observations) ===", count);
+        println!(
+            "{:<24} | {:>10} | {:>10} | {:>10} | {:>10}",
+            "Stage", "Total", "Avg", "Min", "Max"
+        );
+        println!("{}", "-".repeat(73));
+
+        self.print_stage("ICP Matching", &self.icp_matching);
+        self.print_stage("Line Extraction", &self.line_extraction);
+        self.print_stage("Corner Detection", &self.corner_detection);
+        self.print_stage("Association", &self.association);
+        self.print_stage("Merging", &self.merging);
+        self.print_stage("New Features", &self.new_features);
+        self.print_stage("Loop Closure", &self.loop_closure);
+
+        println!("{}", "-".repeat(73));
+        self.print_stage("Total per Observe", &self.total);
+    }
+
+    fn print_stage(&self, name: &str, stage: &StageTiming) {
+        println!(
+            "{:<24} | {:>10} | {:>10} | {:>10} | {:>10}",
+            name,
+            Self::format_us(stage.total_us),
+            Self::format_us(stage.avg_us() as u64),
+            Self::format_us(stage.min_display()),
+            Self::format_us(stage.max_us),
+        );
+    }
+
+    fn format_us(us: u64) -> String {
+        if us >= 1_000_000 {
+            format!("{:.2} s", us as f64 / 1_000_000.0)
+        } else if us >= 1_000 {
+            format!("{:.2} ms", us as f64 / 1_000.0)
+        } else {
+            format!("{} µs", us)
         }
     }
 }

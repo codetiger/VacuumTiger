@@ -19,7 +19,6 @@
 mod adapters;
 mod harness;
 mod metrics;
-mod odometry;
 mod path_generator;
 mod scenarios;
 mod visualization;
@@ -28,5 +27,5 @@ mod yaml_runner;
 
 // Re-export for test convenience
 pub use harness::{HarnessConfig, TestHarness, TestResult};
-pub use metrics::{AcceptanceCriteria, TestMetrics};
-pub use path_generator::{PathGenerator, PathSegment};
+pub use metrics::{AcceptanceCriteria, TestMetrics, TimingStats};
+pub use path_generator::PathSegment;

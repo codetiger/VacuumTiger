@@ -13,7 +13,7 @@ use vastu_map::core::Pose2D;
 use vastu_map::{Map, VectorMap, VectorMapConfig};
 
 use crate::adapters::lidar_to_point_cloud;
-use crate::metrics::{ConvergenceStats, TestMetrics};
+use crate::metrics::{ConvergenceStats, TestMetrics, TimingStats};
 use crate::path_generator::PathSegment;
 use crate::visualization::Visualizer;
 
@@ -200,6 +200,8 @@ pub struct TestHarness {
     convergence_stats: ConvergenceStats,
     /// Trajectory history for enhanced visualization
     trajectory: TrajectoryHistory,
+    /// Algorithm timing statistics across all observations
+    timing_stats: TimingStats,
 }
 
 impl TestHarness {
@@ -242,6 +244,7 @@ impl TestHarness {
             last_scan_robot_frame: None,
             convergence_stats: ConvergenceStats::new(),
             trajectory: TrajectoryHistory::new(),
+            timing_stats: TimingStats::new(),
         })
     }
 
@@ -355,6 +358,9 @@ impl TestHarness {
         self.convergence_stats
             .record(result.icp_iterations, result.icp_converged);
 
+        // Record timing stats
+        self.timing_stats.record(&result.timing);
+
         // Record to trajectory history for visualization
         // Store scan at intervals to avoid excessive memory usage
         let scan_to_store = if self.observations % SCAN_STORAGE_INTERVAL == 0 {
@@ -426,6 +432,9 @@ impl TestHarness {
                 &metrics,
             );
         }
+
+        // Print timing summary
+        self.timing_stats.print_summary();
 
         TestResult {
             metrics,
