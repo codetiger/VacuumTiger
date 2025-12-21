@@ -141,6 +141,15 @@ impl CorrespondenceSet {
         }
     }
 
+    /// Filter correspondences by maximum distance in-place (zero-allocation).
+    ///
+    /// This is more efficient than `filter_by_distance` when you don't need
+    /// to preserve the original set.
+    #[inline]
+    pub fn retain_by_distance(&mut self, max_distance: f32) {
+        self.correspondences.retain(|c| c.distance <= max_distance);
+    }
+
     /// Filter correspondences to only those within line segments.
     pub fn filter_within_segment(&self) -> Self {
         Self {
@@ -151,6 +160,12 @@ impl CorrespondenceSet {
                 .copied()
                 .collect(),
         }
+    }
+
+    /// Filter correspondences to only those within line segments in-place (zero-allocation).
+    #[inline]
+    pub fn retain_within_segment(&mut self) {
+        self.correspondences.retain(|c| c.is_within_segment());
     }
 
     /// Get the mean correspondence distance.

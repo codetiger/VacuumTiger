@@ -20,7 +20,7 @@ use super::correspondence::MatchResult;
 /// use vastu_map::core::{Point2D, Pose2D};
 /// use vastu_map::features::Line2D;
 ///
-/// let matcher = PointToLineIcp::with_config(IcpConfig::default());
+/// let mut matcher = PointToLineIcp::with_config(IcpConfig::default());
 /// let points = vec![Point2D::new(1.0, 0.1)];
 /// let lines = vec![Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0))];
 ///
@@ -36,14 +36,18 @@ pub trait ScanMatcher: Send + Sync {
     ///
     /// # Returns
     /// Match result with optimized pose, covariance, and confidence.
-    fn match_scan(&self, points: &[Point2D], lines: &[Line2D], initial_pose: Pose2D)
-    -> MatchResult;
+    fn match_scan(
+        &mut self,
+        points: &[Point2D],
+        lines: &[Line2D],
+        initial_pose: Pose2D,
+    ) -> MatchResult;
 
     /// Match scan against a LineCollection (SoA format for SIMD).
     ///
     /// Default implementation converts to Line2D slice and calls `match_scan`.
     fn match_scan_collection(
-        &self,
+        &mut self,
         points: &[Point2D],
         lines: &LineCollection,
         initial_pose: Pose2D,
@@ -59,7 +63,7 @@ pub trait ScanMatcher: Send + Sync {
 
 impl ScanMatcher for super::PointToLineIcp {
     fn match_scan(
-        &self,
+        &mut self,
         points: &[Point2D],
         lines: &[Line2D],
         initial_pose: Pose2D,
@@ -69,7 +73,7 @@ impl ScanMatcher for super::PointToLineIcp {
     }
 
     fn match_scan_collection(
-        &self,
+        &mut self,
         points: &[Point2D],
         lines: &LineCollection,
         initial_pose: Pose2D,
@@ -109,7 +113,7 @@ mod tests {
 
     #[test]
     fn test_scan_matcher_trait() {
-        let matcher = super::super::PointToLineIcp::with_config(IcpConfig::default());
+        let mut matcher = super::super::PointToLineIcp::with_config(IcpConfig::default());
         let lines = make_room_lines();
         let points = make_scan_points();
 
@@ -121,9 +125,9 @@ mod tests {
     #[test]
     fn test_trait_object() {
         // Verify trait can be used as a trait object
-        let matcher: Box<dyn ScanMatcher> = Box::new(super::super::PointToLineIcp::with_config(
-            IcpConfig::default(),
-        ));
+        let mut matcher: Box<dyn ScanMatcher> = Box::new(
+            super::super::PointToLineIcp::with_config(IcpConfig::default()),
+        );
 
         let lines = make_room_lines();
         let points = make_scan_points();
@@ -134,7 +138,7 @@ mod tests {
 
     #[test]
     fn test_collection_method() {
-        let matcher = super::super::PointToLineIcp::with_config(IcpConfig::default());
+        let mut matcher = super::super::PointToLineIcp::with_config(IcpConfig::default());
         let lines = make_room_lines();
         let collection = LineCollection::from_lines(&lines);
         let points = make_scan_points();

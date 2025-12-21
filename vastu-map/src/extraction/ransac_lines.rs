@@ -7,19 +7,145 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use vastu_map::extraction::{extract_lines_ransac, RansacLineConfig};
+//! use vastu_map::extraction::{extract_lines_ransac, RansacLineConfig, RansacScratchSpace};
 //!
 //! let config = RansacLineConfig::default();
-//! let (lines, remaining) = extract_lines_ransac(&points, &config);
 //!
-//! // `lines` contains extracted lines
-//! // `remaining` contains indices of points not matched to any line
+//! // Zero-allocation version with scratch space
+//! let mut scratch = RansacScratchSpace::with_capacity(400);
+//! let (lines, remaining) = extract_lines_ransac_with_scratch(&points, &config, &mut scratch);
+//!
+//! // Reuse scratch for next scan - no allocations!
+//! let (lines2, remaining2) = extract_lines_ransac_with_scratch(&points2, &config, &mut scratch);
 //! ```
 
 use crate::core::Point2D;
 use crate::features::Line2D;
 
 use super::line_fitting::fit_line;
+
+// ============================================================================
+// Scratch Space for Zero-Allocation RANSAC
+// ============================================================================
+
+/// Pre-allocated scratch space for RANSAC operations.
+///
+/// Reuse this struct across multiple `extract_lines_ransac_with_scratch` calls
+/// to eliminate per-iteration allocations. This is critical for real-time SLAM
+/// where RANSAC may run 100+ iterations per scan.
+///
+/// # Performance Impact
+///
+/// Without scratch space, each RANSAC call allocates:
+/// - `remaining_mask`: O(n) bools
+/// - `remaining`: O(n) indices, rebuilt every outer iteration
+/// - `current_inliers`: O(n) indices, rebuilt every RANSAC iteration (100x)
+/// - `best_inliers`: O(n) indices
+/// - `inlier_points`: O(n) Point2Ds
+///
+/// With scratch space, these allocations happen once and are reused.
+///
+/// # Example
+/// ```rust,ignore
+/// use vastu_map::extraction::{RansacScratchSpace, extract_lines_ransac_with_scratch};
+///
+/// // Create once, sized for typical lidar scans
+/// let mut scratch = RansacScratchSpace::with_capacity(400);
+///
+/// for scan in scans {
+///     let (lines, remaining) = extract_lines_ransac_with_scratch(&scan, &config, &mut scratch);
+///     // scratch is reused, no allocations!
+/// }
+/// ```
+#[derive(Clone, Debug)]
+pub struct RansacScratchSpace {
+    /// Bit mask for remaining (unconsumed) points.
+    /// Avoids rebuilding Vec<usize> each iteration.
+    remaining_mask: Vec<bool>,
+
+    /// Buffer for current iteration's inlier indices.
+    /// Reused across all RANSAC iterations.
+    current_inliers: Vec<usize>,
+
+    /// Buffer for best inliers found so far.
+    best_inliers: Vec<usize>,
+
+    /// Buffer for inlier points (for line fitting and gap splitting).
+    inlier_points: Vec<Point2D>,
+
+    /// Buffer for inlier indices corresponding to inlier_points.
+    inlier_indices: Vec<usize>,
+
+    /// Buffer for output lines.
+    output_lines: Vec<Line2D>,
+
+    /// Buffer for remaining indices output.
+    remaining_output: Vec<usize>,
+
+    /// Buffer for segment points in split_at_gaps.
+    segment_points: Vec<Point2D>,
+
+    /// Buffer for segment indices in split_at_gaps.
+    segment_indices: Vec<usize>,
+
+    /// Buffer for projection sorting in split_at_gaps.
+    projection_buffer: Vec<(usize, f32)>,
+}
+
+impl RansacScratchSpace {
+    /// Create new scratch space with capacity hints.
+    ///
+    /// # Arguments
+    /// * `max_points` - Expected maximum scan points (e.g., 360-400 for typical lidar)
+    pub fn with_capacity(max_points: usize) -> Self {
+        Self {
+            remaining_mask: Vec::with_capacity(max_points),
+            current_inliers: Vec::with_capacity(max_points),
+            best_inliers: Vec::with_capacity(max_points),
+            inlier_points: Vec::with_capacity(max_points),
+            inlier_indices: Vec::with_capacity(max_points),
+            output_lines: Vec::with_capacity(32), // Typical max lines per scan
+            remaining_output: Vec::with_capacity(max_points),
+            segment_points: Vec::with_capacity(max_points),
+            segment_indices: Vec::with_capacity(max_points),
+            projection_buffer: Vec::with_capacity(max_points),
+        }
+    }
+
+    /// Create with default capacity (400 points).
+    pub fn default_capacity() -> Self {
+        Self::with_capacity(400)
+    }
+
+    /// Reset scratch space for a new extraction run.
+    /// Clears all buffers but retains allocated capacity.
+    #[inline]
+    pub fn reset(&mut self, num_points: usize) {
+        self.remaining_mask.clear();
+        self.remaining_mask.resize(num_points, true);
+        self.current_inliers.clear();
+        self.best_inliers.clear();
+        self.inlier_points.clear();
+        self.inlier_indices.clear();
+        self.output_lines.clear();
+        self.remaining_output.clear();
+        self.segment_points.clear();
+        self.segment_indices.clear();
+        self.projection_buffer.clear();
+    }
+
+    /// Count remaining active points using the mask.
+    #[inline]
+    fn count_remaining(&self) -> usize {
+        self.remaining_mask.iter().filter(|&&b| b).count()
+    }
+}
+
+impl Default for RansacScratchSpace {
+    fn default() -> Self {
+        Self::default_capacity()
+    }
+}
 
 /// Configuration for RANSAC line extraction.
 #[derive(Clone, Debug)]
@@ -361,6 +487,264 @@ pub fn extract_lines_ransac(
     (lines, remaining)
 }
 
+/// Extract lines using RANSAC with pre-allocated scratch space.
+///
+/// This is the zero-allocation version for real-time applications.
+/// Reuse the scratch space across multiple calls to eliminate allocations.
+///
+/// Returns extracted lines and indices of points not matched to any line.
+/// The returned vectors are borrowed from scratch space and are valid until
+/// the next call to this function.
+///
+/// # Arguments
+/// * `points` - Input point cloud
+/// * `config` - RANSAC configuration
+/// * `scratch` - Pre-allocated scratch space (reused across calls)
+///
+/// # Returns
+/// Tuple of (&[Line2D], &[usize]) - references into scratch space
+///
+/// # Example
+/// ```rust,ignore
+/// let mut scratch = RansacScratchSpace::with_capacity(400);
+/// let (lines, remaining) = extract_lines_ransac_with_scratch(&points, &config, &mut scratch);
+/// // Process lines and remaining before next call
+/// ```
+pub fn extract_lines_ransac_with_scratch<'a>(
+    points: &[Point2D],
+    config: &RansacLineConfig,
+    scratch: &'a mut RansacScratchSpace,
+) -> (&'a [Line2D], &'a [usize]) {
+    // Reset scratch for this extraction
+    scratch.reset(points.len());
+
+    if points.len() < config.min_inliers {
+        // Return remaining as all indices
+        scratch.remaining_output.extend(0..points.len());
+        return (&scratch.output_lines, &scratch.remaining_output);
+    }
+
+    let mut rng = SimpleRng::new(config.seed);
+
+    loop {
+        // Check max lines limit
+        if config.max_lines > 0 && scratch.output_lines.len() >= config.max_lines {
+            break;
+        }
+
+        // Count remaining points without allocating
+        let remaining_count = scratch.count_remaining();
+        if remaining_count < config.min_inliers {
+            break;
+        }
+
+        // Run RANSAC to find best line
+        scratch.best_inliers.clear();
+
+        for _ in 0..config.iterations {
+            // Sample random indices from remaining points
+            // We need to pick the nth remaining point, not the nth point
+            let sample_pos1 = rng.gen_range(remaining_count);
+            let sample_pos2 = rng.gen_range(remaining_count);
+            if sample_pos1 == sample_pos2 {
+                continue;
+            }
+
+            // Convert sample positions to actual indices
+            let idx1 = nth_remaining(&scratch.remaining_mask, sample_pos1);
+            let idx2 = nth_remaining(&scratch.remaining_mask, sample_pos2);
+
+            let p1 = points[idx1];
+            let p2 = points[idx2];
+
+            // Check minimum distance between sample points
+            let sample_dist = p1.distance(p2);
+            if sample_dist < config.min_line_length * 0.3 {
+                continue;
+            }
+
+            // Create candidate line
+            let line = Line2D::new(p1, p2);
+
+            // Count inliers into scratch buffer (reused each iteration)
+            scratch.current_inliers.clear();
+            for (i, &is_remaining) in scratch.remaining_mask.iter().enumerate() {
+                if is_remaining && line.distance_to_point(points[i]) < config.inlier_threshold {
+                    scratch.current_inliers.push(i);
+                }
+            }
+
+            // Update best if this is better
+            if scratch.current_inliers.len() > scratch.best_inliers.len() {
+                scratch.best_inliers.clear();
+                scratch
+                    .best_inliers
+                    .extend_from_slice(&scratch.current_inliers);
+            }
+        }
+
+        // Check if we found enough inliers
+        if scratch.best_inliers.len() < config.min_inliers {
+            break;
+        }
+
+        // Get inlier points into scratch buffer
+        scratch.inlier_points.clear();
+        scratch.inlier_indices.clear();
+        for &i in &scratch.best_inliers {
+            scratch.inlier_points.push(points[i]);
+            scratch.inlier_indices.push(i);
+        }
+
+        // Split at gaps and process segments
+        let added_any = split_at_gaps_with_scratch(config, scratch);
+
+        // If we couldn't add any valid lines from this iteration, stop
+        if !added_any {
+            break;
+        }
+    }
+
+    // Collect remaining point indices into output buffer
+    scratch.remaining_output.clear();
+    for (i, &is_remaining) in scratch.remaining_mask.iter().enumerate() {
+        if is_remaining {
+            scratch.remaining_output.push(i);
+        }
+    }
+
+    (&scratch.output_lines, &scratch.remaining_output)
+}
+
+/// Find the nth remaining (active) index in the mask.
+#[inline]
+fn nth_remaining(mask: &[bool], mut n: usize) -> usize {
+    for (i, &active) in mask.iter().enumerate() {
+        if active {
+            if n == 0 {
+                return i;
+            }
+            n -= 1;
+        }
+    }
+    // Fallback (shouldn't happen if n < count_remaining)
+    0
+}
+
+/// Split inliers at gaps using scratch buffers, add valid lines to output.
+/// Returns true if any lines were added.
+fn split_at_gaps_with_scratch(config: &RansacLineConfig, scratch: &mut RansacScratchSpace) -> bool {
+    let num_inliers = scratch.inlier_points.len();
+
+    if num_inliers < 2 {
+        // Single point segment - try to fit
+        if num_inliers >= config.min_inliers
+            && let Some(line) = fit_line(&scratch.inlier_points)
+            && line.length() >= config.min_line_length
+        {
+            scratch.output_lines.push(line);
+            for i in 0..scratch.inlier_indices.len() {
+                let idx = scratch.inlier_indices[i];
+                scratch.remaining_mask[idx] = false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // Compute principal direction using PCA-like approach
+    let n = num_inliers as f32;
+    let mean_x: f32 = scratch.inlier_points.iter().map(|p| p.x).sum::<f32>() / n;
+    let mean_y: f32 = scratch.inlier_points.iter().map(|p| p.y).sum::<f32>() / n;
+
+    // Compute covariance matrix elements
+    let mut cxx = 0.0f32;
+    let mut cxy = 0.0f32;
+    let mut cyy = 0.0f32;
+    for p in &scratch.inlier_points {
+        let dx = p.x - mean_x;
+        let dy = p.y - mean_y;
+        cxx += dx * dx;
+        cxy += dx * dy;
+        cyy += dy * dy;
+    }
+
+    // Principal direction from dominant eigenvector
+    let theta = 0.5 * (2.0 * cxy).atan2(cxx - cyy);
+    let dir_x = theta.cos();
+    let dir_y = theta.sin();
+
+    // Project points onto principal direction and sort
+    scratch.projection_buffer.clear();
+    for (i, p) in scratch.inlier_points.iter().enumerate() {
+        let proj = (p.x - mean_x) * dir_x + (p.y - mean_y) * dir_y;
+        scratch.projection_buffer.push((i, proj));
+    }
+    scratch
+        .projection_buffer
+        .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Process segments separated by gaps
+    // We need to iterate through projection_buffer and build segments,
+    // then mark consumed indices. To avoid borrow conflicts, we'll
+    // collect segment boundaries first, then process them.
+    let mut added_any = false;
+    scratch.segment_points.clear();
+    scratch.segment_indices.clear();
+
+    let projection_len = scratch.projection_buffer.len();
+    let mut segment_start = 0usize;
+
+    for i in 0..projection_len {
+        let (orig_idx, _proj) = scratch.projection_buffer[i];
+
+        // Check if there's a gap to the next point
+        let is_gap = if i + 1 < projection_len {
+            let next_orig_idx = scratch.projection_buffer[i + 1].0;
+            let p1 = scratch.inlier_points[orig_idx];
+            let p2 = scratch.inlier_points[next_orig_idx];
+            p1.distance(p2) > config.max_point_gap
+        } else {
+            true // End of points
+        };
+
+        if is_gap {
+            // Process segment from segment_start to i (inclusive)
+            let segment_len = i - segment_start + 1;
+
+            if segment_len >= config.min_inliers {
+                // Collect segment points
+                scratch.segment_points.clear();
+                scratch.segment_indices.clear();
+
+                for j in segment_start..=i {
+                    let idx = scratch.projection_buffer[j].0;
+                    scratch.segment_points.push(scratch.inlier_points[idx]);
+                    scratch.segment_indices.push(scratch.inlier_indices[idx]);
+                }
+
+                // Try to fit line
+                if let Some(refined_line) = fit_line(&scratch.segment_points)
+                    && refined_line.length() >= config.min_line_length
+                {
+                    scratch.output_lines.push(refined_line);
+                    added_any = true;
+
+                    // Mark segment inliers as consumed
+                    for j in 0..scratch.segment_indices.len() {
+                        let idx = scratch.segment_indices[j];
+                        scratch.remaining_mask[idx] = false;
+                    }
+                }
+            }
+
+            segment_start = i + 1;
+        }
+    }
+
+    added_any
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +978,163 @@ mod tests {
             assert!(line.length() < 0.35, "Line too long: {}", line.length());
             assert!(line.length() > 0.15, "Line too short: {}", line.length());
         }
+    }
+
+    // =========================================================================
+    // Tests for scratch space version
+    // =========================================================================
+
+    #[test]
+    fn test_scratch_space_creation() {
+        let scratch = RansacScratchSpace::with_capacity(400);
+        assert!(scratch.remaining_mask.capacity() >= 400);
+        assert!(scratch.current_inliers.capacity() >= 400);
+    }
+
+    #[test]
+    fn test_scratch_extract_single_line() {
+        // Same test as non-scratch version
+        let points: Vec<Point2D> = (0..20)
+            .map(|i| Point2D::new(i as f32 * 0.05, 0.0))
+            .collect();
+
+        let config = RansacLineConfig::default()
+            .with_seed(42)
+            .with_min_inliers(5);
+
+        let mut scratch = RansacScratchSpace::with_capacity(400);
+        let (lines, remaining) = extract_lines_ransac_with_scratch(&points, &config, &mut scratch);
+
+        assert_eq!(lines.len(), 1);
+        assert!(remaining.len() < 5);
+        let angle = lines[0].angle().abs();
+        assert!(angle < 0.1 || (std::f32::consts::PI - angle).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_scratch_extract_two_lines() {
+        let mut points: Vec<Point2D> = (0..15)
+            .map(|i| Point2D::new(i as f32 * 0.05, 0.0))
+            .collect();
+
+        for i in 0..15 {
+            points.push(Point2D::new(0.0, i as f32 * 0.05));
+        }
+
+        let config = RansacLineConfig::default()
+            .with_seed(42)
+            .with_min_inliers(5)
+            .with_max_lines(2);
+
+        let mut scratch = RansacScratchSpace::with_capacity(400);
+        let (lines, _remaining) = extract_lines_ransac_with_scratch(&points, &config, &mut scratch);
+
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn test_scratch_reuse() {
+        // Test that scratch space can be reused across multiple calls
+        let mut scratch = RansacScratchSpace::with_capacity(400);
+
+        // First extraction
+        let points1: Vec<Point2D> = (0..20)
+            .map(|i| Point2D::new(i as f32 * 0.05, 0.0))
+            .collect();
+        let config = RansacLineConfig::default()
+            .with_seed(42)
+            .with_min_inliers(5);
+
+        let (lines1, _) = extract_lines_ransac_with_scratch(&points1, &config, &mut scratch);
+        assert_eq!(lines1.len(), 1);
+
+        // Second extraction with different points - reusing same scratch
+        let points2: Vec<Point2D> = (0..20)
+            .map(|i| Point2D::new(0.0, i as f32 * 0.05))
+            .collect();
+
+        let (lines2, _) = extract_lines_ransac_with_scratch(&points2, &config, &mut scratch);
+        assert_eq!(lines2.len(), 1);
+
+        // Verify the second extraction is independent
+        let angle2 = lines2[0].angle().abs();
+        let expected_vertical = std::f32::consts::FRAC_PI_2;
+        assert!((angle2 - expected_vertical).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_scratch_equivalence_to_original() {
+        // Verify scratch version produces same results as original
+        let points: Vec<Point2D> = (0..25)
+            .map(|i| Point2D::new(i as f32 * 0.04, 0.0))
+            .collect();
+
+        let config = RansacLineConfig::default()
+            .with_seed(123)
+            .with_min_inliers(5)
+            .with_iterations(50);
+
+        // Original version
+        let (lines_orig, remaining_orig) = extract_lines_ransac(&points, &config);
+
+        // Scratch version
+        let mut scratch = RansacScratchSpace::with_capacity(100);
+        let (lines_scratch, remaining_scratch) =
+            extract_lines_ransac_with_scratch(&points, &config, &mut scratch);
+
+        // Same number of lines
+        assert_eq!(lines_orig.len(), lines_scratch.len());
+        // Same number of remaining points
+        assert_eq!(remaining_orig.len(), remaining_scratch.len());
+    }
+
+    #[test]
+    fn test_scratch_gap_splitting() {
+        // Collinear points with a gap
+        let mut points = Vec::new();
+        for i in 0..10 {
+            points.push(Point2D::new(i as f32 * 0.03, 0.0));
+        }
+        for i in 0..10 {
+            points.push(Point2D::new(0.52 + i as f32 * 0.03, 0.0));
+        }
+
+        let config = RansacLineConfig::default()
+            .with_seed(42)
+            .with_min_inliers(5)
+            .with_max_point_gap(0.10);
+
+        let mut scratch = RansacScratchSpace::with_capacity(100);
+        let (lines, _) = extract_lines_ransac_with_scratch(&points, &config, &mut scratch);
+
+        assert_eq!(lines.len(), 2);
+        for line in lines {
+            assert!(line.length() < 0.35);
+            assert!(line.length() > 0.15);
+        }
+    }
+
+    #[test]
+    fn test_scratch_empty_input() {
+        let points: Vec<Point2D> = vec![];
+        let config = RansacLineConfig::default();
+        let mut scratch = RansacScratchSpace::with_capacity(100);
+
+        let (lines, remaining) = extract_lines_ransac_with_scratch(&points, &config, &mut scratch);
+
+        assert!(lines.is_empty());
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_scratch_too_few_points() {
+        let points = vec![Point2D::new(0.0, 0.0), Point2D::new(1.0, 0.0)];
+        let config = RansacLineConfig::default().with_min_inliers(5);
+        let mut scratch = RansacScratchSpace::with_capacity(100);
+
+        let (lines, remaining) = extract_lines_ransac_with_scratch(&points, &config, &mut scratch);
+
+        assert!(lines.is_empty());
+        assert_eq!(remaining.len(), 2);
     }
 }

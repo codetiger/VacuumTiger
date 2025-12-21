@@ -57,6 +57,16 @@ pub struct IcpScratchSpace {
 
     /// Buffer for ranges (distances from sensor).
     pub(crate) ranges: Vec<f32>,
+
+    // =========================================================================
+    // Multi-resolution / Coarse search buffers
+    // =========================================================================
+    /// Buffer for subsampled point X coordinates.
+    /// Used by multi-resolution ICP and coarse search to avoid allocations.
+    pub(crate) subsampled_xs: Vec<f32>,
+
+    /// Buffer for subsampled point Y coordinates.
+    pub(crate) subsampled_ys: Vec<f32>,
 }
 
 impl IcpScratchSpace {
@@ -74,6 +84,8 @@ impl IcpScratchSpace {
             correspondences: CorrespondenceSet::with_capacity(max_points),
             correspondences_soa: CorrespondenceSoA::with_capacity(max_points),
             ranges: Vec::with_capacity(max_points),
+            subsampled_xs: Vec::with_capacity(max_points),
+            subsampled_ys: Vec::with_capacity(max_points),
         }
     }
 
@@ -92,6 +104,80 @@ impl IcpScratchSpace {
         self.correspondences.clear();
         self.correspondences_soa.clear();
         self.ranges.clear();
+        self.subsampled_xs.clear();
+        self.subsampled_ys.clear();
+    }
+
+    // =========================================================================
+    // Subsampling methods for multi-resolution ICP
+    // =========================================================================
+
+    /// Subsample points into internal buffer using step_by.
+    ///
+    /// This is the zero-allocation version of subsampling for multi-resolution ICP.
+    /// After calling this, use `subsampled_point()` or `num_subsampled()` to access.
+    ///
+    /// # Arguments
+    /// * `points` - Source points to subsample
+    /// * `step` - Step size (1 = no subsampling, 2 = every other point, etc.)
+    #[inline]
+    pub fn subsample_points(&mut self, points: &[Point2D], step: usize) {
+        self.subsampled_xs.clear();
+        self.subsampled_ys.clear();
+
+        let step = step.max(1);
+        let expected_len = points.len().div_ceil(step);
+        self.subsampled_xs.reserve(expected_len);
+        self.subsampled_ys.reserve(expected_len);
+
+        for p in points.iter().step_by(step) {
+            self.subsampled_xs.push(p.x);
+            self.subsampled_ys.push(p.y);
+        }
+    }
+
+    /// Subsample from SoA arrays into internal buffer.
+    ///
+    /// Useful when points are already in SoA format (e.g., from PointCloud2D).
+    #[inline]
+    pub fn subsample_from_soa(&mut self, xs: &[f32], ys: &[f32], step: usize) {
+        self.subsampled_xs.clear();
+        self.subsampled_ys.clear();
+
+        let step = step.max(1);
+        let len = xs.len().min(ys.len());
+        let expected_len = len.div_ceil(step);
+        self.subsampled_xs.reserve(expected_len);
+        self.subsampled_ys.reserve(expected_len);
+
+        for i in (0..len).step_by(step) {
+            self.subsampled_xs.push(xs[i]);
+            self.subsampled_ys.push(ys[i]);
+        }
+    }
+
+    /// Get a subsampled point by index.
+    #[inline]
+    pub fn subsampled_point(&self, index: usize) -> Point2D {
+        Point2D::new(self.subsampled_xs[index], self.subsampled_ys[index])
+    }
+
+    /// Get number of subsampled points.
+    #[inline]
+    pub fn num_subsampled(&self) -> usize {
+        self.subsampled_xs.len()
+    }
+
+    /// Get slice of subsampled X coordinates.
+    #[inline]
+    pub fn subsampled_xs(&self) -> &[f32] {
+        &self.subsampled_xs
+    }
+
+    /// Get slice of subsampled Y coordinates.
+    #[inline]
+    pub fn subsampled_ys(&self) -> &[f32] {
+        &self.subsampled_ys
     }
 
     /// Transform points by pose into internal buffer.
@@ -524,5 +610,109 @@ mod tests {
         scratch.transform_points(&points, 0.0, 1.0, 0.0, 0.0);
         scratch.find_correspondences(&lines, &config);
         assert_eq!(scratch.num_correspondences(), 0);
+    }
+
+    // =========================================================================
+    // Subsample tests
+    // =========================================================================
+
+    #[test]
+    fn test_subsample_no_subsampling() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+        let points: Vec<Point2D> = (0..10).map(|i| Point2D::new(i as f32, 0.0)).collect();
+
+        scratch.subsample_points(&points, 1);
+
+        assert_eq!(scratch.num_subsampled(), 10);
+        for i in 0..10 {
+            let p = scratch.subsampled_point(i);
+            assert!((p.x - i as f32).abs() < 1e-6);
+            assert!((p.y - 0.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_subsample_every_other() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+        let points: Vec<Point2D> = (0..10).map(|i| Point2D::new(i as f32, 0.0)).collect();
+
+        scratch.subsample_points(&points, 2);
+
+        assert_eq!(scratch.num_subsampled(), 5);
+        // Should have 0, 2, 4, 6, 8
+        assert!((scratch.subsampled_point(0).x - 0.0).abs() < 1e-6);
+        assert!((scratch.subsampled_point(1).x - 2.0).abs() < 1e-6);
+        assert!((scratch.subsampled_point(2).x - 4.0).abs() < 1e-6);
+        assert!((scratch.subsampled_point(3).x - 6.0).abs() < 1e-6);
+        assert!((scratch.subsampled_point(4).x - 8.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_subsample_step_3() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+        let points: Vec<Point2D> = (0..12).map(|i| Point2D::new(i as f32, 0.0)).collect();
+
+        scratch.subsample_points(&points, 3);
+
+        assert_eq!(scratch.num_subsampled(), 4);
+        // Should have 0, 3, 6, 9
+        assert!((scratch.subsampled_point(0).x - 0.0).abs() < 1e-6);
+        assert!((scratch.subsampled_point(1).x - 3.0).abs() < 1e-6);
+        assert!((scratch.subsampled_point(2).x - 6.0).abs() < 1e-6);
+        assert!((scratch.subsampled_point(3).x - 9.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_subsample_soa() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+        let xs: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        let ys: Vec<f32> = (0..10).map(|i| (i as f32) * 2.0).collect();
+
+        scratch.subsample_from_soa(&xs, &ys, 2);
+
+        assert_eq!(scratch.num_subsampled(), 5);
+        assert!((scratch.subsampled_xs()[0] - 0.0).abs() < 1e-6);
+        assert!((scratch.subsampled_xs()[1] - 2.0).abs() < 1e-6);
+        assert!((scratch.subsampled_ys()[0] - 0.0).abs() < 1e-6);
+        assert!((scratch.subsampled_ys()[1] - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_subsample_reuse() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+
+        // First subsample
+        let points1: Vec<Point2D> = (0..10).map(|i| Point2D::new(i as f32, 0.0)).collect();
+        scratch.subsample_points(&points1, 2);
+        assert_eq!(scratch.num_subsampled(), 5);
+
+        // Second subsample (different data, reusing scratch)
+        let points2: Vec<Point2D> = (0..6).map(|i| Point2D::new(i as f32 * 10.0, 0.0)).collect();
+        scratch.subsample_points(&points2, 3);
+        assert_eq!(scratch.num_subsampled(), 2);
+        // Should have 0.0, 30.0
+        assert!((scratch.subsampled_point(0).x - 0.0).abs() < 1e-6);
+        assert!((scratch.subsampled_point(1).x - 30.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_subsample_empty() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+        let points: Vec<Point2D> = vec![];
+
+        scratch.subsample_points(&points, 2);
+
+        assert_eq!(scratch.num_subsampled(), 0);
+    }
+
+    #[test]
+    fn test_subsample_step_zero_treated_as_one() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+        let points: Vec<Point2D> = (0..5).map(|i| Point2D::new(i as f32, 0.0)).collect();
+
+        // Step of 0 should be treated as 1 (no subsampling)
+        scratch.subsample_points(&points, 0);
+
+        assert_eq!(scratch.num_subsampled(), 5);
     }
 }

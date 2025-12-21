@@ -3,6 +3,24 @@
 //! Frontiers are boundaries between known and unknown space.
 //! In a VectorMap, frontiers are typically unconnected line endpoints
 //! that indicate areas that haven't been fully explored.
+//!
+//! # Zero-Allocation Detection
+//!
+//! For repeated frontier detection (e.g., during SLAM), use `FrontierDetector`
+//! which maintains persistent buffers to avoid per-call allocations:
+//!
+//! ```rust,ignore
+//! use vastu_map::query::frontier::{FrontierDetector, FrontierConfig};
+//!
+//! let mut detector = FrontierDetector::new();
+//! let config = FrontierConfig::default();
+//!
+//! // First detection - allocates buffers
+//! let frontiers = detector.detect(&lines, &config);
+//!
+//! // Subsequent calls reuse buffers (zero allocation)
+//! let frontiers = detector.detect(&new_lines, &config);
+//! ```
 
 use std::collections::HashMap;
 
@@ -13,6 +31,230 @@ use crate::features::{Line2D, LineCollection};
 /// Spatial hash grid for endpoint proximity queries.
 /// Maps (cell_x, cell_y) -> Vec<(point, line_index, is_start_endpoint)>
 type EndpointGrid = HashMap<(i32, i32), Vec<(Point2D, usize, bool)>>;
+
+/// Persistent frontier detector with reusable buffers.
+///
+/// Avoids per-call allocations by maintaining:
+/// - Spatial hash grid with pre-allocated cell vectors
+/// - Output frontier buffer
+/// - Ranking distance buffer
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use vastu_map::query::frontier::{FrontierDetector, FrontierConfig};
+///
+/// let mut detector = FrontierDetector::new();
+/// let config = FrontierConfig::default();
+///
+/// // Reuses internal buffers across calls
+/// let frontiers = detector.detect(&lines, &config);
+/// let ranked = detector.rank(robot_position, &lines);
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct FrontierDetector {
+    /// Reusable spatial hash grid.
+    /// Cell vectors retain capacity across calls.
+    endpoint_grid: EndpointGrid,
+
+    /// Reusable output buffer for detected frontiers.
+    frontiers: Vec<Frontier>,
+
+    /// Reusable buffer for ranking frontiers by value.
+    ranked_frontiers: Vec<(Frontier, f32)>,
+
+    /// Reusable distance buffer for openness computation.
+    distance_buffer: Vec<f32>,
+
+    /// Cells that were used in the last detection (for efficient clearing).
+    used_cells: Vec<(i32, i32)>,
+}
+
+impl FrontierDetector {
+    /// Create a new frontier detector with default capacity.
+    pub fn new() -> Self {
+        Self::with_capacity(100, 50)
+    }
+
+    /// Create a frontier detector with capacity hints.
+    ///
+    /// # Arguments
+    /// * `expected_lines` - Expected number of lines per detection
+    /// * `expected_frontiers` - Expected number of frontiers per detection
+    pub fn with_capacity(expected_lines: usize, expected_frontiers: usize) -> Self {
+        Self {
+            endpoint_grid: HashMap::with_capacity(expected_lines * 2),
+            frontiers: Vec::with_capacity(expected_frontiers),
+            ranked_frontiers: Vec::with_capacity(expected_frontiers),
+            distance_buffer: Vec::with_capacity(expected_lines),
+            used_cells: Vec::with_capacity(expected_lines * 2),
+        }
+    }
+
+    /// Clear grid by clearing each used cell's vector (retains capacity).
+    #[inline]
+    fn clear_grid(&mut self) {
+        for cell in &self.used_cells {
+            if let Some(vec) = self.endpoint_grid.get_mut(cell) {
+                vec.clear();
+            }
+        }
+        self.used_cells.clear();
+    }
+
+    /// Insert an endpoint into the grid.
+    #[inline]
+    fn insert_endpoint(&mut self, point: Point2D, line_idx: usize, is_start: bool, cell_size: f32) {
+        let cell = point_to_cell(point, cell_size);
+
+        // Track this cell for efficient clearing
+        if let std::collections::hash_map::Entry::Vacant(e) = self.endpoint_grid.entry(cell) {
+            e.insert(Vec::with_capacity(4));
+            self.used_cells.push(cell);
+        } else if self.endpoint_grid.get(&cell).is_none_or(|v| v.is_empty()) {
+            // Cell exists but was cleared - track it again
+            self.used_cells.push(cell);
+        }
+
+        self.endpoint_grid
+            .get_mut(&cell)
+            .unwrap()
+            .push((point, line_idx, is_start));
+    }
+
+    /// Detect frontiers from map lines.
+    ///
+    /// Returns a slice of detected frontiers. The slice is valid until
+    /// the next call to `detect` or `detect_from_robot`.
+    ///
+    /// # Arguments
+    /// * `lines` - Map lines
+    /// * `config` - Frontier detection configuration
+    pub fn detect(&mut self, lines: &[Line2D], config: &FrontierConfig) -> &[Frontier] {
+        self.frontiers.clear();
+
+        if lines.is_empty() {
+            return &self.frontiers;
+        }
+
+        let cell_size = config.connection_distance;
+
+        // Clear and rebuild grid
+        self.clear_grid();
+
+        for (idx, line) in lines.iter().enumerate() {
+            for (point, is_start) in [(line.start, true), (line.end, false)] {
+                self.insert_endpoint(point, idx, is_start, cell_size);
+            }
+        }
+
+        // Find unconnected endpoints
+        for (idx, line) in lines.iter().enumerate() {
+            for (point, is_start) in [(line.start, true), (line.end, false)] {
+                let cell = point_to_cell(point, cell_size);
+                if !is_connected_in_grid(
+                    &self.endpoint_grid,
+                    cell,
+                    point,
+                    idx,
+                    config.connection_distance,
+                ) {
+                    self.frontiers.push(Frontier {
+                        point,
+                        line_idx: idx,
+                        is_start,
+                    });
+                }
+            }
+        }
+
+        &self.frontiers
+    }
+
+    /// Detect frontiers filtered by distance from robot.
+    ///
+    /// Returns a slice of detected frontiers. The slice is valid until
+    /// the next call to `detect` or `detect_from_robot`.
+    pub fn detect_from_robot(
+        &mut self,
+        lines: &[Line2D],
+        robot_position: Point2D,
+        config: &FrontierConfig,
+    ) -> &[Frontier] {
+        // First detect all frontiers
+        self.detect(lines, config);
+
+        // Filter in place by distance
+        self.frontiers
+            .retain(|f| f.point.distance(robot_position) >= config.min_distance_from_robot);
+
+        &self.frontiers
+    }
+
+    /// Rank the currently detected frontiers by exploration value.
+    ///
+    /// Must be called after `detect` or `detect_from_robot`.
+    /// Returns a slice of (frontier, value) pairs sorted by value (best first).
+    pub fn rank(&mut self, robot_position: Point2D, lines: &[Line2D]) -> &[(Frontier, f32)] {
+        self.ranked_frontiers.clear();
+
+        if lines.is_empty() {
+            for f in &self.frontiers {
+                self.ranked_frontiers.push((f.clone(), 0.0));
+            }
+            return &self.ranked_frontiers;
+        }
+
+        // Create LineCollection for SIMD-optimized distance computation
+        let line_collection = LineCollection::from_lines(lines);
+
+        for f in &self.frontiers {
+            let distance = f.point.distance(robot_position);
+            let openness =
+                compute_openness_simd(f, lines, &line_collection, &mut self.distance_buffer);
+
+            let distance_factor = 1.0 / (1.0 + distance * 0.1);
+            let value = distance_factor * 0.3 + openness * 0.7;
+
+            self.ranked_frontiers.push((f.clone(), value));
+        }
+
+        // Sort by value (descending)
+        self.ranked_frontiers
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        &self.ranked_frontiers
+    }
+
+    /// Get the best frontier for exploration.
+    ///
+    /// Convenience method that detects, filters, and ranks frontiers.
+    pub fn get_best(
+        &mut self,
+        lines: &[Line2D],
+        robot_position: Point2D,
+        config: &FrontierConfig,
+    ) -> Option<Frontier> {
+        self.detect_from_robot(lines, robot_position, config);
+
+        if self.frontiers.is_empty() {
+            return None;
+        }
+
+        self.rank(robot_position, lines);
+        self.ranked_frontiers.first().map(|(f, _)| f.clone())
+    }
+
+    /// Get the currently detected frontiers (from last detect call).
+    pub fn frontiers(&self) -> &[Frontier] {
+        &self.frontiers
+    }
+
+    /// Get the currently ranked frontiers (from last rank call).
+    pub fn ranked_frontiers(&self) -> &[(Frontier, f32)] {
+        &self.ranked_frontiers
+    }
+}
 
 /// Configuration for frontier detection.
 #[derive(Clone, Debug)]
@@ -601,5 +843,128 @@ mod tests {
 
         // End of single line should have high openness
         assert!(openness > 0.0);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FrontierDetector tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_detector_new() {
+        let detector = FrontierDetector::new();
+        assert!(detector.frontiers().is_empty());
+        assert!(detector.ranked_frontiers().is_empty());
+    }
+
+    #[test]
+    fn test_detector_detect_single_line() {
+        let mut detector = FrontierDetector::new();
+        let lines = vec![Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0))];
+        let config = FrontierConfig::default();
+
+        let frontiers = detector.detect(&lines, &config);
+
+        // Both endpoints are unconnected
+        assert_eq!(frontiers.len(), 2);
+    }
+
+    #[test]
+    fn test_detector_detect_complete_room() {
+        let mut detector = FrontierDetector::new();
+        let lines = make_complete_room();
+        let config = FrontierConfig::default();
+
+        let frontiers = detector.detect(&lines, &config);
+
+        // Complete room - all corners connected
+        assert_eq!(frontiers.len(), 0);
+    }
+
+    #[test]
+    fn test_detector_detect_from_robot() {
+        let mut detector = FrontierDetector::new();
+        let lines = vec![Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0))];
+        let robot = Point2D::new(0.0, 0.0);
+        let config = FrontierConfig::default().with_min_distance_from_robot(1.0);
+
+        let frontiers = detector.detect_from_robot(&lines, robot, &config);
+
+        // Start endpoint at robot filtered, end endpoint included
+        assert_eq!(frontiers.len(), 1);
+        assert!(!frontiers[0].is_start);
+    }
+
+    #[test]
+    fn test_detector_rank() {
+        let mut detector = FrontierDetector::new();
+        let lines = vec![
+            Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0)),
+            Line2D::new(Point2D::new(0.0, 10.0), Point2D::new(5.0, 10.0)),
+        ];
+        let robot = Point2D::new(0.0, 0.0);
+        let config = FrontierConfig::default();
+
+        detector.detect(&lines, &config);
+        let ranked = detector.rank(robot, &lines);
+
+        assert!(!ranked.is_empty());
+        // Values should be sorted descending
+        for i in 1..ranked.len() {
+            assert!(ranked[i - 1].1 >= ranked[i].1);
+        }
+    }
+
+    #[test]
+    fn test_detector_get_best() {
+        let mut detector = FrontierDetector::new();
+        let lines = make_partial_room();
+        let robot = Point2D::zero();
+        let config = FrontierConfig::default();
+
+        let best = detector.get_best(&lines, robot, &config);
+
+        assert!(best.is_some());
+    }
+
+    #[test]
+    fn test_detector_reuse_buffers() {
+        let mut detector = FrontierDetector::new();
+        let config = FrontierConfig::default();
+
+        // First detection
+        let lines1 = vec![Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0))];
+        let frontiers1 = detector.detect(&lines1, &config);
+        assert_eq!(frontiers1.len(), 2);
+
+        // Second detection with different lines - should reuse buffers
+        let lines2 = make_complete_room();
+        let frontiers2 = detector.detect(&lines2, &config);
+        assert_eq!(frontiers2.len(), 0);
+
+        // Third detection - back to single line
+        let frontiers3 = detector.detect(&lines1, &config);
+        assert_eq!(frontiers3.len(), 2);
+    }
+
+    #[test]
+    fn test_detector_equivalence_to_standalone() {
+        let mut detector = FrontierDetector::new();
+        let lines = make_partial_room();
+        let config = FrontierConfig::default();
+
+        // Compare detector results to standalone function results
+        let detector_frontiers = detector.detect(&lines, &config);
+        let standalone_frontiers = detect_frontiers(&lines, &config);
+
+        assert_eq!(detector_frontiers.len(), standalone_frontiers.len());
+
+        // Check same frontiers detected (may be in different order)
+        for f in standalone_frontiers.iter() {
+            assert!(
+                detector_frontiers
+                    .iter()
+                    .any(|df| { df.line_idx == f.line_idx && df.is_start == f.is_start })
+            );
+        }
     }
 }

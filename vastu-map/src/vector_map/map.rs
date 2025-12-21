@@ -16,6 +16,94 @@ use crate::{Frontier, Map, ObserveResult, Occupancy, Path, TimingBreakdown};
 use super::config::VectorMapConfig;
 use super::line_store::LineStore;
 
+// ============================================================================
+// Scratch Space for Zero-Allocation Observe Pipeline
+// ============================================================================
+
+/// Pre-allocated scratch space for the observe pipeline.
+///
+/// Eliminates per-observation allocations by reusing buffers across calls.
+/// This is critical for real-time SLAM at high observation rates (5-110 Hz).
+///
+/// # Performance Impact
+///
+/// Without scratch space, each `observe()` call allocates:
+/// - `robot_frame_points`: O(n) points for ICP (done up to 3x per observation!)
+/// - `lines_robot`: O(m) lines from extraction
+/// - `lines_world`: O(m) lines after transform
+/// - `scan_lines`: O(m) lines for integration
+///
+/// With scratch space, these allocations happen once and are reused.
+#[derive(Clone, Debug, Default)]
+pub struct ObserveScratchSpace {
+    /// Buffer for robot-frame scan points.
+    /// Reused for ICP matching and loop closure.
+    robot_frame_points: Vec<Point2D>,
+
+    /// Buffer for extracted lines in robot frame.
+    lines_robot: Vec<Line2D>,
+
+    /// Buffer for lines transformed to world frame.
+    lines_world: Vec<Line2D>,
+}
+
+impl ObserveScratchSpace {
+    /// Create new scratch space with capacity hints.
+    ///
+    /// # Arguments
+    /// * `max_points` - Expected maximum scan points (e.g., 360 for typical lidar)
+    /// * `max_lines` - Expected maximum lines per scan (e.g., 20-50)
+    pub fn with_capacity(max_points: usize, max_lines: usize) -> Self {
+        Self {
+            robot_frame_points: Vec::with_capacity(max_points),
+            lines_robot: Vec::with_capacity(max_lines),
+            lines_world: Vec::with_capacity(max_lines),
+        }
+    }
+
+    /// Create with default capacity (360 points, 50 lines).
+    pub fn default_capacity() -> Self {
+        Self::with_capacity(360, 50)
+    }
+
+    /// Fill robot_frame_points from a PointCloud2D.
+    #[inline]
+    pub fn fill_robot_frame_points(&mut self, scan: &PointCloud2D) {
+        self.robot_frame_points.clear();
+        self.robot_frame_points.reserve(scan.len());
+        self.robot_frame_points.extend(scan.iter());
+    }
+
+    /// Get robot frame points slice.
+    #[inline]
+    pub fn robot_frame_points(&self) -> &[Point2D] {
+        &self.robot_frame_points
+    }
+
+    /// Fill lines_robot from extracted lines.
+    #[inline]
+    pub fn fill_lines_robot(&mut self, lines: &[Line2D]) {
+        self.lines_robot.clear();
+        self.lines_robot.extend_from_slice(lines);
+    }
+
+    /// Transform robot-frame lines to world frame and store in lines_world.
+    #[inline]
+    pub fn transform_lines_to_world(&mut self, pose: &Pose2D) {
+        self.lines_world.clear();
+        self.lines_world.reserve(self.lines_robot.len());
+        for line in &self.lines_robot {
+            self.lines_world.push(line.transform(pose));
+        }
+    }
+
+    /// Get world-frame lines slice.
+    #[inline]
+    pub fn lines_world(&self) -> &[Line2D] {
+        &self.lines_world
+    }
+}
+
 /// VectorMap: Feature-based 2D SLAM map.
 ///
 /// Stores the environment as a collection of line and corner features.
@@ -65,6 +153,9 @@ pub struct VectorMap {
 
     /// Persistent ICP matcher (preserves state across scans for adaptive coarse search).
     icp_matcher: PointToLineIcp,
+
+    /// Pre-allocated scratch space for observe pipeline (zero-allocation).
+    observe_scratch: ObserveScratchSpace,
 }
 
 impl VectorMap {
@@ -81,6 +172,7 @@ impl VectorMap {
             loop_detector,
             loop_closures: Vec::new(),
             icp_matcher,
+            observe_scratch: ObserveScratchSpace::default_capacity(),
         }
     }
 
@@ -172,14 +264,15 @@ impl VectorMap {
         // Apply odometry to get predicted pose
         let predicted_pose = self.current_pose.compose(odometry);
 
-        // Get robot-frame scan points for weighted ICP matching
-        let robot_frame_points: Vec<Point2D> = scan.iter().collect();
+        // Get robot-frame scan points for weighted ICP matching (reuse scratch buffer)
+        self.observe_scratch.fill_robot_frame_points(scan);
 
         // ─── ICP Matching ───
         let icp_start = Instant::now();
-        let match_result = self.icp_matcher.match_scan_robot_frame(
-            &robot_frame_points,
-            self.line_store.lines(),
+        // Use cached LineCollection from LineStore (avoids rebuilding SoA structure)
+        let match_result = self.icp_matcher.match_scan_robot_frame_collection(
+            self.observe_scratch.robot_frame_points(),
+            self.line_store.collection(),
             predicted_pose,
         );
         timing.icp_matching_us = icp_start.elapsed().as_micros() as u64;
@@ -242,11 +335,12 @@ impl VectorMap {
         self.current_pose = final_pose;
 
         // ─── Feature Extraction ───
-        let features = self.extract_features_timed(scan, &final_pose, &mut timing);
+        // (robot_frame_points already filled in scratch above)
+        let features = self.extract_features_timed(&final_pose, &mut timing);
 
         // ─── Feature Integration ───
         let (features_added, features_merged) = if self.config.mapping_enabled {
-            self.integrate_features_timed(&features, &mut timing)
+            self.integrate_features_timed(&mut timing)
         } else {
             (0, 0)
         };
@@ -254,7 +348,7 @@ impl VectorMap {
         // ─── Loop Closure ───
         let loop_closure_detected = if self.config.loop_closure_enabled {
             let lc_start = Instant::now();
-            let robot_points: Vec<Point2D> = scan.iter().collect();
+            // Reuse robot_frame_points from scratch (already filled for ICP)
             let feature_lines = features.lines();
             let feature_corners = features.corners();
 
@@ -262,7 +356,7 @@ impl VectorMap {
                 final_pose,
                 &feature_lines,
                 &feature_corners,
-                &robot_points,
+                self.observe_scratch.robot_frame_points(),
             ) {
                 self.loop_closures.push(loop_closure);
                 true
@@ -297,13 +391,15 @@ impl VectorMap {
 
         self.current_pose = odometry;
 
+        // Fill scratch with robot frame points (used by feature extraction and loop closure)
+        self.observe_scratch.fill_robot_frame_points(scan);
+
         // Extract features from robot-frame scan, transform to world using odometry
-        let features = self.extract_features_timed(scan, &odometry, &mut timing);
+        let features = self.extract_features_timed(&odometry, &mut timing);
 
         // Add all features to map
         let num_lines = features.lines().len();
-        let feature_lines: Vec<Line2D> = features.lines().to_vec();
-        self.add_lines(&feature_lines);
+        self.add_lines(&features.lines());
 
         for corner in features.corners() {
             self.corners.push(corner);
@@ -312,14 +408,13 @@ impl VectorMap {
         // Initialize first keyframe if loop closure is enabled
         if self.config.loop_closure_enabled {
             let lc_start = Instant::now();
-            let robot_points: Vec<Point2D> = scan.iter().collect();
             let feature_lines = features.lines();
             let feature_corners = features.corners();
             self.loop_detector.force_keyframe(
                 odometry,
                 &feature_lines,
                 &feature_corners,
-                &robot_points,
+                self.observe_scratch.robot_frame_points(),
             );
             timing.loop_closure_us = lc_start.elapsed().as_micros() as u64;
         }
@@ -340,47 +435,49 @@ impl VectorMap {
     }
 
     /// Extract features from a scan with timing.
+    ///
+    /// NOTE: Caller must fill observe_scratch.robot_frame_points before calling this.
     fn extract_features_timed(
-        &self,
-        scan_robot_frame: &PointCloud2D,
+        &mut self,
         pose: &Pose2D,
         timing: &mut TimingBreakdown,
     ) -> FeatureSet {
-        let points: Vec<Point2D> = scan_robot_frame.iter().collect();
+        // Use robot_frame_points from scratch (already filled by caller)
+        let points = self.observe_scratch.robot_frame_points();
 
         // ─── Line Extraction ───
         let line_start = Instant::now();
         let lines_robot = if self.config.use_hybrid_extraction {
             // Hybrid: RANSAC for dominant lines, then split-merge for remaining
             extract_lines_hybrid(
-                &points,
+                points,
                 &self.config.ransac_extraction,
                 &self.config.extraction,
             )
         } else {
             // Default: split-merge (preserves angular ordering)
-            extract_lines(&points, &self.config.extraction)
+            extract_lines(points, &self.config.extraction)
         };
 
-        // Transform lines to world frame
-        let lines_world: Vec<Line2D> = lines_robot.iter().map(|l| l.transform(pose)).collect();
+        // Transform lines to world frame using scratch buffer
+        self.observe_scratch.fill_lines_robot(&lines_robot);
+        self.observe_scratch.transform_lines_to_world(pose);
         timing.line_extraction_us = line_start.elapsed().as_micros() as u64;
 
         // ─── Corner Detection ───
         let corner_start = Instant::now();
-        let corners = detect_corners(&lines_world, &self.config.corner);
+        let corners = detect_corners(self.observe_scratch.lines_world(), &self.config.corner);
         timing.corner_detection_us = corner_start.elapsed().as_micros() as u64;
 
-        FeatureSet::from_features(&lines_world, &corners)
+        FeatureSet::from_features(self.observe_scratch.lines_world(), &corners)
     }
 
     /// Integrate new features into the map with timing.
-    fn integrate_features_timed(
-        &mut self,
-        features: &FeatureSet,
-        timing: &mut TimingBreakdown,
-    ) -> (usize, usize) {
-        let scan_lines: Vec<Line2D> = features.lines().to_vec();
+    ///
+    /// NOTE: Uses lines_world from observe_scratch (filled by extract_features_timed).
+    fn integrate_features_timed(&mut self, timing: &mut TimingBreakdown) -> (usize, usize) {
+        // Use lines from scratch (already in world frame from extract_features_timed)
+        let scan_lines = self.observe_scratch.lines_world();
 
         if scan_lines.is_empty() {
             return (0, 0);
@@ -389,7 +486,7 @@ impl VectorMap {
         // ─── Association ───
         let assoc_start = Instant::now();
         let associations = find_associations(
-            &scan_lines,
+            scan_lines,
             self.line_store.lines(),
             Some(self.line_store.index()),
             &self.config.association,
@@ -399,7 +496,7 @@ impl VectorMap {
         // ─── Merging ───
         let merge_start = Instant::now();
         let merged = batch_merge(
-            &scan_lines,
+            scan_lines,
             self.line_store.lines_mut(),
             &associations,
             &self.config.merger,
@@ -410,7 +507,7 @@ impl VectorMap {
         // ─── New Features ───
         let new_start = Instant::now();
         let unmatched = find_unmatched_scan_lines(
-            &scan_lines,
+            scan_lines,
             self.line_store.lines(),
             Some(self.line_store.index()),
             &self.config.association,

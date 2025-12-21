@@ -56,7 +56,9 @@ pub use line_fitting::{
     fitting_error, fitting_error_weighted, max_distance_point,
 };
 // Re-export from ransac_lines module
-pub use ransac_lines::{RansacLineConfig, extract_lines_ransac};
+pub use ransac_lines::{
+    RansacLineConfig, RansacScratchSpace, extract_lines_ransac, extract_lines_ransac_with_scratch,
+};
 // Re-export from split_merge submodule
 pub use split_merge::{
     SplitMergeConfig, adaptive_split_threshold, extract_lines, extract_lines_from_sensor,
@@ -118,4 +120,55 @@ pub fn extract_lines_hybrid(
     }
 
     lines
+}
+
+/// Extract lines using hybrid RANSAC + split-merge with pre-allocated scratch space.
+///
+/// This is the zero-allocation version for real-time applications.
+/// Reuse the scratch space across multiple calls to eliminate allocations.
+///
+/// # Arguments
+/// * `points` - Input point cloud
+/// * `ransac_config` - Configuration for RANSAC extraction
+/// * `split_merge_config` - Configuration for split-merge extraction
+/// * `scratch` - Pre-allocated RANSAC scratch space
+/// * `output_lines` - Buffer to store output lines (cleared and filled)
+///
+/// # Example
+/// ```rust,ignore
+/// let mut scratch = RansacScratchSpace::with_capacity(400);
+/// let mut lines = Vec::new();
+///
+/// for scan in scans {
+///     extract_lines_hybrid_with_scratch(&scan, &ransac_cfg, &sm_cfg, &mut scratch, &mut lines);
+///     // lines contains extracted features, scratch is reused
+/// }
+/// ```
+pub fn extract_lines_hybrid_with_scratch(
+    points: &[Point2D],
+    ransac_config: &RansacLineConfig,
+    split_merge_config: &SplitMergeConfig,
+    scratch: &mut RansacScratchSpace,
+    output_lines: &mut Vec<Line2D>,
+) {
+    output_lines.clear();
+
+    if points.is_empty() {
+        return;
+    }
+
+    // Step 1: RANSAC for dominant lines (using scratch space)
+    let (ransac_lines, remaining_indices) =
+        extract_lines_ransac_with_scratch(points, ransac_config, scratch);
+    output_lines.extend_from_slice(ransac_lines);
+
+    // Step 2: Split-merge on remaining points
+    // Note: We still need to collect remaining points for split-merge,
+    // but at least the expensive RANSAC iterations are allocation-free
+    if remaining_indices.len() >= 3 {
+        let remaining_points: Vec<Point2D> = remaining_indices.iter().map(|&i| points[i]).collect();
+
+        let additional_lines = extract_lines(&remaining_points, split_merge_config);
+        output_lines.extend(additional_lines);
+    }
 }

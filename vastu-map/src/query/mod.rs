@@ -29,7 +29,7 @@ pub mod raycast;
 
 // Re-export main types and functions
 pub use frontier::{
-    FrontierConfig, cluster_centroid, cluster_frontiers, detect_frontiers,
+    FrontierConfig, FrontierDetector, cluster_centroid, cluster_frontiers, detect_frontiers,
     detect_frontiers_from_robot, get_best_frontier, rank_frontiers,
 };
 pub use occupancy::{
