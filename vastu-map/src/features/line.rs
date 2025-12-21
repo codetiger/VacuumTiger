@@ -93,6 +93,80 @@ impl Line2D {
         )
     }
 
+    /// Get a point along the line at parameter t.
+    ///
+    /// - `t = 0`: returns start point
+    /// - `t = 1`: returns end point
+    /// - `t = 0.5`: returns midpoint
+    #[inline]
+    pub fn point_at(&self, t: f32) -> Point2D {
+        Point2D::new(
+            self.start.x + t * (self.end.x - self.start.x),
+            self.start.y + t * (self.end.y - self.start.y),
+        )
+    }
+
+    /// Get a perpendicular line at parameter t along this line.
+    ///
+    /// Returns a unit-length line perpendicular to this line,
+    /// centered at `point_at(t)`.
+    ///
+    /// # Arguments
+    /// * `t` - Parameter along line (0=start, 1=end, 0.5=midpoint)
+    /// * `length` - Length of the perpendicular line (centered on the point)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(4.0, 0.0));
+    /// let perp = line.perpendicular_at(0.5, 2.0);
+    /// // perp goes from (2, -1) to (2, 1) - perpendicular at midpoint
+    /// ```
+    #[inline]
+    pub fn perpendicular_at(&self, t: f32, length: f32) -> Line2D {
+        let center = self.point_at(t);
+        let normal = self.normal();
+        let half_len = length * 0.5;
+
+        Line2D::new(
+            Point2D::new(
+                center.x - normal.x * half_len,
+                center.y - normal.y * half_len,
+            ),
+            Point2D::new(
+                center.x + normal.x * half_len,
+                center.y + normal.y * half_len,
+            ),
+        )
+    }
+
+    /// Extend this line by a factor in both directions.
+    ///
+    /// # Arguments
+    /// * `factor` - Extension factor (1.0 = no change, 2.0 = double length)
+    ///
+    /// The line is extended symmetrically from its midpoint.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0));
+    /// let extended = line.extended(2.0);
+    /// // extended goes from (-1, 0) to (3, 0) - doubled in length
+    /// ```
+    #[inline]
+    pub fn extended(&self, factor: f32) -> Line2D {
+        let mid = self.midpoint();
+        let half_dir = Point2D::new(
+            (self.end.x - self.start.x) * 0.5 * factor,
+            (self.end.y - self.start.y) * 0.5 * factor,
+        );
+
+        Line2D::with_observation_count(
+            Point2D::new(mid.x - half_dir.x, mid.y - half_dir.y),
+            Point2D::new(mid.x + half_dir.x, mid.y + half_dir.y),
+            self.observation_count,
+        )
+    }
+
     /// Angle of the line direction from X-axis (in radians, [-π, π]).
     #[inline]
     pub fn angle(&self) -> f32 {
@@ -172,12 +246,26 @@ impl Line2D {
         (0.0..=1.0).contains(&t)
     }
 
-    /// Get the point on the line at parameter t.
+    /// Check if a projection parameter t falls within the segment with extension tolerance.
     ///
-    /// `t = 0` gives start, `t = 1` gives end.
+    /// Allows points to project slightly beyond line endpoints by `extension` amount.
+    /// The valid range becomes `[-extension, 1 + extension]`.
+    ///
+    /// # Arguments
+    /// * `t` - Projection parameter (0 = start, 1 = end)
+    /// * `extension` - Tolerance for projection beyond endpoints (e.g., 0.2 = 20% extension)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(10.0, 0.0));
+    /// let t = line.project_point(Point2D::new(-1.0, 0.5)); // t ≈ -0.1
+    ///
+    /// assert!(!line.contains_projection(t));              // Outside [0, 1]
+    /// assert!(line.contains_projection_extended(t, 0.2)); // Inside [-0.2, 1.2]
+    /// ```
     #[inline]
-    pub fn point_at(&self, t: f32) -> Point2D {
-        self.start.lerp(self.end, t)
+    pub fn contains_projection_extended(&self, t: f32, extension: f32) -> bool {
+        t >= -extension && t <= 1.0 + extension
     }
 
     /// Distance from a point to the line segment (not infinite line).
@@ -418,12 +506,74 @@ mod tests {
     }
 
     #[test]
+    fn test_contains_projection_extended() {
+        let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(10.0, 0.0));
+
+        // With 0.2 extension, valid range is [-0.2, 1.2]
+        assert!(line.contains_projection_extended(0.0, 0.2));
+        assert!(line.contains_projection_extended(0.5, 0.2));
+        assert!(line.contains_projection_extended(1.0, 0.2));
+        assert!(line.contains_projection_extended(-0.1, 0.2)); // Within extension
+        assert!(line.contains_projection_extended(1.1, 0.2)); // Within extension
+        assert!(!line.contains_projection_extended(-0.3, 0.2)); // Beyond extension
+        assert!(!line.contains_projection_extended(1.3, 0.2)); // Beyond extension
+
+        // Zero extension = strict [0, 1]
+        assert!(!line.contains_projection_extended(-0.1, 0.0));
+        assert!(!line.contains_projection_extended(1.1, 0.0));
+    }
+
+    #[test]
     fn test_point_at() {
         let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(10.0, 0.0));
 
         assert_eq!(line.point_at(0.0), line.start);
         assert_eq!(line.point_at(1.0), line.end);
         assert_eq!(line.point_at(0.5), Point2D::new(5.0, 0.0));
+    }
+
+    #[test]
+    fn test_perpendicular_at() {
+        // Horizontal line
+        let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(4.0, 0.0));
+
+        // Perpendicular at midpoint with length 2
+        let perp = line.perpendicular_at(0.5, 2.0);
+
+        // Center should be at (2, 0)
+        assert_relative_eq!(perp.midpoint().x, 2.0, epsilon = 1e-6);
+        assert_relative_eq!(perp.midpoint().y, 0.0, epsilon = 1e-6);
+
+        // Should be vertical (length 2)
+        assert_relative_eq!(perp.length(), 2.0, epsilon = 1e-6);
+
+        // Endpoints should be at (2, -1) and (2, 1)
+        assert_relative_eq!(perp.start.x, 2.0, epsilon = 1e-6);
+        assert_relative_eq!(perp.end.x, 2.0, epsilon = 1e-6);
+        assert_relative_eq!((perp.start.y - perp.end.y).abs(), 2.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_extended() {
+        let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0));
+
+        // Double the length
+        let ext = line.extended(2.0);
+
+        // Midpoint should be same
+        assert_relative_eq!(ext.midpoint().x, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(ext.midpoint().y, 0.0, epsilon = 1e-6);
+
+        // Length should be doubled
+        assert_relative_eq!(ext.length(), 4.0, epsilon = 1e-6);
+
+        // Endpoints should be at (-1, 0) and (3, 0)
+        assert_relative_eq!(ext.start.x, -1.0, epsilon = 1e-6);
+        assert_relative_eq!(ext.end.x, 3.0, epsilon = 1e-6);
+
+        // No change when factor is 1.0
+        let same = line.extended(1.0);
+        assert_relative_eq!(same.length(), 2.0, epsilon = 1e-6);
     }
 
     #[test]

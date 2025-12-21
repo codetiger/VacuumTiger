@@ -99,6 +99,113 @@ impl IcpConfig {
         Self::default()
     }
 
+    // ===== Preset Configurations =====
+
+    /// Fast preset: Optimized for speed at the cost of some accuracy.
+    ///
+    /// Good for:
+    /// - Real-time applications with tight timing constraints
+    /// - Situations where odometry is reliable
+    /// - High-frequency (>10Hz) scan matching
+    ///
+    /// Trade-offs:
+    /// - Fewer iterations may not converge for poor initial guesses
+    /// - No multi-resolution (faster but less robust)
+    /// - Larger correspondence distance (fewer false negatives)
+    pub fn fast() -> Self {
+        let convergence_threshold = 5e-4;
+        Self {
+            max_iterations: 15,
+            convergence_threshold,
+            convergence_threshold_sq: convergence_threshold * convergence_threshold,
+            max_correspondence_distance: 0.6,
+            robust_cost: RobustCostFunction::Huber { delta: 0.05 },
+            use_irls: false, // Skip IRLS for speed
+            min_correspondences: 8,
+            min_confidence: 0.25,
+            use_ransac_init: false, // Trust odometry
+            use_batch_search: true,
+            noise_model: LidarNoiseModel::default(),
+            use_coarse_search: false,
+            coarse_search_confidence_threshold: 0.5,
+            multi_resolution: MultiResolutionConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Accurate preset: Optimized for accuracy at the cost of speed.
+    ///
+    /// Good for:
+    /// - Mapping applications where precision matters
+    /// - Situations with poor odometry
+    /// - Loop closure verification
+    ///
+    /// Trade-offs:
+    /// - More iterations = longer compute time
+    /// - Tighter thresholds may cause false rejections
+    pub fn accurate() -> Self {
+        let convergence_threshold = 1e-5;
+        Self {
+            max_iterations: 50,
+            convergence_threshold,
+            convergence_threshold_sq: convergence_threshold * convergence_threshold,
+            max_correspondence_distance: 0.4,
+            robust_cost: RobustCostFunction::Tukey { c: 0.02 }, // Aggressive outlier rejection
+            use_irls: true,
+            min_correspondences: 15,
+            min_confidence: 0.4,
+            use_ransac_init: true,
+            use_batch_search: true,
+            noise_model: LidarNoiseModel::default(),
+            use_coarse_search: true,
+            coarse_search_confidence_threshold: 0.6,
+            multi_resolution: MultiResolutionConfig {
+                enabled: true,
+                levels: 3,
+                subsample_factor: 2,
+                iterations_per_level: vec![5, 10, 15],
+            },
+        }
+    }
+
+    /// Balanced preset: Good trade-off between speed and accuracy.
+    ///
+    /// This is the same as `default()` but with a more descriptive name.
+    /// Suitable for most indoor navigation applications.
+    pub fn balanced() -> Self {
+        Self::default()
+    }
+
+    /// Robust preset: Optimized for challenging environments with outliers.
+    ///
+    /// Good for:
+    /// - Environments with dynamic obstacles
+    /// - Cluttered or partially occluded scenes
+    /// - Glass walls or reflective surfaces
+    ///
+    /// Uses aggressive outlier rejection but maintains accuracy.
+    pub fn robust() -> Self {
+        let convergence_threshold = 1e-4;
+        Self {
+            max_iterations: 40,
+            convergence_threshold,
+            convergence_threshold_sq: convergence_threshold * convergence_threshold,
+            max_correspondence_distance: 0.5,
+            robust_cost: RobustCostFunction::GemanMcClure { scale: 0.02 }, // Heavy outlier rejection
+            use_irls: true,
+            min_correspondences: 12,
+            min_confidence: 0.35,
+            use_ransac_init: true,
+            use_batch_search: true,
+            noise_model: LidarNoiseModel::default(),
+            use_coarse_search: true,
+            coarse_search_confidence_threshold: 0.5,
+            multi_resolution: MultiResolutionConfig::default(),
+        }
+    }
+
     /// Builder-style setter for maximum iterations.
     pub fn with_max_iterations(mut self, iterations: usize) -> Self {
         self.max_iterations = iterations;

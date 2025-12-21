@@ -6,6 +6,82 @@ use crate::loop_closure::LoopClosureConfig;
 use crate::matching::IcpConfig;
 use crate::query::{FrontierConfig, OccupancyConfig};
 
+// ============================================================================
+// Configuration Validation
+// ============================================================================
+
+/// Errors that can occur during configuration validation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigError {
+    /// A threshold value is invalid (negative or zero when positive required).
+    InvalidThreshold {
+        /// Name of the configuration field.
+        field: &'static str,
+        /// The invalid value.
+        value: f32,
+        /// Description of the constraint violated.
+        constraint: &'static str,
+    },
+    /// An iteration count is invalid (zero or too high).
+    InvalidIterations {
+        /// Name of the configuration field.
+        field: &'static str,
+        /// The invalid value.
+        value: usize,
+        /// Description of the constraint violated.
+        constraint: &'static str,
+    },
+    /// A probability value is out of range [0, 1].
+    InvalidProbability {
+        /// Name of the configuration field.
+        field: &'static str,
+        /// The invalid value.
+        value: f32,
+    },
+    /// Configuration values are inconsistent with each other.
+    InconsistentConfig {
+        /// Description of the inconsistency.
+        message: String,
+    },
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConfigError::InvalidThreshold {
+                field,
+                value,
+                constraint,
+            } => {
+                write!(f, "invalid threshold {}: {} ({})", field, value, constraint)
+            }
+            ConfigError::InvalidIterations {
+                field,
+                value,
+                constraint,
+            } => {
+                write!(
+                    f,
+                    "invalid iteration count {}: {} ({})",
+                    field, value, constraint
+                )
+            }
+            ConfigError::InvalidProbability { field, value } => {
+                write!(
+                    f,
+                    "invalid probability {}: {} (must be in [0, 1])",
+                    field, value
+                )
+            }
+            ConfigError::InconsistentConfig { message } => {
+                write!(f, "inconsistent configuration: {}", message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 /// Configuration for VectorMap.
 #[derive(Clone, Debug)]
 pub struct VectorMapConfig {
@@ -221,6 +297,161 @@ impl VectorMapConfig {
     /// subsampled point clouds for faster convergence from poor initial guesses.
     pub fn with_multi_resolution_icp(mut self, enabled: bool) -> Self {
         self.matching.multi_resolution.enabled = enabled;
+        self
+    }
+
+    // ===== Configuration Validation =====
+
+    /// Validate the configuration parameters.
+    ///
+    /// Checks that all parameters are within valid ranges and consistent with each other.
+    /// Call this after building a configuration to catch errors early.
+    ///
+    /// # Returns
+    /// `Ok(())` if configuration is valid, `Err(ConfigError)` otherwise.
+    ///
+    /// # Example
+    /// ```rust
+    /// use vastu_map::VectorMapConfig;
+    ///
+    /// let config = VectorMapConfig::default();
+    /// assert!(config.validate().is_ok());
+    ///
+    /// // Invalid config with zero iterations would fail
+    /// let mut bad_config = VectorMapConfig::default();
+    /// bad_config.matching.max_iterations = 0;
+    /// assert!(bad_config.validate().is_err());
+    /// ```
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        // === ICP Configuration ===
+
+        if self.matching.max_iterations == 0 {
+            return Err(ConfigError::InvalidIterations {
+                field: "matching.max_iterations",
+                value: 0,
+                constraint: "must be at least 1",
+            });
+        }
+
+        if self.matching.max_correspondence_distance <= 0.0 {
+            return Err(ConfigError::InvalidThreshold {
+                field: "matching.max_correspondence_distance",
+                value: self.matching.max_correspondence_distance,
+                constraint: "must be positive",
+            });
+        }
+
+        if self.matching.convergence_threshold <= 0.0 {
+            return Err(ConfigError::InvalidThreshold {
+                field: "matching.convergence_threshold",
+                value: self.matching.convergence_threshold,
+                constraint: "must be positive",
+            });
+        }
+
+        if self.matching.min_correspondences == 0 {
+            return Err(ConfigError::InvalidIterations {
+                field: "matching.min_correspondences",
+                value: 0,
+                constraint: "must be at least 1",
+            });
+        }
+
+        // === RANSAC Configuration ===
+
+        if self.ransac_extraction.iterations == 0 {
+            return Err(ConfigError::InvalidIterations {
+                field: "ransac_extraction.iterations",
+                value: 0,
+                constraint: "must be at least 1",
+            });
+        }
+
+        if self.ransac_extraction.inlier_threshold <= 0.0 {
+            return Err(ConfigError::InvalidThreshold {
+                field: "ransac_extraction.inlier_threshold",
+                value: self.ransac_extraction.inlier_threshold,
+                constraint: "must be positive",
+            });
+        }
+
+        // === Association Configuration ===
+
+        if self.association.max_perpendicular_distance <= 0.0 {
+            return Err(ConfigError::InvalidThreshold {
+                field: "association.max_perpendicular_distance",
+                value: self.association.max_perpendicular_distance,
+                constraint: "must be positive",
+            });
+        }
+
+        if self.association.max_angle_difference <= 0.0
+            || self.association.max_angle_difference > std::f32::consts::PI
+        {
+            return Err(ConfigError::InvalidThreshold {
+                field: "association.max_angle_difference",
+                value: self.association.max_angle_difference,
+                constraint: "must be in (0, π]",
+            });
+        }
+
+        // === Confidence Threshold ===
+
+        if self.min_match_confidence < 0.0 || self.min_match_confidence > 1.0 {
+            return Err(ConfigError::InvalidProbability {
+                field: "min_match_confidence",
+                value: self.min_match_confidence,
+            });
+        }
+
+        // === Split-Merge Configuration ===
+
+        if self.extraction.min_length <= 0.0 {
+            return Err(ConfigError::InvalidThreshold {
+                field: "extraction.min_length",
+                value: self.extraction.min_length,
+                constraint: "must be positive",
+            });
+        }
+
+        if self.extraction.split_threshold <= 0.0 {
+            return Err(ConfigError::InvalidThreshold {
+                field: "extraction.split_threshold",
+                value: self.extraction.split_threshold,
+                constraint: "must be positive",
+            });
+        }
+
+        // === Corner Detection ===
+
+        if self.corner.min_angle <= 0.0 || self.corner.min_angle >= std::f32::consts::PI {
+            return Err(ConfigError::InvalidThreshold {
+                field: "corner.min_angle",
+                value: self.corner.min_angle,
+                constraint: "must be in (0, π)",
+            });
+        }
+
+        if self.corner.max_angle <= self.corner.min_angle
+            || self.corner.max_angle > std::f32::consts::PI
+        {
+            return Err(ConfigError::InconsistentConfig {
+                message: format!(
+                    "corner.max_angle ({}) must be > corner.min_angle ({}) and <= π",
+                    self.corner.max_angle, self.corner.min_angle
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Validate and return self for builder pattern.
+    ///
+    /// # Panics
+    /// Panics if validation fails. Use `validate()` for error handling.
+    pub fn validated(self) -> Self {
+        self.validate().expect("VectorMapConfig validation failed");
         self
     }
 }

@@ -32,6 +32,6 @@ mod line_store;
 mod map;
 
 // Re-export public API
-pub use config::VectorMapConfig;
+pub use config::{ConfigError, VectorMapConfig};
 pub use line_store::LineStore;
 pub use map::VectorMap;

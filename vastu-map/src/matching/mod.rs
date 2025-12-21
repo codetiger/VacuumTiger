@@ -77,10 +77,11 @@ pub use gauss_newton::{
     GaussNewtonConfig, GaussNewtonResult, optimize_pose_fast, optimize_pose_simd,
 };
 pub use nearest_neighbor::{
-    CornerMatchConfig, NearestNeighborConfig, find_corner_correspondences,
+    CornerMatchConfig, CorrespondenceCandidate, NearestNeighborConfig, find_corner_correspondences,
     find_corner_correspondences_weighted, find_correspondences, find_correspondences_batch,
     find_correspondences_soa, find_correspondences_soa_unweighted, find_correspondences_spatial,
     find_correspondences_weighted, find_correspondences_with_angle,
+    validate_correspondence_candidate,
 };
 // Re-export from icp submodule
 pub use icp::{

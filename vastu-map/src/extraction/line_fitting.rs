@@ -18,10 +18,90 @@
 //! let points = vec![/* lidar hits */];
 //! let line = fit_line_from_sensor(&points, sensor_pos, None);
 //! ```
+//!
+//! # Error Handling
+//!
+//! For explicit error handling, use the `_checked` variants that return `Result`:
+//!
+//! ```rust,ignore
+//! use vastu_map::extraction::{fit_line_checked, FitError};
+//!
+//! match fit_line_checked(&points) {
+//!     Ok(line) => println!("Fitted line: {:?}", line),
+//!     Err(FitError::InsufficientPoints { got, required }) => {
+//!         println!("Need {} points, got {}", required, got);
+//!     }
+//!     Err(FitError::DegenerateGeometry) => {
+//!         println!("Points are collocated or form a circle");
+//!     }
+//! }
+//! ```
 
 use crate::config::LidarNoiseModel;
 use crate::core::Point2D;
 use crate::features::Line2D;
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+/// Errors that can occur during line fitting.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FitError {
+    /// Not enough points to fit a line.
+    InsufficientPoints {
+        /// Number of points provided.
+        got: usize,
+        /// Minimum required (2).
+        required: usize,
+    },
+    /// Points are collocated, form a circle, or are otherwise degenerate.
+    DegenerateGeometry,
+    /// Weights array length doesn't match points array length.
+    WeightsMismatch {
+        /// Number of points.
+        points_len: usize,
+        /// Number of weights.
+        weights_len: usize,
+    },
+    /// Total weight is zero or negative.
+    InvalidWeights,
+}
+
+impl std::fmt::Display for FitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FitError::InsufficientPoints { got, required } => {
+                write!(
+                    f,
+                    "insufficient points for line fitting: got {}, need {}",
+                    got, required
+                )
+            }
+            FitError::DegenerateGeometry => {
+                write!(
+                    f,
+                    "degenerate geometry: points are collocated or form a circle"
+                )
+            }
+            FitError::WeightsMismatch {
+                points_len,
+                weights_len,
+            } => {
+                write!(
+                    f,
+                    "weights length mismatch: {} points, {} weights",
+                    points_len, weights_len
+                )
+            }
+            FitError::InvalidWeights => {
+                write!(f, "invalid weights: total weight is zero or negative")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FitError {}
 
 /// Fit a line to a set of points using Total Least Squares.
 ///
@@ -133,6 +213,112 @@ pub fn fit_line(points: &[Point2D]) -> Option<Line2D> {
     );
 
     Some(Line2D::new(start, end))
+}
+
+/// Fit a line to a set of points using Total Least Squares (with explicit errors).
+///
+/// This is the error-returning variant of [`fit_line`]. Use this when you need
+/// to distinguish between different failure modes.
+///
+/// # Errors
+///
+/// Returns `Err(FitError::InsufficientPoints)` if fewer than 2 points provided.
+/// Returns `Err(FitError::DegenerateGeometry)` if points are collocated or form a circle.
+///
+/// # Example
+/// ```
+/// use vastu_map::extraction::{fit_line_checked, FitError};
+/// use vastu_map::core::Point2D;
+///
+/// let points = vec![Point2D::new(0.0, 0.0)]; // Only one point
+/// let result = fit_line_checked(&points);
+/// assert!(matches!(result, Err(FitError::InsufficientPoints { .. })));
+/// ```
+pub fn fit_line_checked(points: &[Point2D]) -> Result<Line2D, FitError> {
+    if points.len() < 2 {
+        return Err(FitError::InsufficientPoints {
+            got: points.len(),
+            required: 2,
+        });
+    }
+
+    // Compute centroid
+    let n = points.len() as f32;
+    let mut sum_x: f32 = 0.0;
+    let mut sum_y: f32 = 0.0;
+
+    for p in points {
+        sum_x += p.x;
+        sum_y += p.y;
+    }
+
+    let centroid = Point2D::new(sum_x / n, sum_y / n);
+
+    // Compute covariance matrix elements
+    let mut cxx: f32 = 0.0;
+    let mut cyy: f32 = 0.0;
+    let mut cxy: f32 = 0.0;
+
+    for p in points {
+        let dx = p.x - centroid.x;
+        let dy = p.y - centroid.y;
+        cxx += dx * dx;
+        cyy += dy * dy;
+        cxy += dx * dy;
+    }
+
+    // Find eigenvectors of 2x2 covariance matrix
+    let trace_half = (cxx + cyy) / 2.0;
+    let det_sqrt = ((cxx - cyy) / 2.0).powi(2) + cxy * cxy;
+
+    if det_sqrt < f32::EPSILON {
+        // Degenerate case - try simple fallback
+        return fit_line_simple_checked(points);
+    }
+
+    let det_sqrt = det_sqrt.sqrt();
+    let lambda1 = trace_half + det_sqrt;
+
+    // Eigenvector for larger eigenvalue (line direction)
+    let direction = if cxy.abs() > f32::EPSILON {
+        Point2D::new(lambda1 - cyy, cxy).normalized()
+    } else if cxx > cyy {
+        Point2D::new(1.0, 0.0)
+    } else {
+        Point2D::new(0.0, 1.0)
+    };
+
+    // Find extent of points along line direction
+    let mut t_min = f32::MAX;
+    let mut t_max = f32::MIN;
+
+    for p in points {
+        let t = (p.x - centroid.x) * direction.x + (p.y - centroid.y) * direction.y;
+        t_min = t_min.min(t);
+        t_max = t_max.max(t);
+    }
+
+    let start = Point2D::new(
+        centroid.x + t_min * direction.x,
+        centroid.y + t_min * direction.y,
+    );
+    let end = Point2D::new(
+        centroid.x + t_max * direction.x,
+        centroid.y + t_max * direction.y,
+    );
+
+    Ok(Line2D::new(start, end))
+}
+
+/// Simple line fitting fallback (checked version).
+fn fit_line_simple_checked(points: &[Point2D]) -> Result<Line2D, FitError> {
+    if points.len() < 2 {
+        return Err(FitError::InsufficientPoints {
+            got: points.len(),
+            required: 2,
+        });
+    }
+    Ok(Line2D::new(points[0], points[points.len() - 1]))
 }
 
 /// Simple line fitting fallback using first and last points.

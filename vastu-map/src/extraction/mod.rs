@@ -52,8 +52,8 @@ pub use corner_detection::{
     detect_curvature_corners, detect_hybrid_corners,
 };
 pub use line_fitting::{
-    compute_range_weights, fit_line, fit_line_from_sensor, fit_line_segment, fit_line_weighted,
-    fitting_error, fitting_error_weighted, max_distance_point,
+    FitError, compute_range_weights, fit_line, fit_line_checked, fit_line_from_sensor,
+    fit_line_segment, fit_line_weighted, fitting_error, fitting_error_weighted, max_distance_point,
 };
 // Re-export from ransac_lines module
 pub use ransac_lines::{

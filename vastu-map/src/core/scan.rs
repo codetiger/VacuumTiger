@@ -78,6 +78,47 @@ impl PolarScan {
 
         cloud
     }
+
+    /// Convert to cartesian coordinates into a pre-existing PointCloud2D (zero-allocation).
+    ///
+    /// Clears the target cloud and fills it with converted points.
+    /// Filters by quality threshold and valid range.
+    ///
+    /// # Arguments
+    /// * `min_quality` - Minimum quality value to include
+    /// * `min_range` - Minimum valid range in meters
+    /// * `max_range` - Maximum valid range in meters
+    /// * `target` - Pre-allocated point cloud to fill (cleared first)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut cloud = PointCloud2D::with_capacity(360);
+    ///
+    /// for scan in scans {
+    ///     // Reuse cloud buffer to avoid allocations
+    ///     scan.to_cartesian_into(50, 0.1, 12.0, &mut cloud);
+    ///     process(&cloud);
+    /// }
+    /// ```
+    pub fn to_cartesian_into(
+        &self,
+        min_quality: u8,
+        min_range: f32,
+        max_range: f32,
+        target: &mut PointCloud2D,
+    ) {
+        target.clear();
+        target.xs.reserve(self.points.len());
+        target.ys.reserve(self.points.len());
+
+        for &(angle, dist, quality) in &self.points {
+            if quality >= min_quality && dist >= min_range && dist <= max_range {
+                let (sin, cos) = angle.sin_cos();
+                target.xs.push(dist * cos);
+                target.ys.push(dist * sin);
+            }
+        }
+    }
 }
 
 /// Cartesian point cloud with SoA (Struct of Arrays) layout.
@@ -393,6 +434,36 @@ mod tests {
         let cloud = scan.to_cartesian(0, 0.1, 10.0);
         assert_eq!(cloud.len(), 1);
         assert_relative_eq!(cloud.xs[0], 0.5, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_polar_scan_to_cartesian_into() {
+        let mut scan = PolarScan::new();
+        scan.push(0.0, 1.0, 100); // Forward, 1m
+        scan.push(FRAC_PI_2, 2.0, 100); // Left, 2m
+
+        // First conversion
+        let mut cloud = PointCloud2D::new();
+        scan.to_cartesian_into(50, 0.0, 10.0, &mut cloud);
+
+        assert_eq!(cloud.len(), 2);
+        assert_relative_eq!(cloud.xs[0], 1.0, epsilon = 1e-6);
+        assert_relative_eq!(cloud.ys[0], 0.0, epsilon = 1e-6);
+
+        // Reuse buffer - should be cleared and refilled
+        scan.push(PI, 3.0, 100); // Add another point
+        scan.to_cartesian_into(50, 0.0, 10.0, &mut cloud);
+
+        assert_eq!(cloud.len(), 3);
+        // Buffer reused - no allocation
+
+        // Verify equivalence to allocating version
+        let cloud_alloc = scan.to_cartesian(50, 0.0, 10.0);
+        assert_eq!(cloud.len(), cloud_alloc.len());
+        for i in 0..cloud.len() {
+            assert_relative_eq!(cloud.xs[i], cloud_alloc.xs[i], epsilon = 1e-6);
+            assert_relative_eq!(cloud.ys[i], cloud_alloc.ys[i], epsilon = 1e-6);
+        }
     }
 
     #[test]

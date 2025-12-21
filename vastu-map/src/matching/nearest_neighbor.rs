@@ -27,6 +27,73 @@ use super::correspondence::{
     CorrespondenceSoA,
 };
 
+// ============================================================================
+// Correspondence Validation Helper
+// ============================================================================
+
+/// Result of validating a potential correspondence.
+///
+/// Contains the projection parameter and perpendicular distance needed
+/// to create a `Correspondence` if the validation passes.
+#[derive(Clone, Copy, Debug)]
+pub struct CorrespondenceCandidate {
+    /// Projection parameter along the line (0 = start, 1 = end).
+    pub t: f32,
+    /// Perpendicular distance from point to line.
+    pub distance: f32,
+}
+
+/// Validate a potential correspondence between a point and a line.
+///
+/// Checks:
+/// 1. Projection bounds: point projects within the line segment (with extension tolerance)
+/// 2. Distance threshold: perpendicular distance is within the maximum allowed
+///
+/// # Arguments
+/// * `point` - The scan point to validate
+/// * `line` - The map line to match against
+/// * `max_distance` - Maximum allowed perpendicular distance (meters)
+/// * `max_projection_extension` - Tolerance for projection beyond line endpoints
+///
+/// # Returns
+/// `Some(CorrespondenceCandidate)` if valid, `None` if rejected.
+///
+/// # Example
+/// ```rust,ignore
+/// let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0));
+/// let point = Point2D::new(2.5, 0.1); // Near middle of line
+///
+/// if let Some(candidate) = validate_correspondence_candidate(point, &line, 0.5, 0.2) {
+///     // Point is valid: distance=0.1, t=0.5
+///     let corr = Correspondence::new(point_idx, line_idx, point, candidate.distance, candidate.t);
+/// }
+/// ```
+#[inline]
+pub fn validate_correspondence_candidate(
+    point: Point2D,
+    line: &Line2D,
+    max_distance: f32,
+    max_projection_extension: f32,
+) -> Option<CorrespondenceCandidate> {
+    // Compute projection parameter
+    let t = line.project_point(point);
+
+    // Check projection bounds using Line2D helper
+    if !line.contains_projection_extended(t, max_projection_extension) {
+        return None;
+    }
+
+    // Compute perpendicular distance
+    let distance = line.distance_to_point(point);
+
+    // Check distance threshold
+    if distance > max_distance {
+        return None;
+    }
+
+    Some(CorrespondenceCandidate { t, distance })
+}
+
 /// Configuration for nearest neighbor matching.
 ///
 /// # Geometric Concepts
@@ -142,39 +209,43 @@ pub fn find_correspondences(
     }
 
     let mut result = CorrespondenceSet::with_capacity(points.len());
-    let min_t = -config.max_projection_extension;
-    let max_t = 1.0 + config.max_projection_extension;
 
     for (point_idx, &point) in points.iter().enumerate() {
         let mut best_distance = config.max_distance;
         let mut best_corr: Option<Correspondence> = None;
 
         for (line_idx, line) in lines.iter().enumerate() {
-            // Compute projection parameter
-            let t = line.project_point(point);
-
-            // Check projection bounds
-            if t < min_t || t > max_t {
+            // Use validation helper to check projection and distance constraints
+            let Some(candidate) = validate_correspondence_candidate(
+                point,
+                line,
+                config.max_distance,
+                config.max_projection_extension,
+            ) else {
                 continue;
-            }
-
-            // Compute perpendicular distance
-            let distance = line.distance_to_point(point);
-
-            // Check distance threshold
-            if distance > config.max_distance {
-                continue;
-            }
+            };
 
             if config.unique_per_point {
                 // Keep only the best match
-                if distance < best_distance {
-                    best_distance = distance;
-                    best_corr = Some(Correspondence::new(point_idx, line_idx, point, distance, t));
+                if candidate.distance < best_distance {
+                    best_distance = candidate.distance;
+                    best_corr = Some(Correspondence::new(
+                        point_idx,
+                        line_idx,
+                        point,
+                        candidate.distance,
+                        candidate.t,
+                    ));
                 }
             } else {
                 // Add all valid matches
-                result.push(Correspondence::new(point_idx, line_idx, point, distance, t));
+                result.push(Correspondence::new(
+                    point_idx,
+                    line_idx,
+                    point,
+                    candidate.distance,
+                    candidate.t,
+                ));
             }
         }
 
@@ -532,8 +603,6 @@ pub fn find_correspondences_spatial(
     }
 
     let mut result = CorrespondenceSet::with_capacity(points.len());
-    let min_t = -config.max_projection_extension;
-    let max_t = 1.0 + config.max_projection_extension;
 
     for (point_idx, &point) in points.iter().enumerate() {
         // Use spatial index to find candidate lines within distance threshold
@@ -550,11 +619,9 @@ pub fn find_correspondences_spatial(
         for (line_idx, distance) in candidates {
             let line = &lines[line_idx];
 
-            // Compute projection parameter
+            // Check projection bounds only (distance already validated by spatial index)
             let t = line.project_point(point);
-
-            // Check projection bounds
-            if t < min_t || t > max_t {
+            if !line.contains_projection_extended(t, config.max_projection_extension) {
                 continue;
             }
 
@@ -601,8 +668,6 @@ pub fn find_correspondences_with_angle(
     }
 
     let mut result = CorrespondenceSet::with_capacity(points.len());
-    let min_t = -config.max_projection_extension;
-    let max_t = 1.0 + config.max_projection_extension;
     let cos_threshold = max_angle_deviation.cos();
 
     for (point_idx, &point) in points.iter().enumerate() {
@@ -613,7 +678,7 @@ pub fn find_correspondences_with_angle(
         let mut best_corr: Option<Correspondence> = None;
 
         for (line_idx, line) in lines.iter().enumerate() {
-            // Check angle constraint
+            // Check angle constraint first (cheap)
             let line_normal = line.normal();
             let dot = bearing.dot(line_normal).abs();
 
@@ -622,29 +687,35 @@ pub fn find_correspondences_with_angle(
                 continue;
             }
 
-            // Compute projection parameter
-            let t = line.project_point(point);
-
-            // Check projection bounds
-            if t < min_t || t > max_t {
+            // Use validation helper for projection and distance constraints
+            let Some(candidate) = validate_correspondence_candidate(
+                point,
+                line,
+                config.max_distance,
+                config.max_projection_extension,
+            ) else {
                 continue;
-            }
-
-            // Compute perpendicular distance
-            let distance = line.distance_to_point(point);
-
-            // Check distance threshold
-            if distance > config.max_distance {
-                continue;
-            }
+            };
 
             if config.unique_per_point {
-                if distance < best_distance {
-                    best_distance = distance;
-                    best_corr = Some(Correspondence::new(point_idx, line_idx, point, distance, t));
+                if candidate.distance < best_distance {
+                    best_distance = candidate.distance;
+                    best_corr = Some(Correspondence::new(
+                        point_idx,
+                        line_idx,
+                        point,
+                        candidate.distance,
+                        candidate.t,
+                    ));
                 }
             } else {
-                result.push(Correspondence::new(point_idx, line_idx, point, distance, t));
+                result.push(Correspondence::new(
+                    point_idx,
+                    line_idx,
+                    point,
+                    candidate.distance,
+                    candidate.t,
+                ));
             }
         }
 
@@ -813,6 +884,60 @@ mod tests {
 
     fn make_vertical_line() -> Line2D {
         Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(0.0, 2.0))
+    }
+
+    // === Tests for validate_correspondence_candidate helper ===
+
+    #[test]
+    fn test_validate_correspondence_candidate_valid() {
+        let line = make_horizontal_line(); // (0,0) to (2,0)
+        let point = Point2D::new(1.0, 0.1); // Above middle of line
+
+        let result = validate_correspondence_candidate(point, &line, 0.5, 0.2);
+
+        assert!(result.is_some());
+        let candidate = result.unwrap();
+        assert!((candidate.t - 0.5).abs() < 0.01); // Projects to middle
+        assert!((candidate.distance - 0.1).abs() < 0.01); // 0.1m perpendicular
+    }
+
+    #[test]
+    fn test_validate_correspondence_candidate_too_far() {
+        let line = make_horizontal_line();
+        let point = Point2D::new(1.0, 1.0); // 1m away from line
+
+        let result = validate_correspondence_candidate(point, &line, 0.5, 0.2);
+
+        assert!(result.is_none()); // Rejected: distance > 0.5
+    }
+
+    #[test]
+    fn test_validate_correspondence_candidate_outside_projection() {
+        let line = make_horizontal_line(); // (0,0) to (2,0)
+        let point = Point2D::new(-1.0, 0.1); // Projects before line start
+
+        // Strict: no extension
+        let result_strict = validate_correspondence_candidate(point, &line, 0.5, 0.0);
+        assert!(result_strict.is_none());
+
+        // Relaxed: 0.5 extension (projects at t=-0.5, within [-0.5, 1.5])
+        let result_relaxed = validate_correspondence_candidate(point, &line, 0.5, 0.6);
+        assert!(result_relaxed.is_some());
+    }
+
+    #[test]
+    fn test_validate_correspondence_candidate_at_endpoints() {
+        let line = make_horizontal_line(); // (0,0) to (2,0)
+
+        // At start
+        let at_start = validate_correspondence_candidate(Point2D::new(0.0, 0.1), &line, 0.5, 0.0);
+        assert!(at_start.is_some());
+        assert!((at_start.unwrap().t - 0.0).abs() < 0.01);
+
+        // At end
+        let at_end = validate_correspondence_candidate(Point2D::new(2.0, 0.1), &line, 0.5, 0.0);
+        assert!(at_end.is_some());
+        assert!((at_end.unwrap().t - 1.0).abs() < 0.01);
     }
 
     #[test]

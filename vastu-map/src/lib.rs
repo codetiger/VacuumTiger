@@ -123,7 +123,7 @@ pub mod vector_map;
 
 // Re-export main types at crate root
 pub use motion_model::MotionModel;
-pub use vector_map::{VectorMap, VectorMapConfig};
+pub use vector_map::{ConfigError, VectorMap, VectorMapConfig};
 
 // Re-export extensibility traits
 pub use extraction::{LineExtractor, SplitMergeExtractor};

@@ -30,6 +30,20 @@ pub struct AssociationConfig {
     /// Lines that don't overlap but are close enough may still associate.
     /// Default: 0.3m
     pub max_endpoint_gap: f32,
+
+    // === Quality Score Weights ===
+    // These control how the quality score is computed for ranking associations.
+    /// Weight for distance component in quality score.
+    /// Higher values make distance more important in ranking.
+    /// Formula: `1.0 / (1.0 + distance * distance_weight)`
+    /// Default: 10.0
+    pub distance_weight: f32,
+
+    /// Weight for angle component in quality score.
+    /// Higher values make angular alignment more important in ranking.
+    /// Formula: `1.0 / (1.0 + angle_diff * angle_weight)`
+    /// Default: 5.0
+    pub angle_weight: f32,
 }
 
 impl Default for AssociationConfig {
@@ -39,6 +53,8 @@ impl Default for AssociationConfig {
             max_angle_difference: 0.2,
             min_overlap_ratio: 0.3,
             max_endpoint_gap: 0.3,
+            distance_weight: 10.0,
+            angle_weight: 5.0,
         }
     }
 }
@@ -64,6 +80,18 @@ impl AssociationConfig {
     /// Builder-style setter for minimum overlap ratio.
     pub fn with_min_overlap_ratio(mut self, ratio: f32) -> Self {
         self.min_overlap_ratio = ratio;
+        self
+    }
+
+    /// Builder-style setter for distance weight in quality scoring.
+    pub fn with_distance_weight(mut self, weight: f32) -> Self {
+        self.distance_weight = weight;
+        self
+    }
+
+    /// Builder-style setter for angle weight in quality scoring.
+    pub fn with_angle_weight(mut self, weight: f32) -> Self {
+        self.angle_weight = weight;
         self
     }
 }
@@ -106,10 +134,43 @@ impl Association {
     }
 
     /// Compute a quality score for the association (higher is better).
+    ///
+    /// Uses default weights (distance=10.0, angle=5.0).
+    /// For custom weights, use `quality_score_with_config`.
     pub fn quality_score(&self) -> f32 {
-        // Weighted combination of factors
-        let dist_score = 1.0 / (1.0 + self.distance * 10.0);
-        let angle_score = 1.0 / (1.0 + self.angle_diff * 5.0);
+        self.quality_score_with_weights(10.0, 5.0)
+    }
+
+    /// Compute a quality score using custom weights from config.
+    ///
+    /// # Arguments
+    /// * `config` - Association configuration containing weight parameters
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let config = AssociationConfig::default()
+    ///     .with_distance_weight(20.0)  // Prioritize distance
+    ///     .with_angle_weight(2.0);     // Relax angle constraint
+    ///
+    /// let score = association.quality_score_with_config(&config);
+    /// ```
+    pub fn quality_score_with_config(&self, config: &AssociationConfig) -> f32 {
+        self.quality_score_with_weights(config.distance_weight, config.angle_weight)
+    }
+
+    /// Compute a quality score with explicit weights.
+    ///
+    /// # Formula
+    /// ```text
+    /// score = dist_score * angle_score * overlap_ratio
+    /// where:
+    ///   dist_score  = 1.0 / (1.0 + distance * distance_weight)
+    ///   angle_score = 1.0 / (1.0 + angle_diff * angle_weight)
+    /// ```
+    #[inline]
+    pub fn quality_score_with_weights(&self, distance_weight: f32, angle_weight: f32) -> f32 {
+        let dist_score = 1.0 / (1.0 + self.distance * distance_weight);
+        let angle_score = 1.0 / (1.0 + self.angle_diff * angle_weight);
         let overlap_score = self.overlap_ratio;
 
         dist_score * angle_score * overlap_score
@@ -322,6 +383,29 @@ mod tests {
         let bad = Association::new(0, 0, 0.5, 0.5, 0.1, 0.1);
 
         assert!(good.quality_score() > bad.quality_score());
+    }
+
+    #[test]
+    fn test_association_quality_score_with_weights() {
+        let assoc = Association::new(0, 0, 0.1, 0.1, 1.0, 0.8);
+
+        // Default weights
+        let default_score = assoc.quality_score();
+
+        // Higher distance weight = more penalty for distance
+        let high_dist_weight = assoc.quality_score_with_weights(20.0, 5.0);
+        assert!(high_dist_weight < default_score);
+
+        // Lower angle weight = less penalty for angle difference
+        let low_angle_weight = assoc.quality_score_with_weights(10.0, 2.0);
+        assert!(low_angle_weight > default_score);
+
+        // Using config
+        let config = AssociationConfig::default()
+            .with_distance_weight(5.0)
+            .with_angle_weight(2.0);
+        let config_score = assoc.quality_score_with_config(&config);
+        assert!(config_score > default_score);
     }
 
     #[test]

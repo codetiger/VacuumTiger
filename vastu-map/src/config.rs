@@ -60,6 +60,63 @@ impl LidarNoiseModel {
     pub fn weights(&self, ranges: &[f32]) -> Vec<f32> {
         ranges.iter().map(|&r| self.weight(r)).collect()
     }
+
+    /// Compute weights for a batch of ranges into a pre-allocated buffer (zero-allocation).
+    ///
+    /// # Panics
+    /// Panics if `weights.len() != ranges.len()`.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let model = LidarNoiseModel::default();
+    /// let ranges = vec![1.0, 2.0, 3.0];
+    /// let mut weights = vec![0.0; ranges.len()];
+    ///
+    /// model.compute_weights_into(&ranges, &mut weights);
+    /// ```
+    #[inline]
+    pub fn compute_weights_into(&self, ranges: &[f32], weights: &mut [f32]) {
+        debug_assert_eq!(
+            ranges.len(),
+            weights.len(),
+            "weights buffer must match ranges length"
+        );
+        for (r, w) in ranges.iter().zip(weights.iter_mut()) {
+            *w = self.weight(*r);
+        }
+    }
+
+    /// Compute weights for a PointCloud2D based on point distances from origin.
+    ///
+    /// This is useful for weighting correspondences during scan matching.
+    ///
+    /// # Arguments
+    /// * `xs` - X coordinates of points
+    /// * `ys` - Y coordinates of points
+    /// * `weights` - Output buffer for weights (must match points length)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let model = LidarNoiseModel::default();
+    /// let cloud = PointCloud2D::from_points(&points);
+    /// let mut weights = vec![0.0; cloud.len()];
+    ///
+    /// model.compute_weights_for_cloud(&cloud.xs, &cloud.ys, &mut weights);
+    /// ```
+    #[inline]
+    pub fn compute_weights_for_cloud(&self, xs: &[f32], ys: &[f32], weights: &mut [f32]) {
+        debug_assert_eq!(xs.len(), ys.len(), "xs and ys must have same length");
+        debug_assert_eq!(
+            xs.len(),
+            weights.len(),
+            "weights buffer must match points length"
+        );
+
+        for i in 0..xs.len() {
+            let range = (xs[i] * xs[i] + ys[i] * ys[i]).sqrt();
+            weights[i] = self.weight(range);
+        }
+    }
 }
 
 /// Configuration for VectorMap SLAM.
@@ -361,6 +418,43 @@ mod tests {
         assert!(weights[0] > weights[1]);
         assert!(weights[1] > weights[2]);
         assert!(weights[2] > weights[3]);
+    }
+
+    #[test]
+    fn test_compute_weights_into() {
+        let model = LidarNoiseModel::default();
+        let ranges = vec![0.5, 1.0, 2.0, 5.0];
+        let mut weights = vec![0.0; ranges.len()];
+
+        model.compute_weights_into(&ranges, &mut weights);
+
+        // Should match allocating version
+        let expected = model.weights(&ranges);
+        for (w, e) in weights.iter().zip(expected.iter()) {
+            assert!((w - e).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_compute_weights_for_cloud() {
+        let model = LidarNoiseModel::default();
+        let xs = vec![1.0, 0.0, 3.0, 4.0];
+        let ys = vec![0.0, 2.0, 4.0, 0.0];
+        let mut weights = vec![0.0; xs.len()];
+
+        model.compute_weights_for_cloud(&xs, &ys, &mut weights);
+
+        // Check against manual range computation
+        let ranges: Vec<f32> = xs
+            .iter()
+            .zip(ys.iter())
+            .map(|(x, y)| (x * x + y * y).sqrt())
+            .collect();
+        let expected = model.weights(&ranges);
+
+        for (w, e) in weights.iter().zip(expected.iter()) {
+            assert!((w - e).abs() < 1e-6);
+        }
     }
 
     #[test]
