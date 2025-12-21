@@ -24,6 +24,7 @@ use crate::integration::SpatialIndex;
 
 use super::correspondence::{
     CornerCorrespondence, CornerCorrespondenceSet, Correspondence, CorrespondenceSet,
+    CorrespondenceSoA,
 };
 
 /// Configuration for nearest neighbor matching.
@@ -338,6 +339,156 @@ pub fn find_correspondences_weighted(
         }
     }
 
+    result
+}
+
+/// Find correspondences using LineCollection, producing SIMD-optimized SoA layout.
+///
+/// This function produces `CorrespondenceSoA` directly, inlining line data at
+/// correspondence creation time. Use this when the correspondences will be
+/// used in the SIMD-optimized Gauss-Newton solver.
+///
+/// # Arguments
+/// * `points` - Scan points in world frame
+/// * `ranges` - Range (distance from sensor) for each point
+/// * `lines` - Map lines in SoA format
+/// * `noise_model` - Lidar noise model for weight computation
+/// * `config` - Matching configuration
+///
+/// # Returns
+/// SIMD-optimized SoA correspondence collection with finalized padding.
+pub fn find_correspondences_soa(
+    points: &[Point2D],
+    ranges: &[f32],
+    lines: &LineCollection,
+    noise_model: &LidarNoiseModel,
+    config: &NearestNeighborConfig,
+) -> CorrespondenceSoA {
+    if points.is_empty() || lines.is_empty() {
+        return CorrespondenceSoA::new();
+    }
+
+    debug_assert_eq!(
+        points.len(),
+        ranges.len(),
+        "points and ranges must have same length"
+    );
+
+    let mut result = CorrespondenceSoA::with_capacity(points.len());
+    let min_t = -config.max_projection_extension;
+    let max_t = 1.0 + config.max_projection_extension;
+    let n_lines = lines.len();
+
+    for (point_idx, (&point, &range)) in points.iter().zip(ranges.iter()).enumerate() {
+        // Compute distances to all lines at once (SIMD-friendly)
+        let distances = lines.distances_to_point(point);
+        let projections = lines.project_point(point);
+
+        // Compute weight for this point based on its range
+        let weight = noise_model.weight(range);
+
+        let mut best_distance = config.max_distance;
+        let mut best_line_idx: Option<usize> = None;
+        let mut best_t = 0.0f32;
+
+        for line_idx in 0..n_lines {
+            let t = projections[line_idx];
+            let distance = distances[line_idx];
+
+            // Check projection bounds
+            if t < min_t || t > max_t {
+                continue;
+            }
+
+            // Check distance threshold
+            if distance > config.max_distance {
+                continue;
+            }
+
+            if config.unique_per_point {
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_line_idx = Some(line_idx);
+                    best_t = t;
+                }
+            } else {
+                // Add all valid matches directly
+                result.push(point_idx, line_idx, point, distance, weight, lines);
+            }
+        }
+
+        if config.unique_per_point
+            && let Some(line_idx) = best_line_idx
+        {
+            let _ = best_t; // Unused but computed for consistency
+            result.push(point_idx, line_idx, point, best_distance, weight, lines);
+        }
+    }
+
+    // Finalize with SIMD padding
+    result.finalize();
+    result
+}
+
+/// Find correspondences using LineCollection, producing SoA layout without weights.
+///
+/// Similar to `find_correspondences_soa` but with default weights of 1.0.
+/// Useful when noise model is not available.
+pub fn find_correspondences_soa_unweighted(
+    points: &[Point2D],
+    lines: &LineCollection,
+    config: &NearestNeighborConfig,
+) -> CorrespondenceSoA {
+    if points.is_empty() || lines.is_empty() {
+        return CorrespondenceSoA::new();
+    }
+
+    let mut result = CorrespondenceSoA::with_capacity(points.len());
+    let min_t = -config.max_projection_extension;
+    let max_t = 1.0 + config.max_projection_extension;
+    let n_lines = lines.len();
+
+    for (point_idx, &point) in points.iter().enumerate() {
+        // Compute distances to all lines at once (SIMD-friendly)
+        let distances = lines.distances_to_point(point);
+        let projections = lines.project_point(point);
+
+        let mut best_distance = config.max_distance;
+        let mut best_line_idx: Option<usize> = None;
+
+        for line_idx in 0..n_lines {
+            let t = projections[line_idx];
+            let distance = distances[line_idx];
+
+            // Check projection bounds
+            if t < min_t || t > max_t {
+                continue;
+            }
+
+            // Check distance threshold
+            if distance > config.max_distance {
+                continue;
+            }
+
+            if config.unique_per_point {
+                if distance < best_distance {
+                    best_distance = distance;
+                    best_line_idx = Some(line_idx);
+                }
+            } else {
+                result.push(point_idx, line_idx, point, distance, 1.0, lines);
+            }
+        }
+
+        if config.unique_per_point
+            && let Some(line_idx) = best_line_idx
+        {
+            result.push(point_idx, line_idx, point, best_distance, 1.0, lines);
+        }
+    }
+
+    // Finalize with SIMD padding
+    result.finalize();
     result
 }
 

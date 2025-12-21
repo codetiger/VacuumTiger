@@ -6,8 +6,8 @@ A high-performance feature-based 2D SLAM library with SIMD-friendly data layouts
 
 - **VectorMap Representation**: Uses line segments and corners instead of occupancy grids for memory-efficient mapping
 - **Full SLAM Pipeline**: Localization and mapping integrated into a clean API
-- **SIMD Optimized**: Data layouts designed for LLVM auto-vectorization (works on ARM, x86, etc.)
-- **SoA Data Layout**: Struct-of-Arrays for cache-friendly SIMD operations
+- **SIMD Optimized**: Explicit `std::simd` operations with `f32x4` for portable SIMD (ARM NEON, x86 SSE/AVX)
+- **SoA Data Layout**: Struct-of-Arrays for cache-friendly contiguous SIMD loads
 
 ## Quick Start
 
@@ -90,7 +90,7 @@ println!("Pose: ({:.2}, {:.2}), confidence: {:.2}",
 | [`query`](src/query/) | Map queries (raycast, occupancy, frontier detection) | [README](src/query/README.md) |
 | [`vector_map`](src/vector_map/) | Main VectorMap SLAM implementation | [README](src/vector_map/README.md) |
 | [`loop_closure`](src/loop_closure/) | Keyframe-based loop closure detection | [README](src/loop_closure/README.md) |
-| [`simd`](src/simd/) | SIMD-friendly types for auto-vectorization | [README](src/simd/README.md) |
+| [`simd`](src/simd/) | SIMD documentation (uses `std::simd` / `portable_simd`) | — |
 
 ## Coordinate Frame
 
@@ -102,7 +102,7 @@ All coordinates follow the ROS REP-103 convention:
 
 ## SIMD and Portability
 
-The library uses LLVM auto-vectorization patterns that work across different architectures. No platform-specific intrinsics are used—users can configure compiler flags appropriate for their target platform.
+The library uses Rust's `std::simd` (`portable_simd` feature) with explicit `f32x4` operations for portable SIMD. This maps to ARM NEON on ARM targets and SSE/AVX on x86 targets. No platform-specific intrinsics are used—the compiler handles the architecture-specific codegen based on target features.
 
 ## Building
 

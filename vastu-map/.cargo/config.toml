@@ -5,27 +5,19 @@
 # - Cortex-A8, A9, A15 (ARMv7-A with NEON)
 # - Cortex-A53, A55, A72 (ARMv8-A, backward compatible)
 #
-# Performance Optimizations:
-# - target-cpu=cortex-a7: Tune scheduling for Cortex-A7
-# - +neon: Enable NEON SIMD (128-bit vectors)
-# - +vfpv4: Enable VFPv4 floating point with FMA
-# - opt-level=3: Maximum optimization
-# - llvm-args: Enable fast-math and loop vectorization
+# SIMD: Uses std::simd (portable_simd) with explicit f32x4 operations.
+# The +neon feature enables ARM NEON codegen for std::simd types.
 
 [target.armv7-unknown-linux-musleabihf]
 linker = "arm-linux-gnueabihf-gcc"
 rustflags = [
-    # CPU targeting
+    # CPU targeting - enables NEON for std::simd
     "-C", "target-cpu=cortex-a7",
     "-C", "target-feature=+neon,+vfpv4",
 
-    # Optimization flags
+    # Optimization
     "-C", "opt-level=3",
-
-    # LLVM optimization passes for better auto-vectorization
     "-C", "llvm-args=-enable-unsafe-fp-math",
-    "-C", "llvm-args=-vectorize-loops",
-    "-C", "llvm-args=-vectorize-slp",
 
     # Linker
     "-C", "link-arg=-lgcc",

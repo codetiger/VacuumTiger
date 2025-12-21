@@ -6,9 +6,10 @@
 //!
 //! The SoA layout is optimized for SIMD auto-vectorization.
 
+use std::simd::{f32x4, num::SimdFloat};
+
 use super::point::Point2D;
 use super::pose::Pose2D;
-use crate::simd::Float4;
 
 /// Raw lidar scan in polar coordinates.
 ///
@@ -189,10 +190,10 @@ impl PointCloud2D {
 
     /// Transform the point cloud by a pose.
     ///
-    /// This is SIMD-optimized: processes 4 points per iteration using Float4.
+    /// This is SIMD-optimized: processes 4 points per iteration using f32x4.
     ///
     /// # Performance
-    /// Uses fused multiply-add (FMA) operations for efficient SIMD execution.
+    /// Uses explicit SIMD operations for efficient vectorization.
     pub fn transform(&self, pose: &Pose2D) -> Self {
         let n = self.len();
         let mut result = Self::with_capacity(n);
@@ -200,41 +201,29 @@ impl PointCloud2D {
         result.ys.resize(n, 0.0);
 
         let (sin, cos) = pose.theta.sin_cos();
-        let cos4 = Float4::splat(cos);
-        let sin4 = Float4::splat(sin);
-        let tx4 = Float4::splat(pose.x);
-        let ty4 = Float4::splat(pose.y);
+        let cos4 = f32x4::splat(cos);
+        let sin4 = f32x4::splat(sin);
+        let tx4 = f32x4::splat(pose.x);
+        let ty4 = f32x4::splat(pose.y);
 
         // Process 4 points at a time (SIMD-friendly)
         let chunks = n / 4;
         for i in 0..chunks {
             let base = i * 4;
 
-            // Load 4 points
-            let xs = Float4::new([
-                self.xs[base],
-                self.xs[base + 1],
-                self.xs[base + 2],
-                self.xs[base + 3],
-            ]);
-            let ys = Float4::new([
-                self.ys[base],
-                self.ys[base + 1],
-                self.ys[base + 2],
-                self.ys[base + 3],
-            ]);
+            // Load 4 points - contiguous SIMD loads
+            let xs = f32x4::from_slice(&self.xs[base..]);
+            let ys = f32x4::from_slice(&self.ys[base..]);
 
-            // Rotation + translation using FMA:
+            // Rotation + translation:
             // x' = x*cos - y*sin + tx
             // y' = x*sin + y*cos + ty
-            let new_xs = ys.neg_mul_add(sin4, xs.mul_add(cos4, tx4));
-            let new_ys = xs.mul_add(sin4, ys.mul_add(cos4, ty4));
+            let new_xs = xs * cos4 - ys * sin4 + tx4;
+            let new_ys = xs * sin4 + ys * cos4 + ty4;
 
             // Store results
-            let new_xs_arr = new_xs.to_array();
-            let new_ys_arr = new_ys.to_array();
-            result.xs[base..base + 4].copy_from_slice(&new_xs_arr);
-            result.ys[base..base + 4].copy_from_slice(&new_ys_arr);
+            result.xs[base..base + 4].copy_from_slice(&new_xs.to_array());
+            result.ys[base..base + 4].copy_from_slice(&new_ys.to_array());
         }
 
         // Handle remainder (scalar)
@@ -251,7 +240,7 @@ impl PointCloud2D {
     /// Compute bounding box of the point cloud.
     ///
     /// Returns (min, max) corners, or None if cloud is empty.
-    /// SIMD-optimized using Float4 min/max operations.
+    /// SIMD-optimized using f32x4 min/max operations.
     pub fn bounds(&self) -> Option<(Point2D, Point2D)> {
         if self.is_empty() {
             return None;
@@ -268,38 +257,28 @@ impl PointCloud2D {
         // SIMD processing of remaining points
         let chunks = (n - 1) / 4;
         if chunks > 0 {
-            let mut min_x4 = Float4::splat(min_x);
-            let mut max_x4 = Float4::splat(max_x);
-            let mut min_y4 = Float4::splat(min_y);
-            let mut max_y4 = Float4::splat(max_y);
+            let mut min_x4 = f32x4::splat(min_x);
+            let mut max_x4 = f32x4::splat(max_x);
+            let mut min_y4 = f32x4::splat(min_y);
+            let mut max_y4 = f32x4::splat(max_y);
 
             for i in 0..chunks {
                 let base = 1 + i * 4;
 
-                let xs = Float4::new([
-                    self.xs[base],
-                    self.xs[base + 1],
-                    self.xs[base + 2],
-                    self.xs[base + 3],
-                ]);
-                let ys = Float4::new([
-                    self.ys[base],
-                    self.ys[base + 1],
-                    self.ys[base + 2],
-                    self.ys[base + 3],
-                ]);
+                let xs = f32x4::from_slice(&self.xs[base..]);
+                let ys = f32x4::from_slice(&self.ys[base..]);
 
-                min_x4 = min_x4.min(xs);
-                max_x4 = max_x4.max(xs);
-                min_y4 = min_y4.min(ys);
-                max_y4 = max_y4.max(ys);
+                min_x4 = min_x4.simd_min(xs);
+                max_x4 = max_x4.simd_max(xs);
+                min_y4 = min_y4.simd_min(ys);
+                max_y4 = max_y4.simd_max(ys);
             }
 
             // Horizontal reduction
-            min_x = min_x4.horizontal_min();
-            max_x = max_x4.horizontal_max();
-            min_y = min_y4.horizontal_min();
-            max_y = max_y4.horizontal_max();
+            min_x = min_x4.reduce_min();
+            max_x = max_x4.reduce_max();
+            min_y = min_y4.reduce_min();
+            max_y = max_y4.reduce_max();
         }
 
         // Handle remainder (scalar)
@@ -329,30 +308,20 @@ impl PointCloud2D {
         // SIMD accumulation
         let chunks = n / 4;
         if chunks > 0 {
-            let mut sum_x4 = Float4::zero();
-            let mut sum_y4 = Float4::zero();
+            let mut sum_x4 = f32x4::splat(0.0);
+            let mut sum_y4 = f32x4::splat(0.0);
 
             for i in 0..chunks {
                 let base = i * 4;
-                let xs = Float4::new([
-                    self.xs[base],
-                    self.xs[base + 1],
-                    self.xs[base + 2],
-                    self.xs[base + 3],
-                ]);
-                let ys = Float4::new([
-                    self.ys[base],
-                    self.ys[base + 1],
-                    self.ys[base + 2],
-                    self.ys[base + 3],
-                ]);
+                let xs = f32x4::from_slice(&self.xs[base..]);
+                let ys = f32x4::from_slice(&self.ys[base..]);
 
                 sum_x4 += xs;
                 sum_y4 += ys;
             }
 
-            sum_x = sum_x4.sum();
-            sum_y = sum_y4.sum();
+            sum_x = sum_x4.reduce_sum();
+            sum_y = sum_y4.reduce_sum();
         }
 
         // Handle remainder

@@ -1,3 +1,5 @@
+#![feature(portable_simd)]
+
 //! # Vastu-Map: Feature-Based 2D SLAM Library
 //!
 //! A high-performance SLAM (Simultaneous Localization and Mapping) library

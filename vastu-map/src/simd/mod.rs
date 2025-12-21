@@ -1,39 +1,42 @@
-//! SIMD types for auto-vectorization.
+//! SIMD utilities and documentation.
 //!
-//! This module provides SIMD-friendly types that encourage LLVM to
-//! emit vectorized instructions across different architectures.
+//! This crate uses Rust's `std::simd` (portable_simd) for SIMD operations.
+//! No custom wrapper types are needed - use `std::simd` types directly.
 //!
-//! # Design Philosophy
+//! # Usage
 //!
-//! We rely on LLVM's auto-vectorization rather than platform-specific intrinsics.
-//! The [`Float4`] type uses:
-//! - 16-byte alignment matching common 128-bit SIMD registers
-//! - `#[inline(always)]` to expose vectorizable patterns
-//! - Simple element-wise operations that map to SIMD instructions
+//! ```rust,ignore
+//! use std::simd::{f32x4, num::SimdFloat};
 //!
-//! This approach provides:
-//! - **Portability**: Works on ARM NEON, x86 SSE/AVX, and other architectures
-//! - **Simplicity**: No unsafe intrinsics or target-specific code
-//! - **Maintainability**: Standard Rust that's easy to debug
+//! // Contiguous load from slice
+//! let xs = f32x4::from_slice(&data[base..]);
 //!
-//! Users can configure appropriate compiler flags for their target platform.
+//! // Broadcast scalar to all lanes
+//! let scale = f32x4::splat(2.0);
 //!
-//! # Usage Example
+//! // Element-wise operations
+//! let result = xs * scale;
 //!
-//! ```rust
-//! use vastu_map::simd::Float4;
-//!
-//! // Transform 4 points at once
-//! let xs = Float4::new([1.0, 2.0, 3.0, 4.0]);
-//! let ys = Float4::new([0.0, 0.0, 0.0, 0.0]);
-//! let cos_theta = Float4::splat(0.866);  // cos(30°)
-//! let sin_theta = Float4::splat(0.5);    // sin(30°)
-//!
-//! // Rotation: x' = x*cos - y*sin, y' = x*sin + y*cos
-//! let new_xs = ys.neg_mul_add(sin_theta, xs * cos_theta);
-//! let new_ys = xs.mul_add(sin_theta, ys * cos_theta);
+//! // Horizontal reduction
+//! let sum = result.reduce_sum();
 //! ```
-
-mod f32x4;
-
-pub use f32x4::Float4;
+//!
+//! # Key Operations
+//!
+//! | Operation              | Code                          |
+//! |------------------------|-------------------------------|
+//! | Load from array        | `f32x4::from_array([a,b,c,d])` |
+//! | Load from slice        | `f32x4::from_slice(&slice[..])` |
+//! | Broadcast scalar       | `f32x4::splat(x)`             |
+//! | Horizontal sum         | `.reduce_sum()`               |
+//! | Horizontal min/max     | `.reduce_min()`, `.reduce_max()` |
+//! | Element-wise min/max   | `.simd_min(other)`, `.simd_max(other)` |
+//! | Absolute value         | `.abs()`                      |
+//! | Store to array         | `.to_array()`                 |
+//!
+//! # Performance Notes
+//!
+//! - Use contiguous `from_slice()` loads for best performance
+//! - Avoid indexed/gather access in hot loops
+//! - Pad arrays to SIMD width (4) for clean iteration
+//! - Use `reduce_*` methods for horizontal operations

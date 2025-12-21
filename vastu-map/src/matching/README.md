@@ -6,10 +6,10 @@ Scan-to-map matching algorithms for robot localization.
 
 | File | Description |
 |------|-------------|
-| `correspondence.rs` | Point-to-line correspondence types and match results |
+| `correspondence.rs` | Point-to-line correspondence types (AoS and SoA layouts) |
 | `nearest_neighbor.rs` | Find correspondences by distance |
 | `ransac.rs` | Robust pose estimation with outlier rejection |
-| `gauss_newton.rs` | Nonlinear least squares optimization |
+| `gauss_newton.rs` | Nonlinear least squares optimization (scalar and SIMD) |
 | `icp/` | Point-to-Line ICP implementation |
 | `scratch.rs` | Pre-allocated buffers for zero-allocation ICP |
 | `traits.rs` | `ScanMatcher` trait for extensibility |
@@ -83,7 +83,11 @@ let config = GaussNewtonConfig {
     convergence_threshold: 1e-6,
 };
 
+// Standard optimization with CorrespondenceSet
 let result = optimize_pose_fast(&correspondences, initial_pose, &config);
+
+// SIMD-optimized with CorrespondenceSoA (f32x4 operations)
+let result = optimize_pose_simd(&correspondences_soa, initial_pose, &config);
 ```
 
 ## Correspondence Finding
@@ -104,6 +108,11 @@ let correspondences = find_correspondences_weighted(&points, &lines, max_distanc
 // With angle constraint
 let correspondences = find_correspondences_with_angle(
     &points, &lines, max_distance, max_angle_diff
+);
+
+// SoA layout for SIMD Gauss-Newton (inlines line data)
+let correspondences_soa = find_correspondences_soa(
+    &points, &ranges, &line_collection, &noise_model, &config
 );
 ```
 

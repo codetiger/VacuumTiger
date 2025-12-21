@@ -13,10 +13,11 @@
 //!
 //! With scratch space, these allocations happen once and are reused.
 
+use crate::config::LidarNoiseModel;
 use crate::core::Point2D;
 use crate::features::LineCollection;
 
-use super::correspondence::{Correspondence, CorrespondenceSet};
+use super::correspondence::{Correspondence, CorrespondenceSet, CorrespondenceSoA};
 use super::nearest_neighbor::NearestNeighborConfig;
 
 /// Pre-allocated scratch space for ICP operations.
@@ -48,8 +49,14 @@ pub struct IcpScratchSpace {
     /// Buffer for projection parameters (per point).
     pub(crate) projections: Vec<f32>,
 
-    /// Reusable correspondence set.
+    /// Reusable correspondence set (AoS layout).
     pub(crate) correspondences: CorrespondenceSet,
+
+    /// Reusable correspondence set (SoA layout for SIMD).
+    pub(crate) correspondences_soa: CorrespondenceSoA,
+
+    /// Buffer for ranges (distances from sensor).
+    pub(crate) ranges: Vec<f32>,
 }
 
 impl IcpScratchSpace {
@@ -65,6 +72,8 @@ impl IcpScratchSpace {
             distances: Vec::with_capacity(max_lines),
             projections: Vec::with_capacity(max_lines),
             correspondences: CorrespondenceSet::with_capacity(max_points),
+            correspondences_soa: CorrespondenceSoA::with_capacity(max_points),
+            ranges: Vec::with_capacity(max_points),
         }
     }
 
@@ -81,6 +90,8 @@ impl IcpScratchSpace {
         self.distances.clear();
         self.projections.clear();
         self.correspondences.clear();
+        self.correspondences_soa.clear();
+        self.ranges.clear();
     }
 
     /// Transform points by pose into internal buffer.
@@ -226,6 +237,133 @@ impl IcpScratchSpace {
     #[inline]
     pub fn num_correspondences(&self) -> usize {
         self.correspondences.len()
+    }
+
+    // =========================================================================
+    // SIMD-optimized SoA correspondence finding
+    // =========================================================================
+
+    /// Store ranges for later use in SoA correspondence finding.
+    #[inline]
+    pub fn store_ranges(&mut self, points: &[Point2D]) {
+        self.ranges.clear();
+        self.ranges.reserve(points.len());
+        for p in points {
+            self.ranges.push((p.x * p.x + p.y * p.y).sqrt());
+        }
+    }
+
+    /// Find correspondences using pre-allocated buffers, producing SoA layout.
+    ///
+    /// This is the SIMD-optimized hot path for ICP iterations.
+    /// The result is stored in `self.correspondences_soa` and is ready for
+    /// use with `optimize_pose_simd()`.
+    ///
+    /// # Arguments
+    /// * `lines` - Map lines in SoA format
+    /// * `noise_model` - Lidar noise model for weight computation
+    /// * `config` - Matching configuration
+    pub fn find_correspondences_soa(
+        &mut self,
+        lines: &LineCollection,
+        noise_model: &LidarNoiseModel,
+        config: &NearestNeighborConfig,
+    ) {
+        self.correspondences_soa.clear();
+
+        if self.transformed_xs.is_empty() || lines.is_empty() {
+            return;
+        }
+
+        let min_t = -config.max_projection_extension;
+        let max_t = 1.0 + config.max_projection_extension;
+        let n_lines = lines.len();
+        let n_points = self.transformed_xs.len();
+
+        // Ensure buffers are large enough
+        self.distances.resize(n_lines, 0.0);
+        self.projections.resize(n_lines, 0.0);
+
+        for point_idx in 0..n_points {
+            let point = Point2D::new(
+                self.transformed_xs[point_idx],
+                self.transformed_ys[point_idx],
+            );
+
+            // Compute distances and projections into buffers
+            lines.distances_to_point_into(point, &mut self.distances);
+            self.compute_projections_into(point, lines);
+
+            // Compute weight for this point based on its range
+            let range = if point_idx < self.ranges.len() {
+                self.ranges[point_idx]
+            } else {
+                1.0 // Default weight factor
+            };
+            let weight = noise_model.weight(range);
+
+            let mut best_distance = config.max_distance;
+            let mut best_line_idx: Option<usize> = None;
+
+            for line_idx in 0..n_lines {
+                let t = self.projections[line_idx];
+                let distance = self.distances[line_idx];
+
+                // Check projection bounds
+                if t < min_t || t > max_t {
+                    continue;
+                }
+
+                // Check distance threshold
+                if distance > config.max_distance {
+                    continue;
+                }
+
+                if config.unique_per_point {
+                    if distance < best_distance {
+                        best_distance = distance;
+                        best_line_idx = Some(line_idx);
+                    }
+                } else {
+                    self.correspondences_soa
+                        .push(point_idx, line_idx, point, distance, weight, lines);
+                }
+            }
+
+            if config.unique_per_point
+                && let Some(line_idx) = best_line_idx
+            {
+                self.correspondences_soa.push(
+                    point_idx,
+                    line_idx,
+                    point,
+                    best_distance,
+                    weight,
+                    lines,
+                );
+            }
+        }
+
+        // Finalize with SIMD padding
+        self.correspondences_soa.finalize();
+    }
+
+    /// Get a reference to the current SoA correspondences.
+    #[inline]
+    pub fn correspondences_soa(&self) -> &CorrespondenceSoA {
+        &self.correspondences_soa
+    }
+
+    /// Get the number of SoA correspondences found.
+    #[inline]
+    pub fn num_correspondences_soa(&self) -> usize {
+        self.correspondences_soa.len()
+    }
+
+    /// Take the SoA correspondences out of the scratch space.
+    #[inline]
+    pub fn take_correspondences_soa(&mut self) -> CorrespondenceSoA {
+        std::mem::take(&mut self.correspondences_soa)
     }
 }
 

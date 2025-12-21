@@ -98,6 +98,80 @@ pub struct RansacResult {
     pub iterations: usize,
 }
 
+/// Pre-allocated workspace for RANSAC operations.
+///
+/// RANSAC allocates ~140KB per call for inlier tracking. This workspace
+/// pre-allocates buffers that can be reused across multiple RANSAC calls.
+///
+/// # Memory Savings
+///
+/// Without workspace, each RANSAC call allocates:
+/// - Remaining indices buffer: ~3KB (for 400 correspondences)
+/// - Inlier mask: ~400 bytes
+/// - Best inliers buffer: ~10KB
+/// - Per-iteration inlier set: ~10KB × iterations
+///
+/// With workspace, these are allocated once and reused.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use vastu_map::matching::{RansacWorkspace, estimate_pose_ransac_with_workspace};
+///
+/// let mut workspace = RansacWorkspace::new(400);
+///
+/// for correspondences in scan_correspondences {
+///     let result = estimate_pose_ransac_with_workspace(
+///         &correspondences, &lines, &config, &mut workspace
+///     );
+/// }
+/// ```
+#[derive(Clone, Debug)]
+pub struct RansacWorkspace {
+    /// Buffer for tracking which correspondence indices remain.
+    pub remaining_indices: Vec<usize>,
+    /// Bitmask for inlier detection.
+    pub inlier_mask: Vec<bool>,
+    /// Buffer for storing best inlier indices.
+    pub best_inliers: Vec<usize>,
+    /// Reusable inlier correspondence set.
+    pub inliers: CorrespondenceSet,
+}
+
+impl RansacWorkspace {
+    /// Create a new workspace with capacity hint.
+    ///
+    /// # Arguments
+    /// * `max_correspondences` - Expected maximum number of correspondences
+    pub fn new(max_correspondences: usize) -> Self {
+        Self {
+            remaining_indices: Vec::with_capacity(max_correspondences),
+            inlier_mask: Vec::with_capacity(max_correspondences),
+            best_inliers: Vec::with_capacity(max_correspondences),
+            inliers: CorrespondenceSet::with_capacity(max_correspondences),
+        }
+    }
+
+    /// Create with default capacity (400 correspondences).
+    pub fn default_capacity() -> Self {
+        Self::new(400)
+    }
+
+    /// Clear all buffers for reuse (keeps capacity).
+    pub fn clear(&mut self) {
+        self.remaining_indices.clear();
+        self.inlier_mask.clear();
+        self.best_inliers.clear();
+        self.inliers.clear();
+    }
+}
+
+impl Default for RansacWorkspace {
+    fn default() -> Self {
+        Self::default_capacity()
+    }
+}
+
 /// Estimate pose transformation using RANSAC.
 ///
 /// Samples random subsets of correspondences, computes pose hypotheses,

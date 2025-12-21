@@ -89,4 +89,4 @@ AoS (typical):              SoA (this implementation):
 [Point{x,y}]
 ```
 
-This enables 4-wide SIMD operations via auto-vectorization.
+This enables 4-wide SIMD operations via `std::simd::f32x4`.

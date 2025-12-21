@@ -2,8 +2,18 @@
 //!
 //! A correspondence associates a point from the current scan with
 //! a line in the map.
+//!
+//! # Data Layouts
+//!
+//! Two layouts are provided:
+//! - [`CorrespondenceSet`]: Array-of-Structs (AoS) layout for general use
+//! - [`CorrespondenceSoA`]: Struct-of-Arrays (SoA) layout optimized for SIMD Gauss-Newton
+//!
+//! The SoA layout inlines line data (normals, endpoints) at correspondence creation time,
+//! enabling contiguous SIMD loads in the hot loop instead of random indexed access.
 
 use crate::core::Point2D;
+use crate::features::LineCollection;
 
 /// A correspondence between a scan point and a map line.
 #[derive(Clone, Copy, Debug)]
@@ -257,6 +267,331 @@ impl CorrespondenceSet {
     ) -> Self {
         self.apply_weights(robot_frame_points, noise_model);
         self
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CorrespondenceSoA: SIMD-Optimized Struct-of-Arrays Layout
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// SIMD-optimized correspondence collection with Struct-of-Arrays layout.
+///
+/// Unlike [`CorrespondenceSet`], this structure inlines line data (normals,
+/// endpoints, inverse lengths) at correspondence creation time. This enables
+/// contiguous SIMD loads in the Gauss-Newton hot loop instead of random
+/// indexed access to line arrays.
+///
+/// # Memory Layout
+///
+/// **HOT data** (used in Gauss-Newton inner loop):
+/// - Point positions (point_xs, point_ys)
+/// - Line normals (normal_xs, normal_ys) - INLINED, not indexed
+/// - Line endpoints (line_start_xs, line_start_ys, line_end_xs, line_end_ys)
+/// - Inverse lengths (line_inv_lengths) - for residual computation
+/// - Weights
+///
+/// **COLD data** (metadata, not used in optimization):
+/// - Point indices, line indices, distances
+///
+/// # SIMD Usage
+///
+/// Arrays are padded to SIMD width (4) with zero-weight entries via `finalize()`.
+/// Use `simd_chunks()` to get the number of 4-element chunks for iteration.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use vastu_map::matching::CorrespondenceSoA;
+///
+/// let mut soa = CorrespondenceSoA::new();
+/// // ... push correspondences ...
+/// soa.finalize(); // Pad to SIMD width
+///
+/// for i in 0..soa.simd_chunks() {
+///     let base = i * 4;
+///     let px = f32x4::from_slice(&soa.point_xs[base..]);
+///     let nx = f32x4::from_slice(&soa.normal_xs[base..]);
+///     // ... SIMD operations ...
+/// }
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct CorrespondenceSoA {
+    // === HOT: Contiguous arrays for SIMD (used in Gauss-Newton) ===
+    /// X coordinates of scan points (world frame).
+    pub point_xs: Vec<f32>,
+    /// Y coordinates of scan points (world frame).
+    pub point_ys: Vec<f32>,
+    /// X components of line unit normals (INLINED from LineCollection).
+    pub normal_xs: Vec<f32>,
+    /// Y components of line unit normals (INLINED from LineCollection).
+    pub normal_ys: Vec<f32>,
+    /// X coordinates of line start points.
+    pub line_start_xs: Vec<f32>,
+    /// Y coordinates of line start points.
+    pub line_start_ys: Vec<f32>,
+    /// X coordinates of line end points.
+    pub line_end_xs: Vec<f32>,
+    /// Y coordinates of line end points.
+    pub line_end_ys: Vec<f32>,
+    /// Reciprocal of line lengths (1.0 / length).
+    pub line_inv_lengths: Vec<f32>,
+    /// Correspondence weights (1/σ² from noise model).
+    pub weights: Vec<f32>,
+
+    // === COLD: Metadata (not used in optimization) ===
+    /// Indices of points in original scan.
+    pub point_indices: Vec<usize>,
+    /// Indices of lines in map.
+    pub line_indices: Vec<usize>,
+    /// Perpendicular distances from points to lines.
+    pub distances: Vec<f32>,
+
+    /// Number of real correspondences (before padding).
+    len: usize,
+}
+
+/// SIMD lane width for f32x4.
+const SIMD_WIDTH: usize = 4;
+
+impl CorrespondenceSoA {
+    /// Create a new empty SoA correspondence collection.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create with capacity hint.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            point_xs: Vec::with_capacity(capacity),
+            point_ys: Vec::with_capacity(capacity),
+            normal_xs: Vec::with_capacity(capacity),
+            normal_ys: Vec::with_capacity(capacity),
+            line_start_xs: Vec::with_capacity(capacity),
+            line_start_ys: Vec::with_capacity(capacity),
+            line_end_xs: Vec::with_capacity(capacity),
+            line_end_ys: Vec::with_capacity(capacity),
+            line_inv_lengths: Vec::with_capacity(capacity),
+            weights: Vec::with_capacity(capacity),
+            point_indices: Vec::with_capacity(capacity),
+            line_indices: Vec::with_capacity(capacity),
+            distances: Vec::with_capacity(capacity),
+            len: 0,
+        }
+    }
+
+    /// Add a correspondence, inlining line data from the LineCollection.
+    ///
+    /// This copies the line's normal, endpoints, and inverse length into the
+    /// SoA arrays, eliminating indexed access in the Gauss-Newton hot loop.
+    #[inline]
+    pub fn push(
+        &mut self,
+        point_idx: usize,
+        line_idx: usize,
+        point: Point2D,
+        distance: f32,
+        weight: f32,
+        lines: &LineCollection,
+    ) {
+        self.point_xs.push(point.x);
+        self.point_ys.push(point.y);
+
+        // Inline line data (no indexed access needed in hot loop)
+        let (normal_xs, normal_ys) = lines.normals();
+        self.normal_xs.push(normal_xs[line_idx]);
+        self.normal_ys.push(normal_ys[line_idx]);
+        self.line_start_xs.push(lines.start_xs[line_idx]);
+        self.line_start_ys.push(lines.start_ys[line_idx]);
+        self.line_end_xs.push(lines.end_xs[line_idx]);
+        self.line_end_ys.push(lines.end_ys[line_idx]);
+        self.line_inv_lengths.push(lines.inv_lengths()[line_idx]);
+        self.weights.push(weight);
+
+        // Metadata
+        self.point_indices.push(point_idx);
+        self.line_indices.push(line_idx);
+        self.distances.push(distance);
+
+        self.len += 1;
+    }
+
+    /// Add a correspondence with explicit line data (for when LineCollection isn't available).
+    #[inline]
+    pub fn push_with_line_data(
+        &mut self,
+        point_idx: usize,
+        line_idx: usize,
+        point: Point2D,
+        distance: f32,
+        weight: f32,
+        normal_x: f32,
+        normal_y: f32,
+        start_x: f32,
+        start_y: f32,
+        end_x: f32,
+        end_y: f32,
+        inv_length: f32,
+    ) {
+        self.point_xs.push(point.x);
+        self.point_ys.push(point.y);
+        self.normal_xs.push(normal_x);
+        self.normal_ys.push(normal_y);
+        self.line_start_xs.push(start_x);
+        self.line_start_ys.push(start_y);
+        self.line_end_xs.push(end_x);
+        self.line_end_ys.push(end_y);
+        self.line_inv_lengths.push(inv_length);
+        self.weights.push(weight);
+        self.point_indices.push(point_idx);
+        self.line_indices.push(line_idx);
+        self.distances.push(distance);
+        self.len += 1;
+    }
+
+    /// Number of real correspondences (before SIMD padding).
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Check if empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Pad arrays to SIMD width (4) with zero-weight entries.
+    ///
+    /// Call this after all correspondences have been added and before
+    /// SIMD iteration. Zero-weight entries don't affect the optimization.
+    pub fn finalize(&mut self) {
+        let remainder = self.len % SIMD_WIDTH;
+        if remainder == 0 {
+            return;
+        }
+
+        let padding = SIMD_WIDTH - remainder;
+        for _ in 0..padding {
+            self.point_xs.push(0.0);
+            self.point_ys.push(0.0);
+            self.normal_xs.push(0.0);
+            self.normal_ys.push(1.0); // Arbitrary valid normal
+            self.line_start_xs.push(0.0);
+            self.line_start_ys.push(0.0);
+            self.line_end_xs.push(0.0);
+            self.line_end_ys.push(0.0);
+            self.line_inv_lengths.push(0.0);
+            self.weights.push(0.0); // Zero weight = no contribution
+            self.point_indices.push(0);
+            self.line_indices.push(0);
+            self.distances.push(0.0);
+        }
+    }
+
+    /// Number of SIMD chunks (4-element groups) for iteration.
+    ///
+    /// Call after `finalize()` for correct padding.
+    #[inline]
+    pub fn simd_chunks(&self) -> usize {
+        self.point_xs.len().div_ceil(SIMD_WIDTH)
+    }
+
+    /// Clear all correspondences (keeps capacity).
+    pub fn clear(&mut self) {
+        self.point_xs.clear();
+        self.point_ys.clear();
+        self.normal_xs.clear();
+        self.normal_ys.clear();
+        self.line_start_xs.clear();
+        self.line_start_ys.clear();
+        self.line_end_xs.clear();
+        self.line_end_ys.clear();
+        self.line_inv_lengths.clear();
+        self.weights.clear();
+        self.point_indices.clear();
+        self.line_indices.clear();
+        self.distances.clear();
+        self.len = 0;
+    }
+
+    /// Get the mean correspondence distance.
+    pub fn mean_distance(&self) -> f32 {
+        if self.len == 0 {
+            return 0.0;
+        }
+        let sum: f32 = self.distances[..self.len].iter().sum();
+        sum / self.len as f32
+    }
+
+    /// Get the RMS (root mean square) correspondence distance.
+    pub fn rms_distance(&self) -> f32 {
+        if self.len == 0 {
+            return 0.0;
+        }
+        let sum_sq: f32 = self.distances[..self.len].iter().map(|d| d * d).sum();
+        (sum_sq / self.len as f32).sqrt()
+    }
+
+    /// Get the weighted RMS correspondence distance.
+    pub fn weighted_rms_distance(&self) -> f32 {
+        if self.len == 0 {
+            return 0.0;
+        }
+        let mut sum_weighted_sq = 0.0f32;
+        let mut sum_weights = 0.0f32;
+        for i in 0..self.len {
+            let w = self.weights[i];
+            let d = self.distances[i];
+            sum_weighted_sq += w * d * d;
+            sum_weights += w;
+        }
+        if sum_weights > 0.0 {
+            (sum_weighted_sq / sum_weights).sqrt()
+        } else {
+            self.rms_distance()
+        }
+    }
+
+    /// Get the total weight of all correspondences.
+    pub fn total_weight(&self) -> f32 {
+        self.weights[..self.len].iter().sum()
+    }
+
+    /// Get the maximum correspondence distance.
+    pub fn max_distance(&self) -> f32 {
+        self.distances[..self.len]
+            .iter()
+            .copied()
+            .fold(0.0, f32::max)
+    }
+
+    /// Compute inlier ratio (correspondences within threshold).
+    pub fn inlier_ratio(&self, threshold: f32) -> f32 {
+        if self.len == 0 {
+            return 0.0;
+        }
+        let inliers = self.distances[..self.len]
+            .iter()
+            .filter(|&&d| d <= threshold)
+            .count();
+        inliers as f32 / self.len as f32
+    }
+
+    /// Convert to CorrespondenceSet (for compatibility with existing code).
+    pub fn to_correspondence_set(&self) -> CorrespondenceSet {
+        let mut set = CorrespondenceSet::with_capacity(self.len);
+        for i in 0..self.len {
+            set.push(Correspondence::with_weight(
+                self.point_indices[i],
+                self.line_indices[i],
+                Point2D::new(self.point_xs[i], self.point_ys[i]),
+                self.distances[i],
+                0.0, // projection_t not stored in SoA
+                self.weights[i],
+                0.0, // range not stored in SoA
+            ));
+        }
+        set
     }
 }
 

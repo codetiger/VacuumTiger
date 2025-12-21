@@ -71,20 +71,23 @@ pub mod traits;
 // Re-export main types
 pub use correspondence::{
     CornerCorrespondence, CornerCorrespondenceSet, Correspondence, CorrespondenceSet,
-    IDENTITY_COVARIANCE, MatchResult, PoseCovariance,
+    CorrespondenceSoA, IDENTITY_COVARIANCE, MatchResult, PoseCovariance,
 };
-pub use gauss_newton::{GaussNewtonConfig, GaussNewtonResult, optimize_pose_fast};
+pub use gauss_newton::{
+    GaussNewtonConfig, GaussNewtonResult, optimize_pose_fast, optimize_pose_simd,
+};
 pub use nearest_neighbor::{
     CornerMatchConfig, NearestNeighborConfig, find_corner_correspondences,
     find_corner_correspondences_weighted, find_correspondences, find_correspondences_batch,
-    find_correspondences_spatial, find_correspondences_weighted, find_correspondences_with_angle,
+    find_correspondences_soa, find_correspondences_soa_unweighted, find_correspondences_spatial,
+    find_correspondences_weighted, find_correspondences_with_angle,
 };
 // Re-export from icp submodule
 pub use icp::{
     CoarseSearchConfig, IcpConfig, MultiResolutionConfig, PointToLineIcp, match_scan,
     match_scan_multiresolution, match_scan_with_config,
 };
-pub use ransac::{RansacConfig, RansacResult, estimate_pose_ransac};
+pub use ransac::{RansacConfig, RansacResult, RansacWorkspace, estimate_pose_ransac};
 pub use robust::RobustCostFunction;
 pub use scratch::IcpScratchSpace;
 // Re-export traits

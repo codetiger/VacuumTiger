@@ -10,10 +10,16 @@
 //! Pre-computed cached values avoid redundant calculations in hot paths:
 //! - `normal_xs`, `normal_ys`: Unit normal vectors (avoids sqrt per distance calc)
 //! - `inv_lengths`: Reciprocal of line lengths (avoids division in inner loops)
+//!
+//! # SIMD Implementation
+//!
+//! Uses `std::simd::f32x4` for explicit 4-wide SIMD operations via the
+//! `portable_simd` feature.
+
+use std::simd::{f32x4, num::SimdFloat};
 
 use super::line::Line2D;
 use crate::core::{Point2D, Pose2D};
-use crate::simd::Float4;
 
 /// Collection of line segments with SoA layout for SIMD operations.
 ///
@@ -229,47 +235,22 @@ impl LineCollection {
         let n = self.len();
         let mut distances = vec![0.0; n];
 
-        let px = Float4::splat(point.x);
-        let py = Float4::splat(point.y);
+        let px = f32x4::splat(point.x);
+        let py = f32x4::splat(point.y);
 
         // Process 4 lines at a time
         let chunks = n / 4;
         for i in 0..chunks {
             let base = i * 4;
 
-            // Load line data
-            let sx = Float4::new([
-                self.start_xs[base],
-                self.start_xs[base + 1],
-                self.start_xs[base + 2],
-                self.start_xs[base + 3],
-            ]);
-            let sy = Float4::new([
-                self.start_ys[base],
-                self.start_ys[base + 1],
-                self.start_ys[base + 2],
-                self.start_ys[base + 3],
-            ]);
-            let ex = Float4::new([
-                self.end_xs[base],
-                self.end_xs[base + 1],
-                self.end_xs[base + 2],
-                self.end_xs[base + 3],
-            ]);
-            let ey = Float4::new([
-                self.end_ys[base],
-                self.end_ys[base + 1],
-                self.end_ys[base + 2],
-                self.end_ys[base + 3],
-            ]);
+            // Load line data - contiguous SIMD loads
+            let sx = f32x4::from_slice(&self.start_xs[base..]);
+            let sy = f32x4::from_slice(&self.start_ys[base..]);
+            let ex = f32x4::from_slice(&self.end_xs[base..]);
+            let ey = f32x4::from_slice(&self.end_ys[base..]);
 
             // Load pre-computed inverse lengths
-            let inv_len = Float4::new([
-                self.inv_lengths[base],
-                self.inv_lengths[base + 1],
-                self.inv_lengths[base + 2],
-                self.inv_lengths[base + 3],
-            ]);
+            let inv_len = f32x4::from_slice(&self.inv_lengths[base..]);
 
             // Compute direction vectors
             let dx = ex - sx;
@@ -284,14 +265,12 @@ impl LineCollection {
             let cross = to_px * dy - to_py * dx;
 
             // Distance = |cross| * inv_length (no sqrt needed!)
-            // Using SIMD abs() for better vectorization
             let abs_cross = cross.abs();
             let dist_4 = abs_cross * inv_len;
             distances[base..base + 4].copy_from_slice(&dist_4.to_array());
         }
 
         // Handle remainder (scalar) using pre-computed values
-        // Using index loop to access multiple parallel arrays at same position
         #[allow(clippy::needless_range_loop)]
         for i in (chunks * 4)..n {
             let sx = self.start_xs[i];
@@ -327,39 +306,19 @@ impl LineCollection {
         let n = self.len();
         let mut projections = vec![0.0; n];
 
-        let px = Float4::splat(point.x);
-        let py = Float4::splat(point.y);
+        let px = f32x4::splat(point.x);
+        let py = f32x4::splat(point.y);
 
         // Process 4 lines at a time
         let chunks = n / 4;
         for i in 0..chunks {
             let base = i * 4;
 
-            // Load line data
-            let sx = Float4::new([
-                self.start_xs[base],
-                self.start_xs[base + 1],
-                self.start_xs[base + 2],
-                self.start_xs[base + 3],
-            ]);
-            let sy = Float4::new([
-                self.start_ys[base],
-                self.start_ys[base + 1],
-                self.start_ys[base + 2],
-                self.start_ys[base + 3],
-            ]);
-            let ex = Float4::new([
-                self.end_xs[base],
-                self.end_xs[base + 1],
-                self.end_xs[base + 2],
-                self.end_xs[base + 3],
-            ]);
-            let ey = Float4::new([
-                self.end_ys[base],
-                self.end_ys[base + 1],
-                self.end_ys[base + 2],
-                self.end_ys[base + 3],
-            ]);
+            // Load line data - contiguous SIMD loads
+            let sx = f32x4::from_slice(&self.start_xs[base..]);
+            let sy = f32x4::from_slice(&self.start_ys[base..]);
+            let ex = f32x4::from_slice(&self.end_xs[base..]);
+            let ey = f32x4::from_slice(&self.end_ys[base..]);
 
             // Compute direction vectors
             let dx = ex - sx;
@@ -437,47 +396,22 @@ impl LineCollection {
             n
         );
 
-        let px = Float4::splat(point.x);
-        let py = Float4::splat(point.y);
+        let px = f32x4::splat(point.x);
+        let py = f32x4::splat(point.y);
 
         // Process 4 lines at a time
         let chunks = n / 4;
         for i in 0..chunks {
             let base = i * 4;
 
-            // Load line data
-            let sx = Float4::new([
-                self.start_xs[base],
-                self.start_xs[base + 1],
-                self.start_xs[base + 2],
-                self.start_xs[base + 3],
-            ]);
-            let sy = Float4::new([
-                self.start_ys[base],
-                self.start_ys[base + 1],
-                self.start_ys[base + 2],
-                self.start_ys[base + 3],
-            ]);
-            let ex = Float4::new([
-                self.end_xs[base],
-                self.end_xs[base + 1],
-                self.end_xs[base + 2],
-                self.end_xs[base + 3],
-            ]);
-            let ey = Float4::new([
-                self.end_ys[base],
-                self.end_ys[base + 1],
-                self.end_ys[base + 2],
-                self.end_ys[base + 3],
-            ]);
+            // Load line data - contiguous SIMD loads
+            let sx = f32x4::from_slice(&self.start_xs[base..]);
+            let sy = f32x4::from_slice(&self.start_ys[base..]);
+            let ex = f32x4::from_slice(&self.end_xs[base..]);
+            let ey = f32x4::from_slice(&self.end_ys[base..]);
 
             // Load pre-computed inverse lengths
-            let inv_len = Float4::new([
-                self.inv_lengths[base],
-                self.inv_lengths[base + 1],
-                self.inv_lengths[base + 2],
-                self.inv_lengths[base + 3],
-            ]);
+            let inv_len = f32x4::from_slice(&self.inv_lengths[base..]);
 
             // Compute direction vectors
             let dx = ex - sx;
@@ -492,14 +426,12 @@ impl LineCollection {
             let cross = to_px * dy - to_py * dx;
 
             // Distance = |cross| * inv_length (no sqrt needed!)
-            // Using SIMD abs() for better vectorization
             let abs_cross = cross.abs();
             let dist_4 = abs_cross * inv_len;
             buffer[base..base + 4].copy_from_slice(&dist_4.to_array());
         }
 
         // Handle remainder (scalar) using pre-computed values
-        // Using index loop to access multiple parallel arrays at same position
         #[allow(clippy::needless_range_loop)]
         for i in (chunks * 4)..n {
             let sx = self.start_xs[i];
@@ -569,73 +501,45 @@ impl LineCollection {
         result.inv_lengths = self.inv_lengths.clone();
 
         let (sin, cos) = pose.theta.sin_cos();
-        let cos4 = Float4::splat(cos);
-        let sin4 = Float4::splat(sin);
-        let tx4 = Float4::splat(pose.x);
-        let ty4 = Float4::splat(pose.y);
+        let cos4 = f32x4::splat(cos);
+        let sin4 = f32x4::splat(sin);
+        let tx4 = f32x4::splat(pose.x);
+        let ty4 = f32x4::splat(pose.y);
 
         // Process 4 start points at a time
         let chunks = n / 4;
         for i in 0..chunks {
             let base = i * 4;
 
-            // Transform start points
-            let sx = Float4::new([
-                self.start_xs[base],
-                self.start_xs[base + 1],
-                self.start_xs[base + 2],
-                self.start_xs[base + 3],
-            ]);
-            let sy = Float4::new([
-                self.start_ys[base],
-                self.start_ys[base + 1],
-                self.start_ys[base + 2],
-                self.start_ys[base + 3],
-            ]);
+            // Transform start points - contiguous SIMD loads
+            let sx = f32x4::from_slice(&self.start_xs[base..]);
+            let sy = f32x4::from_slice(&self.start_ys[base..]);
 
-            let new_sx = sy.neg_mul_add(sin4, sx.mul_add(cos4, tx4));
-            let new_sy = sx.mul_add(sin4, sy.mul_add(cos4, ty4));
+            // new_sx = sx*cos - sy*sin + tx
+            // new_sy = sx*sin + sy*cos + ty
+            let new_sx = sx * cos4 - sy * sin4 + tx4;
+            let new_sy = sx * sin4 + sy * cos4 + ty4;
 
             result.start_xs[base..base + 4].copy_from_slice(&new_sx.to_array());
             result.start_ys[base..base + 4].copy_from_slice(&new_sy.to_array());
 
             // Transform end points
-            let ex = Float4::new([
-                self.end_xs[base],
-                self.end_xs[base + 1],
-                self.end_xs[base + 2],
-                self.end_xs[base + 3],
-            ]);
-            let ey = Float4::new([
-                self.end_ys[base],
-                self.end_ys[base + 1],
-                self.end_ys[base + 2],
-                self.end_ys[base + 3],
-            ]);
+            let ex = f32x4::from_slice(&self.end_xs[base..]);
+            let ey = f32x4::from_slice(&self.end_ys[base..]);
 
-            let new_ex = ey.neg_mul_add(sin4, ex.mul_add(cos4, tx4));
-            let new_ey = ex.mul_add(sin4, ey.mul_add(cos4, ty4));
+            let new_ex = ex * cos4 - ey * sin4 + tx4;
+            let new_ey = ex * sin4 + ey * cos4 + ty4;
 
             result.end_xs[base..base + 4].copy_from_slice(&new_ex.to_array());
             result.end_ys[base..base + 4].copy_from_slice(&new_ey.to_array());
 
             // Rotate normals (no translation needed for unit vectors)
-            let nx = Float4::new([
-                self.normal_xs[base],
-                self.normal_xs[base + 1],
-                self.normal_xs[base + 2],
-                self.normal_xs[base + 3],
-            ]);
-            let ny = Float4::new([
-                self.normal_ys[base],
-                self.normal_ys[base + 1],
-                self.normal_ys[base + 2],
-                self.normal_ys[base + 3],
-            ]);
+            let nx = f32x4::from_slice(&self.normal_xs[base..]);
+            let ny = f32x4::from_slice(&self.normal_ys[base..]);
 
             // Rotate normal: n' = R * n (no translation)
-            let new_nx = ny.neg_mul_add(sin4, nx * cos4);
-            let new_ny = nx.mul_add(sin4, ny * cos4);
+            let new_nx = nx * cos4 - ny * sin4;
+            let new_ny = nx * sin4 + ny * cos4;
 
             result.normal_xs[base..base + 4].copy_from_slice(&new_nx.to_array());
             result.normal_ys[base..base + 4].copy_from_slice(&new_ny.to_array());
