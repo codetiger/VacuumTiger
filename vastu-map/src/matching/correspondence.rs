@@ -15,6 +15,29 @@
 use crate::core::Point2D;
 use crate::features::LineCollection;
 
+/// Raw line data for correspondence creation when LineCollection isn't available.
+///
+/// This struct groups all line properties needed for a correspondence,
+/// enabling the SoA structure to inline line data without requiring
+/// a full LineCollection reference.
+#[derive(Clone, Copy, Debug)]
+pub struct LineDataRaw {
+    /// X component of line unit normal.
+    pub normal_x: f32,
+    /// Y component of line unit normal.
+    pub normal_y: f32,
+    /// X coordinate of line start point.
+    pub start_x: f32,
+    /// Y coordinate of line start point.
+    pub start_y: f32,
+    /// X coordinate of line end point.
+    pub end_x: f32,
+    /// Y coordinate of line end point.
+    pub end_y: f32,
+    /// Reciprocal of line length (1.0 / length).
+    pub inv_length: f32,
+}
+
 /// A correspondence between a scan point and a map line.
 #[derive(Clone, Copy, Debug)]
 pub struct Correspondence {
@@ -439,23 +462,17 @@ impl CorrespondenceSoA {
         point: Point2D,
         distance: f32,
         weight: f32,
-        normal_x: f32,
-        normal_y: f32,
-        start_x: f32,
-        start_y: f32,
-        end_x: f32,
-        end_y: f32,
-        inv_length: f32,
+        line: LineDataRaw,
     ) {
         self.point_xs.push(point.x);
         self.point_ys.push(point.y);
-        self.normal_xs.push(normal_x);
-        self.normal_ys.push(normal_y);
-        self.line_start_xs.push(start_x);
-        self.line_start_ys.push(start_y);
-        self.line_end_xs.push(end_x);
-        self.line_end_ys.push(end_y);
-        self.line_inv_lengths.push(inv_length);
+        self.normal_xs.push(line.normal_x);
+        self.normal_ys.push(line.normal_y);
+        self.line_start_xs.push(line.start_x);
+        self.line_start_ys.push(line.start_y);
+        self.line_end_xs.push(line.end_x);
+        self.line_end_ys.push(line.end_y);
+        self.line_inv_lengths.push(line.inv_length);
         self.weights.push(weight);
         self.point_indices.push(point_idx);
         self.line_indices.push(line_idx);

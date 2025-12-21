@@ -450,6 +450,109 @@ impl LineCollection {
         }
     }
 
+    /// Compute distances AND projections in a single pass (cache-friendly).
+    ///
+    /// This fused method loads line data once and computes both values,
+    /// providing better cache utilization than calling `distances_to_point_into`
+    /// and `project_point` separately.
+    ///
+    /// # Panics
+    /// Panics if `distances.len() < self.len()` or `projections.len() < self.len()`.
+    pub fn distances_and_projections_into(
+        &self,
+        point: Point2D,
+        distances: &mut [f32],
+        projections: &mut [f32],
+    ) {
+        let n = self.len();
+        debug_assert!(
+            distances.len() >= n,
+            "Distance buffer too small: {} < {}",
+            distances.len(),
+            n
+        );
+        debug_assert!(
+            projections.len() >= n,
+            "Projection buffer too small: {} < {}",
+            projections.len(),
+            n
+        );
+
+        let px = f32x4::splat(point.x);
+        let py = f32x4::splat(point.y);
+
+        // Process 4 lines at a time
+        let chunks = n / 4;
+        for i in 0..chunks {
+            let base = i * 4;
+
+            // Load line data once - the key optimization
+            let sx = f32x4::from_slice(&self.start_xs[base..]);
+            let sy = f32x4::from_slice(&self.start_ys[base..]);
+            let ex = f32x4::from_slice(&self.end_xs[base..]);
+            let ey = f32x4::from_slice(&self.end_ys[base..]);
+            let inv_len = f32x4::from_slice(&self.inv_lengths[base..]);
+
+            // Compute direction vectors
+            let dx = ex - sx;
+            let dy = ey - sy;
+
+            // Compute vectors from start to point
+            let to_px = px - sx;
+            let to_py = py - sy;
+
+            // === Distance computation ===
+            // Cross product: to_px * dy - to_py * dx
+            let cross = to_px * dy - to_py * dx;
+            let dist_4 = cross.abs() * inv_len;
+            distances[base..base + 4].copy_from_slice(&dist_4.to_array());
+
+            // === Projection computation ===
+            // t = dot(point - start, end - start) / |end - start|²
+            let dot = to_px * dx + to_py * dy;
+            let len_sq = dx * dx + dy * dy;
+
+            // Handle degenerate lines: use 0.5 if len_sq < epsilon
+            let len_sq_arr = len_sq.to_array();
+            let dot_arr = dot.to_array();
+
+            for j in 0..4 {
+                projections[base + j] = if len_sq_arr[j] > f32::EPSILON {
+                    dot_arr[j] / len_sq_arr[j]
+                } else {
+                    0.5 // Degenerate line - midpoint
+                };
+            }
+        }
+
+        // Handle remainder (scalar)
+        #[allow(clippy::needless_range_loop)]
+        for i in (chunks * 4)..n {
+            let sx = self.start_xs[i];
+            let sy = self.start_ys[i];
+            let ex = self.end_xs[i];
+            let ey = self.end_ys[i];
+            let inv_len = self.inv_lengths[i];
+
+            let dx = ex - sx;
+            let dy = ey - sy;
+            let to_px = point.x - sx;
+            let to_py = point.y - sy;
+
+            // Distance
+            let cross = to_px * dy - to_py * dx;
+            distances[i] = cross.abs() * inv_len;
+
+            // Projection
+            let len_sq = dx * dx + dy * dy;
+            projections[i] = if len_sq > f32::EPSILON {
+                (to_px * dx + to_py * dy) / len_sq
+            } else {
+                0.5
+            };
+        }
+    }
+
     /// Find the nearest line to a point using a reusable buffer.
     ///
     /// Zero-allocation variant of `nearest_line()` for hot paths like ICP.

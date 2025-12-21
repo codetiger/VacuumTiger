@@ -71,7 +71,7 @@ pub mod traits;
 // Re-export main types
 pub use correspondence::{
     CornerCorrespondence, CornerCorrespondenceSet, Correspondence, CorrespondenceSet,
-    CorrespondenceSoA, IDENTITY_COVARIANCE, MatchResult, PoseCovariance,
+    CorrespondenceSoA, IDENTITY_COVARIANCE, LineDataRaw, MatchResult, PoseCovariance,
 };
 pub use gauss_newton::{
     GaussNewtonConfig, GaussNewtonResult, optimize_pose_fast, optimize_pose_simd,

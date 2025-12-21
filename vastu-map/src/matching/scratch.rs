@@ -13,6 +13,8 @@
 //!
 //! With scratch space, these allocations happen once and are reused.
 
+use std::simd::f32x4;
+
 use crate::config::LidarNoiseModel;
 use crate::core::Point2D;
 use crate::features::LineCollection;
@@ -182,21 +184,67 @@ impl IcpScratchSpace {
 
     /// Transform points by pose into internal buffer.
     ///
+    /// SIMD-optimized: processes 4 points per iteration for better performance.
     /// After calling this, `transformed_point()` can be used to access results.
     #[inline]
     pub fn transform_points(&mut self, points: &[Point2D], sin: f32, cos: f32, tx: f32, ty: f32) {
+        let n = points.len();
+
+        // Resize buffers (keeps capacity, avoids reallocation)
         self.transformed_xs.clear();
         self.transformed_ys.clear();
+        self.transformed_xs.resize(n, 0.0);
+        self.transformed_ys.resize(n, 0.0);
 
-        // Pre-extend to avoid reallocations during push
-        self.transformed_xs.reserve(points.len());
-        self.transformed_ys.reserve(points.len());
+        if n == 0 {
+            return;
+        }
 
-        for p in points {
-            let new_x = p.x * cos - p.y * sin + tx;
-            let new_y = p.x * sin + p.y * cos + ty;
-            self.transformed_xs.push(new_x);
-            self.transformed_ys.push(new_y);
+        // SIMD constants
+        let cos4 = f32x4::splat(cos);
+        let sin4 = f32x4::splat(sin);
+        let tx4 = f32x4::splat(tx);
+        let ty4 = f32x4::splat(ty);
+
+        // Process 4 points at a time
+        // Note: Point2D is stored as AoS, so we need to gather/scatter
+        let chunks = n / 4;
+        for i in 0..chunks {
+            let base = i * 4;
+
+            // Gather 4 points into separate x and y vectors
+            let px = f32x4::from_array([
+                points[base].x,
+                points[base + 1].x,
+                points[base + 2].x,
+                points[base + 3].x,
+            ]);
+            let py = f32x4::from_array([
+                points[base].y,
+                points[base + 1].y,
+                points[base + 2].y,
+                points[base + 3].y,
+            ]);
+
+            // Transform: new_x = x*cos - y*sin + tx
+            //            new_y = x*sin + y*cos + ty
+            let new_x = px * cos4 - py * sin4 + tx4;
+            let new_y = px * sin4 + py * cos4 + ty4;
+
+            // Scatter to output buffers
+            self.transformed_xs[base..base + 4].copy_from_slice(&new_x.to_array());
+            self.transformed_ys[base..base + 4].copy_from_slice(&new_y.to_array());
+        }
+
+        // Handle remainder (scalar)
+        let remainder = chunks * 4;
+        for (p, (out_x, out_y)) in points[remainder..n].iter().zip(
+            self.transformed_xs[remainder..n]
+                .iter_mut()
+                .zip(&mut self.transformed_ys[remainder..n]),
+        ) {
+            *out_x = p.x * cos - p.y * sin + tx;
+            *out_y = p.x * sin + p.y * cos + ty;
         }
     }
 
@@ -237,9 +285,8 @@ impl IcpScratchSpace {
                 self.transformed_ys[point_idx],
             );
 
-            // Compute distances and projections into buffers
-            lines.distances_to_point_into(point, &mut self.distances);
-            self.compute_projections_into(point, lines);
+            // Compute distances and projections in a single pass (cache-friendly)
+            lines.distances_and_projections_into(point, &mut self.distances, &mut self.projections);
 
             let mut best_distance = config.max_distance;
             let mut best_corr: Option<Correspondence> = None;
@@ -274,32 +321,6 @@ impl IcpScratchSpace {
                 && let Some(corr) = best_corr
             {
                 self.correspondences.push(corr);
-            }
-        }
-    }
-
-    /// Compute projection parameters into the projections buffer.
-    ///
-    /// Formula: t = dot(point - start, end - start) / |end - start|²
-    fn compute_projections_into(&mut self, point: Point2D, lines: &LineCollection) {
-        let n = lines.len();
-
-        for i in 0..n {
-            let sx = lines.start_xs[i];
-            let sy = lines.start_ys[i];
-            let ex = lines.end_xs[i];
-            let ey = lines.end_ys[i];
-
-            let dx = ex - sx;
-            let dy = ey - sy;
-            let len_sq = dx * dx + dy * dy;
-
-            if len_sq < f32::EPSILON {
-                self.projections[i] = 0.5; // Degenerate line
-            } else {
-                let to_px = point.x - sx;
-                let to_py = point.y - sy;
-                self.projections[i] = (to_px * dx + to_py * dy) / len_sq;
             }
         }
     }
@@ -376,9 +397,8 @@ impl IcpScratchSpace {
                 self.transformed_ys[point_idx],
             );
 
-            // Compute distances and projections into buffers
-            lines.distances_to_point_into(point, &mut self.distances);
-            self.compute_projections_into(point, lines);
+            // Compute distances and projections in a single pass (cache-friendly)
+            lines.distances_and_projections_into(point, &mut self.distances, &mut self.projections);
 
             // Compute weight for this point based on its range
             let range = if point_idx < self.ranges.len() {

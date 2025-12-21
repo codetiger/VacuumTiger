@@ -119,7 +119,6 @@ pub mod loop_closure;
 pub mod matching;
 pub mod motion_model;
 pub mod query;
-pub mod simd;
 pub mod vector_map;
 
 // Re-export main types at crate root
