@@ -39,6 +39,7 @@
 
 use crate::config::LidarNoiseModel;
 use crate::core::Point2D;
+use crate::core::math::{compute_centroid, compute_covariance, principal_direction};
 use crate::features::Line2D;
 
 // ============================================================================
@@ -269,64 +270,29 @@ impl std::error::Error for FitError {}
 /// // Line should be approximately horizontal
 /// ```
 pub fn fit_line(points: &[Point2D]) -> Option<Line2D> {
+    fit_line_impl(points).ok()
+}
+
+/// Internal implementation shared by fit_line and fit_line_checked.
+fn fit_line_impl(points: &[Point2D]) -> Result<Line2D, FitError> {
     if points.len() < 2 {
-        return None;
+        return Err(FitError::InsufficientPoints {
+            got: points.len(),
+            required: 2,
+        });
     }
 
-    // Compute centroid
-    let n = points.len() as f32;
-    let mut sum_x: f32 = 0.0;
-    let mut sum_y: f32 = 0.0;
+    // Use shared geometry utilities
+    let centroid = compute_centroid(points);
+    let cov = compute_covariance(points, centroid);
 
-    for p in points {
-        sum_x += p.x;
-        sum_y += p.y;
-    }
-
-    let centroid = Point2D::new(sum_x / n, sum_y / n);
-
-    // Compute covariance matrix elements
-    // Cov = | cxx  cxy |
-    //       | cxy  cyy |
-    let mut cxx: f32 = 0.0;
-    let mut cyy: f32 = 0.0;
-    let mut cxy: f32 = 0.0;
-
-    for p in points {
-        let dx = p.x - centroid.x;
-        let dy = p.y - centroid.y;
-        cxx += dx * dx;
-        cyy += dy * dy;
-        cxy += dx * dy;
-    }
-
-    // Find eigenvectors of 2x2 covariance matrix
-    // For 2x2 symmetric matrix, eigenvalues are:
-    // λ = (cxx + cyy)/2 ± sqrt(((cxx - cyy)/2)² + cxy²)
-
-    let trace_half = (cxx + cyy) / 2.0;
-    let det_sqrt = ((cxx - cyy) / 2.0).powi(2) + cxy * cxy;
-
-    if det_sqrt < f32::EPSILON {
-        // Degenerate case - points form a circle or single point
-        // Use simple linear regression fallback
-        return fit_line_simple(points);
-    }
-
-    let det_sqrt = det_sqrt.sqrt();
-    let lambda1 = trace_half + det_sqrt; // Larger eigenvalue
-    let _lambda2 = trace_half - det_sqrt; // Smaller eigenvalue
-
-    // Eigenvector for larger eigenvalue (line direction)
-    // For eigenvalue λ1, eigenvector satisfies (cxx - λ1)x + cxy*y = 0
-    // Direction: (cxy, λ1 - cxx) or (-cxy, cxx - λ1)
-
-    let direction = if cxy.abs() > f32::EPSILON {
-        Point2D::new(lambda1 - cyy, cxy).normalized()
-    } else if cxx > cyy {
-        Point2D::new(1.0, 0.0) // Horizontal line
-    } else {
-        Point2D::new(0.0, 1.0) // Vertical line
+    // Get principal direction from covariance matrix
+    let direction = match principal_direction(&cov) {
+        Some(dir) => dir,
+        None => {
+            // Degenerate case - try simple fallback
+            return fit_line_simple_impl(points);
+        }
     };
 
     // Find extent of points along line direction
@@ -349,7 +315,7 @@ pub fn fit_line(points: &[Point2D]) -> Option<Line2D> {
         centroid.y + t_max * direction.y,
     );
 
-    Some(Line2D::with_point_count(start, end, points.len() as u32))
+    Ok(Line2D::with_point_count(start, end, points.len() as u32))
 }
 
 /// Fit a line to a set of points using Total Least Squares (with explicit errors).
@@ -372,83 +338,11 @@ pub fn fit_line(points: &[Point2D]) -> Option<Line2D> {
 /// assert!(matches!(result, Err(FitError::InsufficientPoints { .. })));
 /// ```
 pub fn fit_line_checked(points: &[Point2D]) -> Result<Line2D, FitError> {
-    if points.len() < 2 {
-        return Err(FitError::InsufficientPoints {
-            got: points.len(),
-            required: 2,
-        });
-    }
-
-    // Compute centroid
-    let n = points.len() as f32;
-    let mut sum_x: f32 = 0.0;
-    let mut sum_y: f32 = 0.0;
-
-    for p in points {
-        sum_x += p.x;
-        sum_y += p.y;
-    }
-
-    let centroid = Point2D::new(sum_x / n, sum_y / n);
-
-    // Compute covariance matrix elements
-    let mut cxx: f32 = 0.0;
-    let mut cyy: f32 = 0.0;
-    let mut cxy: f32 = 0.0;
-
-    for p in points {
-        let dx = p.x - centroid.x;
-        let dy = p.y - centroid.y;
-        cxx += dx * dx;
-        cyy += dy * dy;
-        cxy += dx * dy;
-    }
-
-    // Find eigenvectors of 2x2 covariance matrix
-    let trace_half = (cxx + cyy) / 2.0;
-    let det_sqrt = ((cxx - cyy) / 2.0).powi(2) + cxy * cxy;
-
-    if det_sqrt < f32::EPSILON {
-        // Degenerate case - try simple fallback
-        return fit_line_simple_checked(points);
-    }
-
-    let det_sqrt = det_sqrt.sqrt();
-    let lambda1 = trace_half + det_sqrt;
-
-    // Eigenvector for larger eigenvalue (line direction)
-    let direction = if cxy.abs() > f32::EPSILON {
-        Point2D::new(lambda1 - cyy, cxy).normalized()
-    } else if cxx > cyy {
-        Point2D::new(1.0, 0.0)
-    } else {
-        Point2D::new(0.0, 1.0)
-    };
-
-    // Find extent of points along line direction
-    let mut t_min = f32::MAX;
-    let mut t_max = f32::MIN;
-
-    for p in points {
-        let t = (p.x - centroid.x) * direction.x + (p.y - centroid.y) * direction.y;
-        t_min = t_min.min(t);
-        t_max = t_max.max(t);
-    }
-
-    let start = Point2D::new(
-        centroid.x + t_min * direction.x,
-        centroid.y + t_min * direction.y,
-    );
-    let end = Point2D::new(
-        centroid.x + t_max * direction.x,
-        centroid.y + t_max * direction.y,
-    );
-
-    Ok(Line2D::with_point_count(start, end, points.len() as u32))
+    fit_line_impl(points)
 }
 
-/// Simple line fitting fallback (checked version).
-fn fit_line_simple_checked(points: &[Point2D]) -> Result<Line2D, FitError> {
+/// Simple line fitting fallback (shared implementation).
+fn fit_line_simple_impl(points: &[Point2D]) -> Result<Line2D, FitError> {
     if points.len() < 2 {
         return Err(FitError::InsufficientPoints {
             got: points.len(),
@@ -464,14 +358,7 @@ fn fit_line_simple_checked(points: &[Point2D]) -> Result<Line2D, FitError> {
 
 /// Simple line fitting fallback using first and last points.
 fn fit_line_simple(points: &[Point2D]) -> Option<Line2D> {
-    if points.len() < 2 {
-        return None;
-    }
-    Some(Line2D::with_point_count(
-        points[0],
-        points[points.len() - 1],
-        points.len() as u32,
-    ))
+    fit_line_simple_impl(points).ok()
 }
 
 /// Compute range-based weights for line fitting.

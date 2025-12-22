@@ -104,6 +104,187 @@ pub fn sq(x: f32) -> f32 {
     x * x
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Geometry Utilities (shared by line fitting, RANSAC, etc.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+use super::Point2D;
+
+/// Covariance matrix elements for 2D point sets.
+///
+/// Represents a symmetric 2x2 matrix:
+/// ```text
+/// | cxx  cxy |
+/// | cxy  cyy |
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Covariance2D {
+    /// Sum of (x - cx)^2
+    pub cxx: f32,
+    /// Sum of (y - cy)^2
+    pub cyy: f32,
+    /// Sum of (x - cx)(y - cy)
+    pub cxy: f32,
+}
+
+/// Compute the centroid of a set of points.
+///
+/// # Example
+/// ```
+/// use vastu_map::core::{Point2D, math::compute_centroid};
+///
+/// let points = [Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0), Point2D::new(1.0, 1.0)];
+/// let centroid = compute_centroid(&points);
+/// assert!((centroid.x - 1.0).abs() < 1e-6);
+/// assert!((centroid.y - 1.0 / 3.0).abs() < 1e-6);
+/// ```
+#[inline]
+pub fn compute_centroid(points: &[Point2D]) -> Point2D {
+    if points.is_empty() {
+        return Point2D::new(0.0, 0.0);
+    }
+
+    let n = points.len() as f32;
+    let mut sum_x: f32 = 0.0;
+    let mut sum_y: f32 = 0.0;
+
+    for p in points {
+        sum_x += p.x;
+        sum_y += p.y;
+    }
+
+    Point2D::new(sum_x / n, sum_y / n)
+}
+
+/// Compute the 2x2 covariance matrix elements for a set of points.
+///
+/// The covariance matrix describes the spread and orientation of points
+/// around their centroid. Used for Total Least Squares line fitting and PCA.
+///
+/// # Arguments
+/// * `points` - Point set
+/// * `centroid` - Pre-computed centroid (use [`compute_centroid`])
+///
+/// # Example
+/// ```
+/// use vastu_map::core::{Point2D, math::{compute_centroid, compute_covariance}};
+///
+/// let points = [
+///     Point2D::new(0.0, 0.0),
+///     Point2D::new(1.0, 1.0),
+///     Point2D::new(2.0, 2.0),
+/// ];
+/// let centroid = compute_centroid(&points);
+/// let cov = compute_covariance(&points, centroid);
+///
+/// // Points lie on y=x line, so cxx == cyy and cxy > 0
+/// assert!((cov.cxx - cov.cyy).abs() < 1e-6);
+/// assert!(cov.cxy > 0.0);
+/// ```
+#[inline]
+pub fn compute_covariance(points: &[Point2D], centroid: Point2D) -> Covariance2D {
+    let mut cxx: f32 = 0.0;
+    let mut cyy: f32 = 0.0;
+    let mut cxy: f32 = 0.0;
+
+    for p in points {
+        let dx = p.x - centroid.x;
+        let dy = p.y - centroid.y;
+        cxx += dx * dx;
+        cyy += dy * dy;
+        cxy += dx * dy;
+    }
+
+    Covariance2D { cxx, cyy, cxy }
+}
+
+/// Compute weighted covariance matrix elements.
+///
+/// Points with higher weights contribute more to the covariance.
+/// Useful for range-weighted lidar point fitting.
+///
+/// # Arguments
+/// * `points` - Point set
+/// * `weights` - Weight for each point (must have same length as points)
+/// * `centroid` - Pre-computed weighted centroid
+///
+/// # Panics
+/// Panics if `points.len() != weights.len()`.
+#[inline]
+pub fn compute_covariance_weighted(
+    points: &[Point2D],
+    weights: &[f32],
+    centroid: Point2D,
+) -> Covariance2D {
+    debug_assert_eq!(points.len(), weights.len());
+
+    let mut cxx: f32 = 0.0;
+    let mut cyy: f32 = 0.0;
+    let mut cxy: f32 = 0.0;
+
+    for (p, &w) in points.iter().zip(weights.iter()) {
+        let dx = p.x - centroid.x;
+        let dy = p.y - centroid.y;
+        cxx += w * dx * dx;
+        cyy += w * dy * dy;
+        cxy += w * dx * dy;
+    }
+
+    Covariance2D { cxx, cyy, cxy }
+}
+
+/// Compute the principal direction from a 2x2 covariance matrix.
+///
+/// Returns the eigenvector corresponding to the larger eigenvalue,
+/// which represents the direction of maximum variance.
+///
+/// Returns `None` if the covariance matrix is degenerate (e.g., all points
+/// coincident or forming a circle).
+///
+/// # Example
+/// ```
+/// use vastu_map::core::{Point2D, math::{compute_centroid, compute_covariance, principal_direction}};
+///
+/// // Points on a horizontal line
+/// let points = [Point2D::new(0.0, 0.0), Point2D::new(1.0, 0.0), Point2D::new(2.0, 0.0)];
+/// let centroid = compute_centroid(&points);
+/// let cov = compute_covariance(&points, centroid);
+/// let dir = principal_direction(&cov).unwrap();
+///
+/// // Direction should be horizontal (1, 0) or (-1, 0)
+/// assert!(dir.y.abs() < 1e-6);
+/// assert!((dir.x.abs() - 1.0).abs() < 1e-6);
+/// ```
+#[inline]
+pub fn principal_direction(cov: &Covariance2D) -> Option<Point2D> {
+    // Find eigenvectors of 2x2 covariance matrix
+    // For 2x2 symmetric matrix, eigenvalues are:
+    // λ = (cxx + cyy)/2 ± sqrt(((cxx - cyy)/2)² + cxy²)
+
+    let trace_half = (cov.cxx + cov.cyy) / 2.0;
+    let det_sqrt = ((cov.cxx - cov.cyy) / 2.0).powi(2) + cov.cxy * cov.cxy;
+
+    if det_sqrt < f32::EPSILON {
+        // Degenerate case - points form a circle or single point
+        return None;
+    }
+
+    let det_sqrt = det_sqrt.sqrt();
+    let lambda1 = trace_half + det_sqrt; // Larger eigenvalue
+
+    // Eigenvector for larger eigenvalue (line direction)
+    // For eigenvalue λ1, eigenvector satisfies (cxx - λ1)x + cxy*y = 0
+    // Direction: (cxy, λ1 - cxx) or (-cxy, cxx - λ1)
+
+    if cov.cxy.abs() > f32::EPSILON {
+        Some(Point2D::new(lambda1 - cov.cyy, cov.cxy).normalized())
+    } else if cov.cxx > cov.cyy {
+        Some(Point2D::new(1.0, 0.0)) // Horizontal line
+    } else {
+        Some(Point2D::new(0.0, 1.0)) // Vertical line
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +350,123 @@ mod tests {
         assert_eq!(sq(2.0), 4.0);
         assert_eq!(sq(-3.0), 9.0);
         assert_eq!(sq(0.0), 0.0);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Geometry Utility Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compute_centroid() {
+        // Empty points
+        let empty: &[Point2D] = &[];
+        let c = compute_centroid(empty);
+        assert_eq!(c.x, 0.0);
+        assert_eq!(c.y, 0.0);
+
+        // Single point
+        let single = [Point2D::new(3.0, 4.0)];
+        let c = compute_centroid(&single);
+        assert_relative_eq!(c.x, 3.0, epsilon = 1e-6);
+        assert_relative_eq!(c.y, 4.0, epsilon = 1e-6);
+
+        // Triangle
+        let triangle = [
+            Point2D::new(0.0, 0.0),
+            Point2D::new(3.0, 0.0),
+            Point2D::new(0.0, 3.0),
+        ];
+        let c = compute_centroid(&triangle);
+        assert_relative_eq!(c.x, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(c.y, 1.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_compute_covariance() {
+        // Points on horizontal line (y=0)
+        let horizontal = [
+            Point2D::new(0.0, 0.0),
+            Point2D::new(1.0, 0.0),
+            Point2D::new(2.0, 0.0),
+        ];
+        let centroid = compute_centroid(&horizontal);
+        let cov = compute_covariance(&horizontal, centroid);
+
+        // cxx > 0, cyy = 0, cxy = 0
+        assert!(cov.cxx > 0.0);
+        assert_relative_eq!(cov.cyy, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(cov.cxy, 0.0, epsilon = 1e-6);
+
+        // Points on diagonal (y=x)
+        let diagonal = [
+            Point2D::new(0.0, 0.0),
+            Point2D::new(1.0, 1.0),
+            Point2D::new(2.0, 2.0),
+        ];
+        let centroid = compute_centroid(&diagonal);
+        let cov = compute_covariance(&diagonal, centroid);
+
+        // cxx == cyy, cxy > 0
+        assert_relative_eq!(cov.cxx, cov.cyy, epsilon = 1e-6);
+        assert!(cov.cxy > 0.0);
+    }
+
+    #[test]
+    fn test_principal_direction_horizontal() {
+        let points = [
+            Point2D::new(0.0, 0.0),
+            Point2D::new(1.0, 0.0),
+            Point2D::new(2.0, 0.0),
+        ];
+        let centroid = compute_centroid(&points);
+        let cov = compute_covariance(&points, centroid);
+        let dir = principal_direction(&cov).unwrap();
+
+        // Direction should be horizontal
+        assert!(dir.y.abs() < 1e-6);
+        assert!((dir.x.abs() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_principal_direction_vertical() {
+        let points = [
+            Point2D::new(0.0, 0.0),
+            Point2D::new(0.0, 1.0),
+            Point2D::new(0.0, 2.0),
+        ];
+        let centroid = compute_centroid(&points);
+        let cov = compute_covariance(&points, centroid);
+        let dir = principal_direction(&cov).unwrap();
+
+        // Direction should be vertical
+        assert!(dir.x.abs() < 1e-6);
+        assert!((dir.y.abs() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_principal_direction_diagonal() {
+        let points = [
+            Point2D::new(0.0, 0.0),
+            Point2D::new(1.0, 1.0),
+            Point2D::new(2.0, 2.0),
+        ];
+        let centroid = compute_centroid(&points);
+        let cov = compute_covariance(&points, centroid);
+        let dir = principal_direction(&cov).unwrap();
+
+        // Direction should be 45° (normalized: ~0.707, ~0.707)
+        assert_relative_eq!(dir.x.abs(), dir.y.abs(), epsilon = 1e-5);
+        assert!((dir.length() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_principal_direction_degenerate() {
+        // Single point - degenerate
+        let cov = Covariance2D {
+            cxx: 0.0,
+            cyy: 0.0,
+            cxy: 0.0,
+        };
+        assert!(principal_direction(&cov).is_none());
     }
 }

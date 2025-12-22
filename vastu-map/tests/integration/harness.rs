@@ -247,8 +247,6 @@ pub struct ObservationRecord {
     pub confidence: f32,
     /// Drift magnitude (translation error in meters).
     pub drift_translation: f32,
-    /// Lidar scan at this observation (robot frame) - stored at intervals for visualization.
-    pub scan: Option<vastu_map::core::PointCloud2D>,
 }
 
 /// Trajectory history for visualization.
@@ -265,13 +263,7 @@ impl TrajectoryHistory {
     }
 
     /// Record an observation.
-    pub fn record(
-        &mut self,
-        truth_pose: Pose2D,
-        slam_pose: Pose2D,
-        confidence: f32,
-        scan: Option<vastu_map::core::PointCloud2D>,
-    ) {
+    pub fn record(&mut self, truth_pose: Pose2D, slam_pose: Pose2D, confidence: f32) {
         let drift_translation =
             ((truth_pose.x - slam_pose.x).powi(2) + (truth_pose.y - slam_pose.y).powi(2)).sqrt();
 
@@ -280,7 +272,6 @@ impl TrajectoryHistory {
             slam_pose,
             confidence,
             drift_translation,
-            scan,
         });
     }
 }
@@ -536,7 +527,7 @@ impl TestHarness {
         // Record to trajectory history for visualization
         // Note: We no longer store scans here since ScanStore handles it
         self.trajectory
-            .record(current_truth, result.pose, result.confidence, None);
+            .record(current_truth, result.pose, result.confidence);
 
         log::debug!(
             "Observation {}: truth=({:.2}, {:.2}, {:.1}°), slam=({:.2}, {:.2}, {:.1}°), conf={:.2}, icp_iters={}",

@@ -22,6 +22,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core::Point2D;
+use crate::core::math::{compute_centroid, compute_covariance};
 use crate::features::Line2D;
 
 use super::line_fitting::fit_line;
@@ -300,25 +301,12 @@ fn split_at_gaps(
         return vec![(inlier_points.to_vec(), inlier_indices.to_vec())];
     }
 
-    // Compute principal direction using PCA-like approach
-    let n = inlier_points.len() as f32;
-    let mean_x: f32 = inlier_points.iter().map(|p| p.x).sum::<f32>() / n;
-    let mean_y: f32 = inlier_points.iter().map(|p| p.y).sum::<f32>() / n;
+    // Use shared utilities for centroid and covariance
+    let centroid = compute_centroid(inlier_points);
+    let cov = compute_covariance(inlier_points, centroid);
 
-    // Compute covariance matrix elements
-    let mut cxx = 0.0f32;
-    let mut cxy = 0.0f32;
-    let mut cyy = 0.0f32;
-    for p in inlier_points {
-        let dx = p.x - mean_x;
-        let dy = p.y - mean_y;
-        cxx += dx * dx;
-        cxy += dx * dy;
-        cyy += dy * dy;
-    }
-
-    // Principal direction from dominant eigenvector
-    let theta = 0.5 * (2.0 * cxy).atan2(cxx - cyy);
+    // Principal direction from dominant eigenvector (using atan2 for angle)
+    let theta = 0.5 * (2.0 * cov.cxy).atan2(cov.cxx - cov.cyy);
     let dir_x = theta.cos();
     let dir_y = theta.sin();
 
@@ -327,7 +315,7 @@ fn split_at_gaps(
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let proj = (p.x - mean_x) * dir_x + (p.y - mean_y) * dir_y;
+            let proj = (p.x - centroid.x) * dir_x + (p.y - centroid.y) * dir_y;
             (i, proj)
         })
         .collect();
@@ -654,32 +642,19 @@ fn split_at_gaps_with_scratch(config: &RansacLineConfig, scratch: &mut RansacScr
         return false;
     }
 
-    // Compute principal direction using PCA-like approach
-    let n = num_inliers as f32;
-    let mean_x: f32 = scratch.inlier_points.iter().map(|p| p.x).sum::<f32>() / n;
-    let mean_y: f32 = scratch.inlier_points.iter().map(|p| p.y).sum::<f32>() / n;
+    // Use shared utilities for centroid and covariance
+    let centroid = compute_centroid(&scratch.inlier_points);
+    let cov = compute_covariance(&scratch.inlier_points, centroid);
 
-    // Compute covariance matrix elements
-    let mut cxx = 0.0f32;
-    let mut cxy = 0.0f32;
-    let mut cyy = 0.0f32;
-    for p in &scratch.inlier_points {
-        let dx = p.x - mean_x;
-        let dy = p.y - mean_y;
-        cxx += dx * dx;
-        cxy += dx * dy;
-        cyy += dy * dy;
-    }
-
-    // Principal direction from dominant eigenvector
-    let theta = 0.5 * (2.0 * cxy).atan2(cxx - cyy);
+    // Principal direction from dominant eigenvector (using atan2 for angle)
+    let theta = 0.5 * (2.0 * cov.cxy).atan2(cov.cxx - cov.cyy);
     let dir_x = theta.cos();
     let dir_y = theta.sin();
 
     // Project points onto principal direction and sort
     scratch.projection_buffer.clear();
     for (i, p) in scratch.inlier_points.iter().enumerate() {
-        let proj = (p.x - mean_x) * dir_x + (p.y - mean_y) * dir_y;
+        let proj = (p.x - centroid.x) * dir_x + (p.y - centroid.y) * dir_y;
         scratch.projection_buffer.push((i, proj));
     }
     scratch
