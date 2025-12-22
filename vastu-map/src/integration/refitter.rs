@@ -80,7 +80,7 @@ impl RefitResult {
     /// Get all lines from the result.
     pub fn lines(&self) -> Vec<Line2D> {
         match self {
-            RefitResult::Single(line) => vec![line.clone()],
+            RefitResult::Single(line) => vec![*line],
             RefitResult::Split(lines) => lines.clone(),
             RefitResult::Insufficient => vec![],
         }
@@ -262,8 +262,7 @@ fn split_and_fit(
 
     // Fit each segment
     for (range_start, range_end) in ranges {
-        let segment_points: Vec<&AssociatedPoint> =
-            sorted_points[range_start..range_end].to_vec();
+        let segment_points: Vec<&AssociatedPoint> = sorted_points[range_start..range_end].to_vec();
 
         if segment_points.len() < config.min_points {
             continue;
@@ -340,11 +339,7 @@ mod tests {
     use super::*;
 
     fn make_horizontal_line(y: f32, x_start: f32, x_end: f32) -> Line2D {
-        Line2D::with_observation_count(
-            Point2D::new(x_start, y),
-            Point2D::new(x_end, y),
-            5,
-        )
+        Line2D::with_observation_count(Point2D::new(x_start, y), Point2D::new(x_end, y), 5)
     }
 
     fn make_associated_point(x: f32, y: f32, scan_id: u32, t: f32) -> AssociatedPoint {
@@ -374,7 +369,12 @@ mod tests {
     }
 
     /// Create a dense point cloud (no gaps > threshold).
-    fn make_dense_points(x_start: f32, x_end: f32, y: f32, gap_threshold: f32) -> Vec<AssociatedPoint> {
+    fn make_dense_points(
+        x_start: f32,
+        x_end: f32,
+        y: f32,
+        gap_threshold: f32,
+    ) -> Vec<AssociatedPoint> {
         let line_length = (x_end - x_start).abs();
         // Create points with spacing less than gap_threshold
         let spacing = gap_threshold * 0.5;

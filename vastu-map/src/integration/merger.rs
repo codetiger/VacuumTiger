@@ -3,13 +3,15 @@
 //! Merges associated lines into updated map lines, extending
 //! endpoints and updating parameters based on observations.
 
+use serde::{Deserialize, Serialize};
+
 use crate::core::Point2D;
 use crate::features::Line2D;
 
 use super::association::Association;
 
 /// Configuration for line merging.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MergerConfig {
     /// Weight given to existing map line (vs. scan line).
     /// Higher values make the map more stable but slower to adapt.
@@ -70,7 +72,7 @@ impl MergerConfig {
 ///
 /// Used by [`optimize_coplanar_lines`] to merge multiple lines
 /// that lie on the same infinite line (within tolerances).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoplanarMergeConfig {
     /// Maximum angle difference for lines to be considered coplanar (radians).
     /// Default: 0.052 rad (~3°)
@@ -96,9 +98,9 @@ pub struct CoplanarMergeConfig {
 impl Default for CoplanarMergeConfig {
     fn default() -> Self {
         Self {
-            max_angle_diff: 0.052,           // ~3 degrees
-            max_perpendicular_dist: 0.05,    // 5cm
-            max_gap: 0.3,                    // 30cm
+            max_angle_diff: 0.052,        // ~3 degrees
+            max_perpendicular_dist: 0.05, // 5cm
+            max_gap: 0.3,                 // 30cm
             min_dominant_point_count: 10,
         }
     }
@@ -576,8 +578,7 @@ pub fn optimize_coplanar_lines(lines: &mut Vec<Line2D>, config: &CoplanarMergeCo
     }
 
     // Collect groups
-    let mut groups: std::collections::HashMap<usize, Vec<usize>> =
-        std::collections::HashMap::new();
+    let mut groups: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
     for i in 0..n {
         let root = find(&mut parent, i);
         groups.entry(root).or_default().push(i);
@@ -862,11 +863,7 @@ mod tests {
                 Point2D::new(3.0, 0.0),
                 15, // Above threshold
             ),
-            Line2D::with_point_count(
-                Point2D::new(2.0, 0.0),
-                Point2D::new(5.0, 0.0),
-                12,
-            ),
+            Line2D::with_point_count(Point2D::new(2.0, 0.0), Point2D::new(5.0, 0.0), 12),
         ];
         let config = CoplanarMergeConfig::default();
 
@@ -881,11 +878,7 @@ mod tests {
     #[test]
     fn test_optimize_coplanar_lines_merges_with_gap() {
         let mut lines = vec![
-            Line2D::with_point_count(
-                Point2D::new(0.0, 0.0),
-                Point2D::new(2.0, 0.0),
-                12,
-            ),
+            Line2D::with_point_count(Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0), 12),
             Line2D::with_point_count(
                 Point2D::new(2.2, 0.0), // 0.2m gap, within default 0.3m
                 Point2D::new(5.0, 0.0),
@@ -930,11 +923,7 @@ mod tests {
     #[test]
     fn test_optimize_coplanar_lines_respects_max_gap() {
         let mut lines = vec![
-            Line2D::with_point_count(
-                Point2D::new(0.0, 0.0),
-                Point2D::new(2.0, 0.0),
-                15,
-            ),
+            Line2D::with_point_count(Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0), 15),
             Line2D::with_point_count(
                 Point2D::new(4.0, 0.0), // 2.0m gap, above default 0.3m
                 Point2D::new(6.0, 0.0),
@@ -977,27 +966,11 @@ mod tests {
         // Two separate walls (horizontal and vertical)
         let mut lines = vec![
             // Horizontal wall (will merge)
-            Line2D::with_point_count(
-                Point2D::new(0.0, 0.0),
-                Point2D::new(2.0, 0.0),
-                15,
-            ),
-            Line2D::with_point_count(
-                Point2D::new(2.0, 0.0),
-                Point2D::new(4.0, 0.0),
-                12,
-            ),
+            Line2D::with_point_count(Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0), 15),
+            Line2D::with_point_count(Point2D::new(2.0, 0.0), Point2D::new(4.0, 0.0), 12),
             // Vertical wall (will merge)
-            Line2D::with_point_count(
-                Point2D::new(5.0, 0.0),
-                Point2D::new(5.0, 2.0),
-                15,
-            ),
-            Line2D::with_point_count(
-                Point2D::new(5.0, 2.0),
-                Point2D::new(5.0, 4.0),
-                12,
-            ),
+            Line2D::with_point_count(Point2D::new(5.0, 0.0), Point2D::new(5.0, 2.0), 15),
+            Line2D::with_point_count(Point2D::new(5.0, 2.0), Point2D::new(5.0, 4.0), 12),
         ];
         let config = CoplanarMergeConfig::default();
 

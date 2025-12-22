@@ -24,11 +24,14 @@
 //! | Tukey | Zero weight for outliers | Aggressive rejection |
 //! | Geman-McClure | Redescending | Multimodal errors |
 
+use serde::{Deserialize, Serialize};
+
 /// Robust cost function for weighted least squares (IRLS).
 ///
 /// Computes weights that down-weight outliers based on residual magnitude.
 /// Use with ICP to improve accuracy in presence of noise and clutter.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum RobustCostFunction {
     /// No robust weighting (standard least squares).
     /// Weight is always 1.0 regardless of residual.

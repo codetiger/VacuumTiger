@@ -591,9 +591,7 @@ mod tests {
     use super::*;
 
     fn make_test_points(n: usize) -> Vec<Point2D> {
-        (0..n)
-            .map(|i| Point2D::new(i as f32 * 0.1, 0.0))
-            .collect()
+        (0..n).map(|i| Point2D::new(i as f32 * 0.1, 0.0)).collect()
     }
 
     fn make_point_cloud(n: usize) -> PointCloud2D {

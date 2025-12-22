@@ -2,6 +2,24 @@
 //!
 //! Provides synchronous simulation using sangam-io's mock device components
 //! directly (without spawning daemon threads).
+//!
+//! # Configuration
+//!
+//! SLAM algorithm parameters can be customized via YAML configuration:
+//!
+//! - Set `VASTU_MAP_CONFIG` environment variable to specify a custom config file
+//! - Falls back to `configs/default.yaml` in the project root
+//! - Falls back to `VectorMapConfig::default()` if no YAML file is found
+//!
+//! ```bash
+//! # Use custom config
+//! VASTU_MAP_CONFIG=my_config.yaml cargo test --features integration-tests
+//!
+//! # Use default config file
+//! cargo test --features integration-tests
+//! ```
+
+use std::path::Path;
 
 use sangam_io::devices::mock::config::{LidarConfig, RobotConfig};
 use sangam_io::devices::mock::lidar_sim::LidarSimulator;
@@ -55,6 +73,56 @@ pub struct HarnessConfig {
     pub fast_mode: bool,
 }
 
+/// Environment variable name for custom SLAM config file path.
+const SLAM_CONFIG_ENV_VAR: &str = "VASTU_MAP_CONFIG";
+
+/// Load VectorMapConfig from YAML file.
+///
+/// Priority:
+/// 1. `VASTU_MAP_CONFIG` environment variable (if set)
+/// 2. `configs/default.yaml` in project root
+/// 3. `VectorMapConfig::default()` as fallback
+fn load_slam_config() -> VectorMapConfig {
+    // Check environment variable first
+    if let Ok(config_path) = std::env::var(SLAM_CONFIG_ENV_VAR) {
+        match VectorMapConfig::from_yaml_file(&config_path) {
+            Ok(config) => {
+                log::info!("Loaded SLAM config from env var: {}", config_path);
+                return config;
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to load SLAM config from {}: {}, using default",
+                    config_path,
+                    e
+                );
+            }
+        }
+    }
+
+    // Try default config file in project root
+    let default_config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/default.yaml");
+    if default_config_path.exists() {
+        match VectorMapConfig::from_yaml_file(&default_config_path) {
+            Ok(config) => {
+                log::info!("Loaded SLAM config from: {}", default_config_path.display());
+                return config;
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to load default SLAM config from {}: {}, using builtin defaults",
+                    default_config_path.display(),
+                    e
+                );
+            }
+        }
+    }
+
+    // Fall back to builtin defaults
+    log::info!("Using builtin VectorMapConfig::default()");
+    VectorMapConfig::default()
+}
+
 impl Default for HarnessConfig {
     fn default() -> Self {
         // Use lidar config with zero offsets for test accuracy
@@ -75,7 +143,7 @@ impl Default for HarnessConfig {
             start_theta: 0.0,
             robot: RobotConfig::default(),
             lidar,
-            slam: VectorMapConfig::default(),
+            slam: load_slam_config(),
             random_seed: 42, // Fixed seed for reproducibility
             min_quality: 50,
             min_range: 0.15,
@@ -126,8 +194,8 @@ impl HarnessConfig {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/integration/scenarios/maps/medium_room.yaml"
         );
-        // Use non-conservative path planning for exploration
-        let slam = VectorMapConfig::default()
+        // Load base config from YAML, then override path planning for exploration
+        let slam = load_slam_config()
             .with_path_planning(PathPlanningConfig::default().with_conservative(false));
         Self {
             map_file: map_file.to_string(),

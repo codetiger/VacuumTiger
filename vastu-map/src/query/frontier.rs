@@ -22,6 +22,7 @@
 //! let frontiers = detector.detect(&new_lines, &config);
 //! ```
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::Frontier;
@@ -257,7 +258,7 @@ impl FrontierDetector {
 }
 
 /// Configuration for frontier detection.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrontierConfig {
     /// Maximum distance for endpoints to be considered "connected" (meters).
     /// Endpoints closer than this are not frontiers.

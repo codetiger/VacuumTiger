@@ -5,13 +5,15 @@
 //! - Angular similarity
 //! - Overlap extent
 
+use serde::{Deserialize, Serialize};
+
 use crate::core::math::angle_diff;
 use crate::features::Line2D;
 
 use super::spatial_index::SpatialIndex;
 
 /// Configuration for line association.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AssociationConfig {
     /// Maximum perpendicular distance for association (meters).
     /// Default: 0.15m

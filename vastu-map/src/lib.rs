@@ -126,7 +126,7 @@ pub mod vector_map;
 
 // Re-export main types at crate root
 pub use motion_model::MotionModel;
-pub use vector_map::{ConfigError, VectorMap, VectorMapConfig};
+pub use vector_map::{ConfigError, VectorMap, VectorMapConfig, YamlConfigError};
 
 // Re-export exploration types
 pub use exploration::{

@@ -7,9 +7,9 @@ use crate::core::{Bounds, Point2D, PointCloud2D, Pose2D};
 use crate::extraction::{detect_corners, extract_lines, extract_lines_hybrid};
 use crate::features::{Corner2D, FeatureSet, Line2D};
 use crate::integration::{
+    PointAssociationConfig, RefitConfig, RefitResult, RefitStats, ScanStore, ScanStoreConfig,
     associate_points_to_lines, batch_merge, create_new_line, find_associations,
-    find_unmatched_scan_lines, refit_line, PointAssociationConfig, RefitConfig, RefitResult,
-    RefitStats, ScanStore, ScanStoreConfig,
+    find_unmatched_scan_lines, refit_line,
 };
 use crate::loop_closure::{LoopClosure, LoopClosureDetector};
 use crate::matching::PointToLineIcp;
@@ -420,9 +420,7 @@ impl VectorMap {
         // ─── Scan Storage (Exploration Mode) ───
         if let Some(ref mut store) = self.scan_store {
             store.add_scan(
-                odometry,
-                final_pose,
-                scan,
+                odometry, final_pose, scan,
                 0, // features_extracted - will be updated after extraction
                 confidence,
             );
@@ -440,15 +438,16 @@ impl VectorMap {
         };
 
         // ─── Periodic Line Re-fitting (Exploration Mode) ───
-        if let Some(ref config) = self.exploration_config {
-            if config.refit_interval > 0 && self.observation_count % config.refit_interval == 0 {
-                log::debug!(
-                    "Triggering line re-fit at observation {}",
-                    self.observation_count
-                );
-                // Trigger line re-fitting from accumulated scans
-                let _ = self.refit_lines_from_scans();
-            }
+        if let Some(ref config) = self.exploration_config
+            && config.refit_interval > 0
+            && self.observation_count.is_multiple_of(config.refit_interval)
+        {
+            log::debug!(
+                "Triggering line re-fit at observation {}",
+                self.observation_count
+            );
+            // Trigger line re-fitting from accumulated scans
+            let _ = self.refit_lines_from_scans();
         }
 
         // ─── Loop Closure ───
@@ -503,10 +502,8 @@ impl VectorMap {
         // ─── Scan Storage (Exploration Mode) ───
         if let Some(ref mut store) = self.scan_store {
             store.add_scan(
-                odometry,
-                odometry,  // First scan: odometry = estimated pose
-                scan,
-                0,   // features_extracted - unknown at this point
+                odometry, odometry, // First scan: odometry = estimated pose
+                scan, 0,   // features_extracted - unknown at this point
                 0.0, // confidence - no ICP for first scan
             );
         }
@@ -674,11 +671,9 @@ impl VectorMap {
     /// let merged = map.optimize_lines(&config);
     /// println!("Merged {} redundant lines", merged);
     /// ```
-    pub fn optimize_lines(
-        &mut self,
-        config: &crate::integration::CoplanarMergeConfig,
-    ) -> usize {
-        let merged = crate::integration::optimize_coplanar_lines(self.line_store.lines_mut(), config);
+    pub fn optimize_lines(&mut self, config: &crate::integration::CoplanarMergeConfig) -> usize {
+        let merged =
+            crate::integration::optimize_coplanar_lines(self.line_store.lines_mut(), config);
 
         if merged > 0 {
             // Rebuild auxiliary structures
@@ -763,12 +758,7 @@ impl VectorMap {
         for (line_idx, associated_points) in associations.line_points.iter().enumerate() {
             let original = &self.line_store.lines()[line_idx];
 
-            let result = refit_line(
-                associated_points,
-                original,
-                &robot_poses,
-                &refit_config,
-            );
+            let result = refit_line(associated_points, original, &robot_poses, &refit_config);
 
             match result {
                 RefitResult::Single(line) => {
@@ -782,7 +772,7 @@ impl VectorMap {
                 }
                 RefitResult::Insufficient => {
                     // Keep original line
-                    new_lines.push(original.clone());
+                    new_lines.push(*original);
                     stats.lines_insufficient += 1;
                 }
             }

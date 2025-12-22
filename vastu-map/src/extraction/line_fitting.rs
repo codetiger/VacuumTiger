@@ -61,7 +61,7 @@ use crate::features::Line2D;
 ///
 /// // Lines longer than 1m will be split into smaller segments
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LineFitConfig {
     /// Maximum length for a single line segment.
     ///
@@ -71,14 +71,6 @@ pub struct LineFitConfig {
     ///
     /// Set to `None` (default) for no length limit.
     pub max_line_length: Option<f32>,
-}
-
-impl Default for LineFitConfig {
-    fn default() -> Self {
-        Self {
-            max_line_length: None,
-        }
-    }
 }
 
 impl LineFitConfig {
@@ -126,7 +118,7 @@ pub fn split_line_by_length(line: &Line2D, max_length: f32) -> Vec<Line2D> {
     let length = line.length();
 
     if length <= max_length || max_length <= 0.0 {
-        return vec![line.clone()];
+        return vec![*line];
     }
 
     // Calculate number of segments needed
@@ -157,16 +149,14 @@ pub fn split_line_by_length(line: &Line2D, max_length: f32) -> Vec<Line2D> {
             // Use exact endpoint for last segment to avoid floating point drift
             line.end
         } else {
-            Point2D::new(
-                line.start.x + dir.x * t_end,
-                line.start.y + dir.y * t_end,
-            )
+            Point2D::new(line.start.x + dir.x * t_end, line.start.y + dir.y * t_end)
         };
 
         // Each segment inherits observation_count=1, proportional point_count
         let segment_point_count = if i == num_segments - 1 {
             // Last segment gets remaining points
-            line.point_count.saturating_sub(points_per_segment * (num_segments - 1) as u32)
+            line.point_count
+                .saturating_sub(points_per_segment * (num_segments - 1) as u32)
         } else {
             points_per_segment
         };
@@ -1180,11 +1170,7 @@ mod tests {
 
     #[test]
     fn test_split_line_short_line_no_split() {
-        let line = Line2D::with_point_count(
-            Point2D::new(0.0, 0.0),
-            Point2D::new(0.5, 0.0),
-            10,
-        );
+        let line = Line2D::with_point_count(Point2D::new(0.0, 0.0), Point2D::new(0.5, 0.0), 10);
 
         let segments = split_line_by_length(&line, 1.0);
 
@@ -1196,11 +1182,7 @@ mod tests {
 
     #[test]
     fn test_split_line_exact_max_length() {
-        let line = Line2D::with_point_count(
-            Point2D::new(0.0, 0.0),
-            Point2D::new(1.0, 0.0),
-            10,
-        );
+        let line = Line2D::with_point_count(Point2D::new(0.0, 0.0), Point2D::new(1.0, 0.0), 10);
 
         let segments = split_line_by_length(&line, 1.0);
 
@@ -1209,11 +1191,7 @@ mod tests {
 
     #[test]
     fn test_split_line_into_two() {
-        let line = Line2D::with_point_count(
-            Point2D::new(0.0, 0.0),
-            Point2D::new(2.0, 0.0),
-            20,
-        );
+        let line = Line2D::with_point_count(Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0), 20);
 
         let segments = split_line_by_length(&line, 1.0);
 
@@ -1232,11 +1210,7 @@ mod tests {
 
     #[test]
     fn test_split_line_into_multiple() {
-        let line = Line2D::with_point_count(
-            Point2D::new(0.0, 0.0),
-            Point2D::new(5.0, 0.0),
-            50,
-        );
+        let line = Line2D::with_point_count(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0), 50);
 
         let segments = split_line_by_length(&line, 1.0);
 
@@ -1254,11 +1228,7 @@ mod tests {
     #[test]
     fn test_split_line_diagonal() {
         // Diagonal line of length 5*sqrt(2) ≈ 7.07
-        let line = Line2D::with_point_count(
-            Point2D::new(0.0, 0.0),
-            Point2D::new(5.0, 5.0),
-            30,
-        );
+        let line = Line2D::with_point_count(Point2D::new(0.0, 0.0), Point2D::new(5.0, 5.0), 30);
 
         let segments = split_line_by_length(&line, 2.0);
 
@@ -1279,11 +1249,7 @@ mod tests {
 
     #[test]
     fn test_split_line_zero_max_length() {
-        let line = Line2D::with_point_count(
-            Point2D::new(0.0, 0.0),
-            Point2D::new(2.0, 0.0),
-            10,
-        );
+        let line = Line2D::with_point_count(Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0), 10);
 
         // Zero or negative max_length should return original line
         let segments = split_line_by_length(&line, 0.0);
@@ -1318,17 +1284,14 @@ mod tests {
 
     #[test]
     fn test_line_fit_config_builder() {
-        let config = LineFitConfig::new()
-            .with_max_line_length(1.5);
+        let config = LineFitConfig::new().with_max_line_length(1.5);
 
         assert_eq!(config.max_line_length, Some(1.5));
     }
 
     #[test]
     fn test_fit_line_with_config_no_split() {
-        let points: Vec<Point2D> = (0..10)
-            .map(|i| Point2D::new(i as f32 * 0.1, 0.0))
-            .collect();
+        let points: Vec<Point2D> = (0..10).map(|i| Point2D::new(i as f32 * 0.1, 0.0)).collect();
 
         // Config with no max length
         let config = LineFitConfig::new();
@@ -1340,9 +1303,7 @@ mod tests {
     #[test]
     fn test_fit_line_with_config_with_split() {
         // Create a 5m horizontal line
-        let points: Vec<Point2D> = (0..51)
-            .map(|i| Point2D::new(i as f32 * 0.1, 0.0))
-            .collect();
+        let points: Vec<Point2D> = (0..51).map(|i| Point2D::new(i as f32 * 0.1, 0.0)).collect();
 
         // Config with 1m max length
         let config = LineFitConfig::new().with_max_line_length(1.0);
@@ -1353,7 +1314,11 @@ mod tests {
 
         // Each segment should be approximately 1m
         for line in &lines {
-            assert!(line.length() <= 1.01, "Line length {} > 1.01", line.length());
+            assert!(
+                line.length() <= 1.01,
+                "Line length {} > 1.01",
+                line.length()
+            );
         }
     }
 
@@ -1371,14 +1336,18 @@ mod tests {
     fn test_fit_line_from_sensor_with_config() {
         let sensor_pos = Point2D::new(0.0, 0.0);
         let points: Vec<Point2D> = (10..40)
-            .map(|i| Point2D::new(i as f32 * 0.1, 1.0))  // 3m wall at y=1
+            .map(|i| Point2D::new(i as f32 * 0.1, 1.0)) // 3m wall at y=1
             .collect();
 
         let config = LineFitConfig::new().with_max_line_length(0.5);
         let lines = fit_line_from_sensor_with_config(&points, sensor_pos, None, &config);
 
         // 3m line should split into 6 segments of ~0.5m
-        assert!(lines.len() >= 5, "Expected >= 5 segments, got {}", lines.len());
+        assert!(
+            lines.len() >= 5,
+            "Expected >= 5 segments, got {}",
+            lines.len()
+        );
 
         // All segments should be approximately horizontal
         for line in &lines {
@@ -1392,9 +1361,7 @@ mod tests {
 
     #[test]
     fn test_fit_line_weighted_with_config() {
-        let points: Vec<Point2D> = (0..31)
-            .map(|i| Point2D::new(i as f32 * 0.1, 0.0))
-            .collect();
+        let points: Vec<Point2D> = (0..31).map(|i| Point2D::new(i as f32 * 0.1, 0.0)).collect();
         let weights: Vec<f32> = vec![1.0; 31];
 
         let config = LineFitConfig::new().with_max_line_length(1.0);

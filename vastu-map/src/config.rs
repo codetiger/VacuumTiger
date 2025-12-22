@@ -2,6 +2,7 @@
 //!
 //! All configuration parameters have sensible defaults for indoor robot navigation.
 
+use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
 
 /// Lidar measurement noise model.
@@ -11,7 +12,7 @@ use std::f32::consts::PI;
 ///
 /// This allows weighting correspondences by their measurement quality.
 /// Close-range measurements are more reliable than far-range ones.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct LidarNoiseModel {
     /// Base measurement standard deviation (meters).
     /// Minimum uncertainty even at zero range.
@@ -135,7 +136,7 @@ impl LidarNoiseModel {
 ///
 /// map.enable_exploration_mode(config);
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExplorationConfig {
     /// Re-fit lines every N observations.
     /// Default: 10
@@ -215,7 +216,7 @@ impl ExplorationConfig {
 ///
 /// All parameters have sensible defaults. Create with `Default::default()`
 /// and modify as needed.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VectorMapConfig {
     // ─────────────────────────────────────────────────────────────────────────
     // Input Filtering

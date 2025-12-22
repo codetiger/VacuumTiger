@@ -171,20 +171,21 @@ pub fn associate_scan_points(
     let mut total_unassociated = 0usize;
 
     for &world_point in points {
-        if let Some((line_idx, distance)) = index.nearest_line(world_point) {
-            if distance <= config.max_distance && line_idx < num_lines {
-                let line = &lines[line_idx];
-                let t = line.project_point(world_point);
-                if line.contains_projection_extended(t, config.max_projection_extension) {
-                    line_points[line_idx].push(AssociatedPoint {
-                        point: world_point,
-                        scan_id,
-                        distance,
-                        projection_t: t,
-                    });
-                    total_associated += 1;
-                    continue;
-                }
+        if let Some((line_idx, distance)) = index.nearest_line(world_point)
+            && distance <= config.max_distance
+            && line_idx < num_lines
+        {
+            let line = &lines[line_idx];
+            let t = line.project_point(world_point);
+            if line.contains_projection_extended(t, config.max_projection_extension) {
+                line_points[line_idx].push(AssociatedPoint {
+                    point: world_point,
+                    scan_id,
+                    distance,
+                    projection_t: t,
+                });
+                total_associated += 1;
+                continue;
             }
         }
         total_unassociated += 1;
@@ -213,10 +214,7 @@ pub fn lines_with_enough_points(result: &PointAssociationResult, min_points: usi
 /// Extract just the points for a specific line (without metadata).
 ///
 /// Useful when only the point coordinates are needed for fitting.
-pub fn extract_points_for_line(
-    result: &PointAssociationResult,
-    line_idx: usize,
-) -> Vec<Point2D> {
+pub fn extract_points_for_line(result: &PointAssociationResult, line_idx: usize) -> Vec<Point2D> {
     result
         .line_points
         .get(line_idx)
@@ -291,9 +289,9 @@ mod tests {
 
         // Points close to line 0 (y=0)
         let store = make_scan_store_with_points(&[
-            (2.0, 0.05),  // Very close to y=0
-            (5.0, 0.02),  // Very close to y=0
-            (8.0, 4.98),  // Very close to y=5
+            (2.0, 0.05), // Very close to y=0
+            (5.0, 0.02), // Very close to y=0
+            (8.0, 4.98), // Very close to y=5
         ]);
 
         let result = associate_points_to_lines(&store, &lines, &index, &config);
@@ -311,8 +309,8 @@ mod tests {
 
         // Points too far from line
         let store = make_scan_store_with_points(&[
-            (5.0, 0.5),  // 0.5m away, too far
-            (5.0, 1.0),  // 1.0m away, too far
+            (5.0, 0.5), // 0.5m away, too far
+            (5.0, 1.0), // 1.0m away, too far
         ]);
 
         let result = associate_points_to_lines(&store, &lines, &index, &config);
@@ -332,9 +330,9 @@ mod tests {
 
         // Points beyond line endpoints
         let store = make_scan_store_with_points(&[
-            (-2.0, 0.0),  // Before start
-            (12.0, 0.0),  // After end
-            (5.0, 0.0),   // On segment (should associate)
+            (-2.0, 0.0), // Before start
+            (12.0, 0.0), // After end
+            (5.0, 0.0),  // On segment (should associate)
         ]);
 
         let result = associate_points_to_lines(&store, &lines, &index, &config);
@@ -354,9 +352,9 @@ mod tests {
             .with_max_projection_extension(0.1);
 
         let store = make_scan_store_with_points(&[
-            (-0.5, 0.0),  // 5% before start, within extension
-            (10.5, 0.0),  // 5% after end, within extension
-            (-2.0, 0.0),  // 20% before start, outside extension
+            (-0.5, 0.0), // 5% before start, within extension
+            (10.5, 0.0), // 5% after end, within extension
+            (-2.0, 0.0), // 20% before start, outside extension
         ]);
 
         let result = associate_points_to_lines(&store, &lines, &index, &config);
@@ -459,9 +457,9 @@ mod tests {
         let config = PointAssociationConfig::default().with_max_distance(0.5);
 
         let points = vec![
-            Point2D::new(5.0, 0.05),   // Near line 0
-            Point2D::new(9.95, 5.0),   // Near line 1
-            Point2D::new(5.0, 5.0),    // Far from both
+            Point2D::new(5.0, 0.05), // Near line 0
+            Point2D::new(9.95, 5.0), // Near line 1
+            Point2D::new(5.0, 5.0),  // Far from both
         ];
 
         let result = associate_scan_points(&points, 42, &lines, &index, &config);
@@ -512,11 +510,7 @@ mod tests {
         let index = SpatialIndex::new(&lines);
         let config = PointAssociationConfig::default().with_max_distance(0.5);
 
-        let store = make_scan_store_with_points(&[
-            (2.0, 0.05),
-            (5.0, 0.05),
-            (8.0, 0.05),
-        ]);
+        let store = make_scan_store_with_points(&[(2.0, 0.05), (5.0, 0.05), (8.0, 0.05)]);
 
         let result = associate_points_to_lines(&store, &lines, &index, &config);
         let points = extract_points_for_line(&result, 0);
@@ -534,10 +528,10 @@ mod tests {
         let config = PointAssociationConfig::default().with_max_distance(0.1);
 
         let store = make_scan_store_with_points(&[
-            (5.0, 0.05),  // Close enough
-            (5.0, 0.5),   // Too far
-            (5.0, 0.08),  // Close enough
-            (5.0, 1.0),   // Too far
+            (5.0, 0.05), // Close enough
+            (5.0, 0.5),  // Too far
+            (5.0, 0.08), // Close enough
+            (5.0, 1.0),  // Too far
         ]);
 
         let result = associate_points_to_lines(&store, &lines, &index, &config);

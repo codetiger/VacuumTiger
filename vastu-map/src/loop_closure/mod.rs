@@ -29,6 +29,8 @@
 //! }
 //! ```
 
+use serde::{Deserialize, Serialize};
+
 use crate::core::{Point2D, Pose2D};
 use crate::features::{Corner2D, Line2D, ScanDescriptor};
 use crate::matching::{IcpConfig, match_scan};
@@ -38,7 +40,7 @@ use crate::matching::{IcpConfig, match_scan};
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Configuration for loop closure detection.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LoopClosureConfig {
     /// Minimum travel distance before considering loop closure (meters).
     /// Prevents detecting loops immediately after keyframe creation.

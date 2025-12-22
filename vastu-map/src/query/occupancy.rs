@@ -3,13 +3,15 @@
 //! Determines whether a point is in free space, occupied, or unknown
 //! based on the map's line features.
 
+use serde::{Deserialize, Serialize};
+
 use crate::Occupancy;
 use crate::core::{Bounds, Point2D};
 use crate::features::Line2D;
 use crate::integration::SpatialIndex;
 
 /// Configuration for occupancy queries.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OccupancyConfig {
     /// Distance threshold for considering a point "on" a line (meters).
     /// Points within this distance of a line are considered occupied.

@@ -1,11 +1,13 @@
 //! Configuration for Point-to-Line ICP algorithm.
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::LidarNoiseModel;
 
 use super::super::robust::RobustCostFunction;
 
 /// Configuration for Point-to-Line ICP.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IcpConfig {
     /// Maximum number of ICP iterations.
     /// Default: 30
@@ -18,6 +20,7 @@ pub struct IcpConfig {
 
     /// Pre-computed squared convergence threshold for efficient comparison.
     /// Avoids sqrt() in hot loop by comparing squared distances.
+    #[serde(skip)]
     pub(crate) convergence_threshold_sq: f32,
 
     /// Maximum correspondence distance (meters).
@@ -97,6 +100,13 @@ impl IcpConfig {
     /// Create a new configuration with default values.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Recompute derived fields after deserialization.
+    ///
+    /// Call this after loading from YAML to ensure computed fields are correct.
+    pub fn finalize(&mut self) {
+        self.convergence_threshold_sq = self.convergence_threshold * self.convergence_threshold;
     }
 
     // ===== Preset Configurations =====
@@ -287,7 +297,7 @@ impl IcpConfig {
 }
 
 /// Configuration for coarse search initialization.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CoarseSearchConfig {
     /// Maximum translation search range (meters).
     /// Search from -range to +range in both x and y.
@@ -330,7 +340,7 @@ impl Default for CoarseSearchConfig {
 /// Multi-resolution ICP improves convergence by starting with subsampled
 /// points (coarse) and progressively refining with more points (fine).
 /// This helps escape local minima when the initial guess is poor.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MultiResolutionConfig {
     /// Enable multi-resolution matching.
     /// Default: true

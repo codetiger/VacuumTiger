@@ -72,12 +72,7 @@ impl Line2D {
 
     /// Create a line segment with all fields specified.
     #[inline]
-    pub fn full(
-        start: Point2D,
-        end: Point2D,
-        observation_count: u32,
-        point_count: u32,
-    ) -> Self {
+    pub fn full(start: Point2D, end: Point2D, observation_count: u32, point_count: u32) -> Self {
         Self {
             start,
             end,

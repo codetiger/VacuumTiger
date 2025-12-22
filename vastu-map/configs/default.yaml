@@ -1,0 +1,225 @@
+# VastuMap YAML Configuration
+# All values must be specified (no preset inheritance)
+# Units: meters (m), radians (rad), counts (n)
+
+# ============================================================================
+# Line Extraction (Split-Merge Algorithm)
+# ============================================================================
+extraction:
+  # Maximum perpendicular distance for splitting (m)
+  split_threshold: 0.05
+  # Minimum points to form a valid line
+  min_points: 5
+  # Minimum line length to keep (m)
+  min_length: 0.10
+  # Maximum gap between consecutive points (m)
+  max_point_gap: 0.30
+  # Merge threshold for collinear segments (m)
+  merge_threshold: 0.05
+  # Coefficient for range-adaptive threshold scaling
+  adaptive_range_scale: 0.03
+
+# ============================================================================
+# RANSAC Line Extraction (for hybrid mode)
+# ============================================================================
+ransac_extraction:
+  # Number of RANSAC iterations per line
+  iterations: 100
+  # Inlier distance threshold (m)
+  inlier_threshold: 0.02
+  # Minimum inliers for valid line
+  min_inliers: 5
+  # Minimum line length (m)
+  min_line_length: 0.1
+  # Maximum gap between inliers (m) - prevents connecting walls across doorways
+  max_point_gap: 0.10
+  # Maximum lines to extract (0 = unlimited)
+  max_lines: 0
+  # Random seed (0 = random)
+  seed: 0
+
+# Whether to use RANSAC + Split-Merge hybrid extraction
+use_hybrid_extraction: true
+
+# ============================================================================
+# Corner Detection
+# ============================================================================
+corner:
+  # Minimum angle between lines to form corner (rad)
+  min_angle: 0.524  # 30 degrees
+  # Maximum angle between lines to form corner (rad)
+  max_angle: 2.618  # 150 degrees
+  # Maximum endpoint distance for corner detection (m)
+  max_endpoint_distance: 0.05
+  # Curvature detection window size (points on each side)
+  curvature_window_size: 3
+  # Minimum curvature angle for corner candidate (rad)
+  curvature_threshold: 0.785  # 45 degrees
+  # Merge distance for deduplicating corners (m)
+  merge_distance: 0.10
+  # Non-maximum suppression radius (m)
+  nms_radius: 0.15
+
+# ============================================================================
+# ICP Scan Matching
+# ============================================================================
+matching:
+  # Maximum ICP iterations
+  max_iterations: 30
+  # Convergence threshold for pose change
+  convergence_threshold: 0.0001
+  # Maximum correspondence distance (m)
+  max_correspondence_distance: 0.5
+
+  # Robust cost function for outlier handling
+  # Options: None, Huber, Cauchy, Tukey, GemanMcClure
+  robust_cost:
+    type: Huber
+    delta: 0.03
+
+  # Use Iteratively Reweighted Least Squares
+  use_irls: true
+  # Minimum correspondences required
+  min_correspondences: 10
+  # Minimum match confidence to accept
+  min_confidence: 0.3
+  # Use RANSAC for initial pose estimate
+  use_ransac_init: true
+  # Use batch (SIMD) correspondence search
+  use_batch_search: true
+
+  # Lidar noise model
+  noise_model:
+    sigma_base: 0.01
+    sigma_range: 0.001
+
+  # Coarse search when confidence is low
+  use_coarse_search: true
+  coarse_search_confidence_threshold: 0.5
+
+  # Multi-resolution ICP (coarse-to-fine)
+  multi_resolution:
+    enabled: true
+    levels: 3
+    subsample_factor: 2
+    iterations_per_level: [3, 5, 10]
+
+# ============================================================================
+# Line Association (Map Integration)
+# ============================================================================
+association:
+  # Maximum perpendicular distance for association (m)
+  max_perpendicular_distance: 0.15
+  # Maximum angular difference (rad)
+  max_angle_difference: 0.2
+  # Minimum overlap ratio for valid association
+  min_overlap_ratio: 0.3
+  # Maximum gap between line endpoints (m)
+  max_endpoint_gap: 0.3
+  # Weight for distance in quality scoring
+  distance_weight: 10.0
+  # Weight for angle in quality scoring
+  angle_weight: 5.0
+
+# ============================================================================
+# Line Merging
+# ============================================================================
+merger:
+  # Weight given to existing map line (0-1)
+  map_weight: 0.8
+  # Whether to extend line endpoints
+  extend_endpoints: true
+  # Maximum extension per observation (m)
+  max_extension: 0.5
+  # Minimum extension to apply (m)
+  min_extension: 0.05
+
+# ============================================================================
+# Frontier Detection
+# ============================================================================
+frontier:
+  # Maximum endpoint distance for "connected" (m)
+  connection_distance: 0.3
+  # Minimum distance from robot for valid frontier (m)
+  min_distance_from_robot: 0.5
+  # Minimum openness score for valid frontier
+  min_openness: 0.3
+
+# ============================================================================
+# Occupancy Queries
+# ============================================================================
+occupancy:
+  # Distance threshold for "occupied" (m)
+  obstacle_distance: 0.1
+  # Distance threshold for "known" (m)
+  known_distance: 2.0
+  # Use winding number for inside/outside determination
+  use_winding_number: false
+
+# ============================================================================
+# Path Planning
+# ============================================================================
+path_planning:
+  # Robot radius for collision checking (m)
+  robot_radius: 0.15
+  # Maximum visibility graph nodes
+  max_nodes: 1000
+  # Only plan through known free space
+  conservative: true
+
+# ============================================================================
+# Loop Closure Detection
+# ============================================================================
+loop_closure:
+  # Minimum travel distance before checking loop closure (m)
+  min_travel_distance: 5.0
+  # Maximum descriptor distance for candidates
+  max_descriptor_distance: 0.5
+  # Minimum ICP confidence to accept closure
+  min_verification_confidence: 0.6
+  # Distance between keyframes (m)
+  keyframe_interval: 2.0
+  # Radius for computing descriptors (m)
+  descriptor_radius: 2.0
+  # Maximum candidates to verify per keyframe
+  max_candidates_to_verify: 3
+  # Minimum lines for valid keyframe
+  min_lines_for_keyframe: 3
+  # Minimum corners for valid keyframe
+  min_corners_for_keyframe: 2
+
+  # ICP config for loop closure verification (nested)
+  icp_config:
+    max_iterations: 30
+    convergence_threshold: 0.0001
+    max_correspondence_distance: 0.5
+    robust_cost:
+      type: Huber
+      delta: 0.03
+    use_irls: true
+    min_correspondences: 10
+    min_confidence: 0.3
+    use_ransac_init: true
+    use_batch_search: true
+    noise_model:
+      sigma_base: 0.01
+      sigma_range: 0.001
+    use_coarse_search: true
+    coarse_search_confidence_threshold: 0.5
+    multi_resolution:
+      enabled: true
+      levels: 3
+      subsample_factor: 2
+      iterations_per_level: [3, 5, 10]
+
+# ============================================================================
+# Global Settings
+# ============================================================================
+# Minimum match confidence to use scan matching (vs. odometry)
+min_match_confidence: 0.3
+
+# Whether to update map with new observations
+mapping_enabled: true
+
+# Whether loop closure detection is enabled
+loop_closure_enabled: true

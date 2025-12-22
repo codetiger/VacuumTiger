@@ -1,7 +1,9 @@
 //! Configuration for Split-and-Merge line extraction.
 
+use serde::{Deserialize, Serialize};
+
 /// Configuration for Split-and-Merge algorithm.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SplitMergeConfig {
     /// Maximum perpendicular distance for a point to be considered on the line.
     /// If any point deviates more than this, the segment is split.

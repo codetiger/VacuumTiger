@@ -1,5 +1,7 @@
 //! Configuration for VectorMap.
 
+use serde::{Deserialize, Serialize};
+
 use crate::extraction::{CornerConfig, RansacLineConfig, SplitMergeConfig};
 use crate::integration::{AssociationConfig, MergerConfig};
 use crate::loop_closure::LoopClosureConfig;
@@ -11,7 +13,7 @@ use crate::query::{FrontierConfig, OccupancyConfig, PathPlanningConfig};
 // ============================================================================
 
 /// Errors that can occur during configuration validation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ConfigError {
     /// A threshold value is invalid (negative or zero when positive required).
     InvalidThreshold {
@@ -83,7 +85,7 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 /// Configuration for VectorMap.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VectorMapConfig {
     /// Configuration for line extraction (split-merge).
     pub extraction: SplitMergeConfig,
@@ -462,6 +464,14 @@ impl VectorMapConfig {
         }
 
         Ok(())
+    }
+
+    /// Recompute derived fields after deserialization.
+    ///
+    /// Call this after loading from YAML to ensure computed fields are correct.
+    pub fn finalize(&mut self) {
+        self.matching.finalize();
+        self.loop_closure.icp_config.finalize();
     }
 
     /// Validate and return self for builder pattern.

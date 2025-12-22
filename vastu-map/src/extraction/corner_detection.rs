@@ -23,12 +23,14 @@
 //! let corners = detect_hybrid_corners(&points, &lines, &corner_config);
 //! ```
 
+use serde::{Deserialize, Serialize};
+
 use crate::core::Point2D;
 use crate::features::{Corner2D, Line2D};
 use std::f32::consts::PI;
 
 /// Configuration for corner detection.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CornerConfig {
     /// Minimum angle between lines to form a corner (radians).
     /// Lines that are nearly parallel (angle below this) don't form corners.

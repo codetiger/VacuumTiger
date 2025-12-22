@@ -28,6 +28,8 @@
 //! );
 //! ```
 
+use serde::{Deserialize, Serialize};
+
 use crate::core::{Bounds, Point2D};
 use crate::features::Line2D;
 use crate::query::occupancy::OccupancyConfig;
@@ -36,7 +38,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 /// Configuration for path planning.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PathPlanningConfig {
     /// Robot radius for obstacle inflation (meters).
     /// Paths will avoid coming within this distance of obstacles.

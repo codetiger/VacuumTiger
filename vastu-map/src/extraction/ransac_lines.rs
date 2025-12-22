@@ -19,6 +19,8 @@
 //! let (lines2, remaining2) = extract_lines_ransac_with_scratch(&points2, &config, &mut scratch);
 //! ```
 
+use serde::{Deserialize, Serialize};
+
 use crate::core::Point2D;
 use crate::features::Line2D;
 
@@ -148,7 +150,7 @@ impl Default for RansacScratchSpace {
 }
 
 /// Configuration for RANSAC line extraction.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RansacLineConfig {
     /// Number of RANSAC iterations per line.
     /// More iterations = better chance of finding optimal line.
