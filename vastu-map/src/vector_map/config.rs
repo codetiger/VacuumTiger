@@ -4,7 +4,7 @@ use crate::extraction::{CornerConfig, RansacLineConfig, SplitMergeConfig};
 use crate::integration::{AssociationConfig, MergerConfig};
 use crate::loop_closure::LoopClosureConfig;
 use crate::matching::IcpConfig;
-use crate::query::{FrontierConfig, OccupancyConfig};
+use crate::query::{FrontierConfig, OccupancyConfig, PathPlanningConfig};
 
 // ============================================================================
 // Configuration Validation
@@ -116,6 +116,9 @@ pub struct VectorMapConfig {
     /// Configuration for occupancy queries.
     pub occupancy: OccupancyConfig,
 
+    /// Configuration for path planning.
+    pub path_planning: PathPlanningConfig,
+
     /// Configuration for loop closure detection.
     pub loop_closure: LoopClosureConfig,
 
@@ -146,6 +149,7 @@ impl Default for VectorMapConfig {
             merger: MergerConfig::default(),
             frontier: FrontierConfig::default(),
             occupancy: OccupancyConfig::default(),
+            path_planning: PathPlanningConfig::default(),
             loop_closure: LoopClosureConfig::default(),
             min_match_confidence: 0.3,
             mapping_enabled: true,
@@ -297,6 +301,20 @@ impl VectorMapConfig {
     /// subsampled point clouds for faster convergence from poor initial guesses.
     pub fn with_multi_resolution_icp(mut self, enabled: bool) -> Self {
         self.matching.multi_resolution.enabled = enabled;
+        self
+    }
+
+    /// Builder-style setter for robot radius (path planning).
+    ///
+    /// Sets the robot radius used for collision checking in path planning.
+    pub fn with_robot_radius(mut self, radius: f32) -> Self {
+        self.path_planning.robot_radius = radius;
+        self
+    }
+
+    /// Builder-style setter for path planning configuration.
+    pub fn with_path_planning(mut self, config: PathPlanningConfig) -> Self {
+        self.path_planning = config;
         self
     }
 

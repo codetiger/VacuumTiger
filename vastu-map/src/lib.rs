@@ -118,6 +118,8 @@ pub mod integration;
 pub mod loop_closure;
 pub mod matching;
 pub mod motion_model;
+pub mod odometry;
+pub mod preprocessing;
 pub mod query;
 pub mod vector_map;
 
@@ -339,10 +341,22 @@ pub trait Map: Send + Sync {
 
     /// Plan path between two points.
     ///
+    /// Uses visibility graph path planning to find the shortest path
+    /// around obstacles.
+    ///
     /// # Returns
     /// Path if one exists, None otherwise.
-    /// Note: Path planning is deferred in initial implementation.
     fn get_path(&self, from: Point2D, to: Point2D) -> Option<Path>;
+
+    /// Check if a straight-line path between two points is clear.
+    ///
+    /// # Arguments
+    /// * `from` - Start position
+    /// * `to` - End position
+    ///
+    /// # Returns
+    /// True if no obstacles block the straight-line path.
+    fn is_path_clear(&self, from: Point2D, to: Point2D) -> bool;
 
     /// Get current map bounds.
     ///

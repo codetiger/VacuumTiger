@@ -10,6 +10,7 @@ use sangam_io::devices::mock::noise::NoiseGenerator;
 use sangam_io::devices::mock::physics::PhysicsState;
 
 use vastu_map::core::Pose2D;
+use vastu_map::odometry::WheelOdometry;
 use vastu_map::{Map, VectorMap, VectorMapConfig};
 
 use crate::adapters::lidar_to_point_cloud;
@@ -202,6 +203,12 @@ pub struct TestHarness {
     trajectory: TrajectoryHistory,
     /// Algorithm timing statistics across all observations
     timing_stats: TimingStats,
+    /// Wheel odometry tracker using vastu-map's odometry module
+    wheel_odometry: WheelOdometry,
+    /// Simulated left encoder ticks (accumulated)
+    left_encoder_ticks: i32,
+    /// Simulated right encoder ticks (accumulated)
+    right_encoder_ticks: i32,
 }
 
 impl TestHarness {
@@ -229,6 +236,10 @@ impl TestHarness {
 
         let start_pose = Pose2D::new(config.start_x, config.start_y, config.start_theta);
 
+        // Create wheel odometry tracker with robot configuration
+        let wheel_odometry =
+            WheelOdometry::new(config.robot.wheel_base, config.robot.ticks_per_meter);
+
         Ok(Self {
             config,
             map,
@@ -245,6 +256,9 @@ impl TestHarness {
             convergence_stats: ConvergenceStats::new(),
             trajectory: TrajectoryHistory::new(),
             timing_stats: TimingStats::new(),
+            wheel_odometry,
+            left_encoder_ticks: 0,
+            right_encoder_ticks: 0,
         })
     }
 
@@ -272,6 +286,9 @@ impl TestHarness {
             let lidar_steps = (segment.duration / lidar_dt).max(1.0) as usize;
 
             for _ in 0..lidar_steps {
+                // Simulate encoder ticks from wheel velocities
+                self.simulate_encoder_ticks(lidar_dt, segment.linear_vel, segment.angular_vel);
+
                 // Single physics update covering the full lidar interval
                 self.physics.update(
                     lidar_dt,
@@ -289,6 +306,13 @@ impl TestHarness {
             let steps = (segment.duration / self.config.dt) as usize;
 
             for _ in 0..steps {
+                // Simulate encoder ticks from wheel velocities
+                self.simulate_encoder_ticks(
+                    self.config.dt,
+                    segment.linear_vel,
+                    segment.angular_vel,
+                );
+
                 // Update physics
                 self.physics.update(
                     self.config.dt,
@@ -336,22 +360,28 @@ impl TestHarness {
         // Store the robot-frame scan for visualization
         self.last_scan_robot_frame = Some(cloud.clone());
 
-        // Compute relative odometry from ground truth (simplified)
-        // In real tests, this would come from encoder simulation
+        // Get ground truth pose for metrics/visualization
         let current_truth = Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta());
 
+        // Get odometry from wheel encoders using vastu-map's WheelOdometry module
         let odometry = if self.observations == 0 {
-            // First observation - use absolute pose as initial guess
+            // First observation - initialize odometry and use absolute pose as initial guess
+            // This triggers WheelOdometry initialization with the encoder baseline
+            let _ = self
+                .wheel_odometry
+                .update(self.left_encoder_ticks, self.right_encoder_ticks);
             current_truth
         } else {
-            // Subsequent observations - compute relative pose
-            self.compute_relative_odometry(current_truth)
+            // Subsequent observations - get delta from wheel odometry
+            // WheelOdometry::update returns the delta pose in robot frame
+            self.wheel_odometry
+                .update(self.left_encoder_ticks, self.right_encoder_ticks)
         };
 
         // Feed to SLAM
         let result = self.slam.observe(&cloud, odometry);
         self.last_slam_pose = result.pose;
-        self.last_physics_pose = current_truth; // Update for next odometry computation
+        self.last_physics_pose = current_truth; // Update for metrics computation
         self.observations += 1;
 
         // Record ICP convergence stats
@@ -386,23 +416,31 @@ impl TestHarness {
         );
     }
 
-    /// Compute relative odometry between consecutive ground truth poses.
+    /// Simulate encoder ticks from commanded wheel velocities.
     ///
-    /// Uses physics poses (not SLAM poses) to mimic real-world encoders that
-    /// measure actual wheel motion independent of SLAM corrections.
-    fn compute_relative_odometry(&self, current_truth: Pose2D) -> Pose2D {
-        // Compute delta from previous physics pose (like real encoders)
-        let dx = current_truth.x - self.last_physics_pose.x;
-        let dy = current_truth.y - self.last_physics_pose.y;
-        let dtheta = normalize_angle(current_truth.theta - self.last_physics_pose.theta);
+    /// Computes individual wheel velocities from linear/angular velocity commands
+    /// and integrates them over the timestep to produce encoder tick counts.
+    /// This mimics how real wheel encoders would accumulate ticks.
+    fn simulate_encoder_ticks(&mut self, dt: f32, linear_vel: f32, angular_vel: f32) {
+        // Compute individual wheel velocities from (v, ω) commands
+        // Using differential drive kinematics:
+        //   v_left = v - ω * wheel_base / 2
+        //   v_right = v + ω * wheel_base / 2
+        let (left_vel, right_vel) =
+            self.physics
+                .wheel_velocities(linear_vel, angular_vel, self.config.robot.wheel_base);
 
-        // Transform to robot frame using previous physics pose orientation
-        let cos_th = self.last_physics_pose.theta.cos();
-        let sin_th = self.last_physics_pose.theta.sin();
-        let dx_robot = dx * cos_th + dy * sin_th;
-        let dy_robot = -dx * sin_th + dy * cos_th;
+        // Integrate wheel velocities to get distance traveled per wheel
+        let left_distance = left_vel * dt;
+        let right_distance = right_vel * dt;
 
-        Pose2D::new(dx_robot, dy_robot, dtheta)
+        // Convert distance to encoder ticks
+        let left_delta_ticks = (left_distance * self.config.robot.ticks_per_meter) as i32;
+        let right_delta_ticks = (right_distance * self.config.robot.ticks_per_meter) as i32;
+
+        // Accumulate encoder ticks
+        self.left_encoder_ticks += left_delta_ticks;
+        self.right_encoder_ticks += right_delta_ticks;
     }
 
     /// Finalize the test and compute metrics.
@@ -454,16 +492,4 @@ impl TestHarness {
     pub fn physics(&self) -> &PhysicsState {
         &self.physics
     }
-}
-
-/// Normalize angle to [-PI, PI].
-fn normalize_angle(angle: f32) -> f32 {
-    let mut a = angle;
-    while a > std::f32::consts::PI {
-        a -= 2.0 * std::f32::consts::PI;
-    }
-    while a < -std::f32::consts::PI {
-        a += 2.0 * std::f32::consts::PI;
-    }
-    a
 }

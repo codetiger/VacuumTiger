@@ -10,7 +10,9 @@ use crate::integration::{
 };
 use crate::loop_closure::{LoopClosure, LoopClosureDetector};
 use crate::matching::PointToLineIcp;
-use crate::query::{detect_frontiers, query_occupancy, raycast};
+use crate::query::{
+    PathPlanner, detect_frontiers, is_straight_path_clear, query_occupancy, raycast,
+};
 use crate::{Frontier, Map, ObserveResult, Occupancy, Path, TimingBreakdown};
 
 use super::config::VectorMapConfig;
@@ -558,9 +560,24 @@ impl Map for VectorMap {
         detect_frontiers(self.line_store.lines(), &self.config.frontier)
     }
 
-    fn get_path(&self, _from: Point2D, _to: Point2D) -> Option<Path> {
-        // Path planning not yet implemented
-        None
+    fn get_path(&self, from: Point2D, to: Point2D) -> Option<Path> {
+        let planner = PathPlanner::new(self.config.path_planning.clone());
+        planner.plan(
+            from,
+            to,
+            self.line_store.lines(),
+            self.line_store.bounds(),
+            &self.config.occupancy,
+        )
+    }
+
+    fn is_path_clear(&self, from: Point2D, to: Point2D) -> bool {
+        is_straight_path_clear(
+            from,
+            to,
+            self.line_store.lines(),
+            self.config.path_planning.robot_radius,
+        )
     }
 
     fn bounds(&self) -> Bounds {
