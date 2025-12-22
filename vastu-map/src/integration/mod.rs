@@ -41,6 +41,9 @@
 
 pub mod association;
 pub mod merger;
+pub mod point_association;
+pub mod refitter;
+pub mod scan_store;
 pub mod spatial_index;
 
 // Re-export main types
@@ -49,6 +52,13 @@ pub use association::{
     find_unmatched_scan_lines,
 };
 pub use merger::{
-    MergeResult, MergerConfig, batch_merge, create_new_line, merge_collinear_lines, merge_lines,
+    CoplanarMergeConfig, MergeResult, MergerConfig, batch_merge, create_new_line,
+    merge_collinear_lines, merge_collinear_lines_with_config, merge_lines, optimize_coplanar_lines,
 };
+pub use point_association::{
+    AssociatedPoint, PointAssociationConfig, PointAssociationResult, associate_points_to_lines,
+    associate_scan_points, extract_points_for_line, lines_with_enough_points,
+};
+pub use refitter::{RefitConfig, RefitResult, RefitStats, refit_line, refit_line_simple};
+pub use scan_store::{ScanStore, ScanStoreConfig, ScanStoreStats, StoredScan};
 pub use spatial_index::{IndexedLine, SpatialIndex};

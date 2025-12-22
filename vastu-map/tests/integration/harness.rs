@@ -9,8 +9,10 @@ use sangam_io::devices::mock::map_loader::SimulationMap;
 use sangam_io::devices::mock::noise::NoiseGenerator;
 use sangam_io::devices::mock::physics::PhysicsState;
 
+use vastu_map::config::ExplorationConfig;
 use vastu_map::core::Pose2D;
 use vastu_map::core::math::normalize_angle;
+use vastu_map::integration::{ScanStore, ScanStoreConfig};
 use vastu_map::odometry::WheelOdometry;
 use vastu_map::query::PathPlanningConfig;
 use vastu_map::{Map, VectorMap, VectorMapConfig};
@@ -166,9 +168,6 @@ pub struct TestResult {
     pub sim_time: f32,
 }
 
-/// Interval for storing lidar scans in trajectory history.
-const SCAN_STORAGE_INTERVAL: usize = 5;
-
 /// Per-observation record for trajectory visualization.
 #[derive(Clone, Debug)]
 pub struct ObservationRecord {
@@ -246,6 +245,8 @@ pub struct TestHarness {
     left_encoder_ticks: i32,
     /// Simulated right encoder ticks (accumulated)
     right_encoder_ticks: i32,
+    /// Scan storage for visualization (stores ALL scans)
+    scan_store: ScanStore,
 }
 
 impl TestHarness {
@@ -277,6 +278,9 @@ impl TestHarness {
         let wheel_odometry =
             WheelOdometry::new(config.robot.wheel_base, config.robot.ticks_per_meter);
 
+        // Create scan store for visualization (stores all scans)
+        let scan_store = ScanStore::new(ScanStoreConfig::default());
+
         Ok(Self {
             config,
             map,
@@ -296,12 +300,32 @@ impl TestHarness {
             wheel_odometry,
             left_encoder_ticks: 0,
             right_encoder_ticks: 0,
+            scan_store,
         })
     }
 
     /// Enable visualization output.
     pub fn with_visualization(mut self, output_path: &str) -> Self {
         self.visualizer = Some(Visualizer::new(output_path));
+        self
+    }
+
+    /// Enable exploration mode on the SLAM map.
+    ///
+    /// In exploration mode, VectorMap stores raw scan data and periodically
+    /// re-fits lines from accumulated point clouds, eliminating first-scan bias.
+    ///
+    /// # Arguments
+    /// * `config` - Exploration configuration (uses default if None)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let harness = TestHarness::new(HarnessConfig::simple_room())?
+    ///     .with_exploration_mode(None);  // Use default config
+    /// ```
+    pub fn with_exploration_mode(mut self, config: Option<ExplorationConfig>) -> Self {
+        let exploration_config = config.unwrap_or_default();
+        self.slam.enable_exploration_mode(exploration_config);
         self
     }
 
@@ -425,6 +449,15 @@ impl TestHarness {
         self.last_physics_pose = current_truth; // Update for metrics computation
         self.observations += 1;
 
+        // Store scan in scan store for visualization (stores ALL scans)
+        self.scan_store.add_scan(
+            odometry,
+            result.pose,
+            &cloud,
+            result.features_extracted,
+            result.confidence,
+        );
+
         // Record ICP convergence stats
         self.convergence_stats
             .record(result.icp_iterations, result.icp_converged);
@@ -433,15 +466,9 @@ impl TestHarness {
         self.timing_stats.record(&result.timing);
 
         // Record to trajectory history for visualization
-        // Store scan at intervals to avoid excessive memory usage
-        let scan_to_store = if self.observations % SCAN_STORAGE_INTERVAL == 0 {
-            Some(cloud.clone())
-        } else {
-            None
-        };
-
+        // Note: We no longer store scans here since ScanStore handles it
         self.trajectory
-            .record(current_truth, result.pose, result.confidence, scan_to_store);
+            .record(current_truth, result.pose, result.confidence, None);
 
         log::debug!(
             "Observation {}: truth=({:.2}, {:.2}, {:.1}°), slam=({:.2}, {:.2}, {:.1}°), conf={:.2}, icp_iters={}",
@@ -527,7 +554,7 @@ impl TestHarness {
                 &self.map,
                 final_pose,
                 ground_truth_pose,
-                self.last_scan_robot_frame.as_ref(),
+                &self.scan_store,
                 &self.trajectory,
                 &metrics,
             );
@@ -684,6 +711,11 @@ impl TestHarness {
     /// Get number of observations processed.
     pub fn observation_count(&self) -> usize {
         self.observations
+    }
+
+    /// Get scan store for visualization.
+    pub fn scan_store(&self) -> &ScanStore {
+        &self.scan_store
     }
 }
 

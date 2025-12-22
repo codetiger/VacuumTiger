@@ -17,7 +17,8 @@ use svg::node::element::{
 };
 
 use vastu_map::VectorMap;
-use vastu_map::core::{Point2D, PointCloud2D, Pose2D};
+use vastu_map::core::{Point2D, Pose2D};
+use vastu_map::integration::ScanStore;
 
 use crate::harness::TrajectoryHistory;
 use crate::metrics::TestMetrics;
@@ -91,7 +92,7 @@ impl Visualizer {
         map: &SimulationMap,
         final_pose: Pose2D,
         truth_pose: Pose2D,
-        last_scan: Option<&PointCloud2D>,
+        scan_store: &ScanStore,
         trajectory: &TrajectoryHistory,
         metrics: &TestMetrics,
     ) {
@@ -125,12 +126,13 @@ impl Visualizer {
         // Layer 1: Map walls (gray)
         doc = doc.add(self.render_map_walls(map, height as f32));
 
-        // Layer 2: Scan history (semi-transparent)
-        doc = doc.add(self.render_scan_history(trajectory, height as f32));
+        // Layer 2: All scans from scan store (semi-transparent)
+        doc = doc.add(self.render_all_scans(scan_store, height as f32));
 
-        // Layer 3: Final lidar scan (full opacity)
-        if let Some(scan) = last_scan {
-            doc = doc.add(self.render_lidar_scan(scan, final_pose, height as f32));
+        // Layer 3: Final lidar scan (full opacity) - use last scan from store
+        if let Some(last_scan) = scan_store.latest() {
+            let world_points = last_scan.world_points();
+            doc = doc.add(self.render_world_points(&world_points, height as f32));
         }
 
         // Layer 4: Detected walls (teal)
@@ -277,29 +279,55 @@ impl Visualizer {
         group
     }
 
-    /// Render lidar scans at key points along the trajectory.
-    fn render_scan_history(&self, trajectory: &TrajectoryHistory, svg_height: f32) -> Group {
+    /// Render all scans from the scan store.
+    fn render_all_scans(&self, scan_store: &ScanStore, svg_height: f32) -> Group {
         let mut group = Group::new().set("id", "scan_history");
 
-        for obs in &trajectory.observations {
-            if let Some(ref scan) = obs.scan {
-                // Transform scan from robot frame to world frame
-                let world_scan = scan.transform(&obs.slam_pose);
-
-                for i in 0..world_scan.len() {
-                    let point = Point2D::new(world_scan.xs[i], world_scan.ys[i]);
-                    let (sx, sy) = self.transform_point(point, 0.0, 0.0, svg_height);
-
-                    let circle = Circle::new()
-                        .set("cx", sx)
-                        .set("cy", sy)
-                        .set("r", 2.0)
-                        .set("fill", colors::LIDAR_SCAN_HISTORY)
-                        .set("opacity", SCAN_HISTORY_OPACITY);
-
-                    group = group.add(circle);
-                }
+        // Skip the last scan as it will be rendered at full opacity separately
+        let scan_count = scan_store.len();
+        for (idx, scan) in scan_store.iter().enumerate() {
+            // Skip the last scan (rendered separately at full opacity)
+            if idx == scan_count - 1 {
+                continue;
             }
+
+            // Get world-frame points directly from stored scan
+            let world_points = scan.world_points();
+
+            for point in world_points {
+                let (sx, sy) = self.transform_point(point, 0.0, 0.0, svg_height);
+
+                let circle = Circle::new()
+                    .set("cx", sx)
+                    .set("cy", sy)
+                    .set("r", 2.0)
+                    .set("fill", colors::LIDAR_SCAN_HISTORY)
+                    .set("opacity", SCAN_HISTORY_OPACITY);
+
+                group = group.add(circle);
+            }
+        }
+
+        group
+    }
+
+    /// Render world-frame points (for final scan).
+    fn render_world_points(&self, points: &[Point2D], svg_height: f32) -> Group {
+        let mut group = Group::new().set("id", "lidar_scan");
+
+        for point in points {
+            let (sx, sy) = self.transform_point(*point, 0.0, 0.0, svg_height);
+
+            let circle = Circle::new()
+                .set("cx", sx)
+                .set("cy", sy)
+                .set("r", 3.0)
+                .set("fill", colors::LIDAR_SCAN)
+                .set("stroke", colors::TRUTH_PATH)
+                .set("stroke-width", 0.5)
+                .set("opacity", 0.8);
+
+            group = group.add(circle);
         }
 
         group
@@ -510,32 +538,6 @@ impl Visualizer {
                 None,
             );
             group = group.add(svg_line);
-        }
-
-        group
-    }
-
-    /// Render lidar scan points transformed to world frame.
-    fn render_lidar_scan(&self, scan: &PointCloud2D, pose: Pose2D, svg_height: f32) -> Group {
-        let mut group = Group::new().set("id", "lidar_scan");
-
-        // Transform scan from robot frame to world frame
-        let world_scan = scan.transform(&pose);
-
-        for i in 0..world_scan.len() {
-            let point = Point2D::new(world_scan.xs[i], world_scan.ys[i]);
-            let (sx, sy) = self.transform_point(point, 0.0, 0.0, svg_height);
-
-            let circle = Circle::new()
-                .set("cx", sx)
-                .set("cy", sy)
-                .set("r", 3.0)
-                .set("fill", colors::LIDAR_SCAN)
-                .set("stroke", colors::TRUTH_PATH)
-                .set("stroke-width", 0.5)
-                .set("opacity", 0.8);
-
-            group = group.add(circle);
         }
 
         group

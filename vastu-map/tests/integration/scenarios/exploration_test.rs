@@ -26,8 +26,10 @@
 
 use crate::{HarnessConfig, TestHarness};
 use vastu_map::Map;
+use vastu_map::config::ExplorationConfig as MapExplorationConfig;
 use vastu_map::core::Point2D;
 use vastu_map::exploration::{CollisionEvent, CollisionType, ExplorationConfig, VelocityCommand};
+use vastu_map::integration::CoplanarMergeConfig;
 
 /// Maximum exploration cycles before timeout.
 const MAX_CYCLES: usize = 200;
@@ -57,8 +59,12 @@ pub struct ExplorationTestResult {
     pub collisions: usize,
     /// Number of virtual walls added.
     pub virtual_walls: usize,
-    /// Final map line count.
+    /// Map line count before optimization.
+    pub map_lines_before: usize,
+    /// Final map line count (after optimization).
     pub map_lines: usize,
+    /// Number of lines merged during optimization.
+    pub lines_merged: usize,
     /// Initial frontier count.
     pub initial_frontiers: usize,
     /// Final frontier count (should be 0 on success).
@@ -86,11 +92,19 @@ mod tests {
 
         // Setup harness with medium_room map and visualization
         let harness_config = HarnessConfig::medium_room();
+
+        // Enable VectorMap exploration mode for point-cloud-based line re-fitting
+        // This will re-fit lines every 10 observations using accumulated scan data
+        let map_exploration_config = MapExplorationConfig::default()
+            .with_refit_interval(10)
+            .with_gap_threshold(0.3);
+
         let mut harness = TestHarness::new(harness_config)
             .expect("Failed to create harness")
+            .with_exploration_mode(Some(map_exploration_config))
             .with_visualization("results/exploration_test.svg");
 
-        // Create exploration config
+        // Create robot exploration config (for path following)
         let exploration_config = ExplorationConfig::default()
             .with_max_linear_speed(0.3)
             .with_max_angular_speed(1.0)
@@ -107,7 +121,10 @@ mod tests {
         println!("Cycles: {}", result.cycles);
         println!("Collisions handled: {}", result.collisions);
         println!("Virtual walls added: {}", result.virtual_walls);
-        println!("Final map lines: {}", result.map_lines);
+        println!(
+            "Map lines: {} before optimization -> {} after ({} merged)",
+            result.map_lines_before, result.map_lines, result.lines_merged
+        );
         println!(
             "Frontiers: {} initial -> {} remaining",
             result.initial_frontiers, result.remaining_frontiers
@@ -317,6 +334,25 @@ mod tests {
             );
         }
 
+        // Get line count before optimization
+        let map_lines_before = harness.slam().lines().len();
+
+        // Optimize coplanar lines with tight thresholds:
+        // - max_angle_diff: 1 degree = 0.01745 rad
+        // - max_perpendicular_dist: 2cm = 0.02m
+        let coplanar_config = CoplanarMergeConfig::default()
+            .with_max_angle_diff(3.0 * std::f32::consts::PI / 180.0) // 1 degree
+            .with_max_perpendicular_dist(0.05); // 2cm
+
+        let lines_merged = harness.slam_mut().optimize_lines(&coplanar_config);
+
+        println!(
+            "\n  Line optimization: {} lines -> {} lines ({} merged)",
+            map_lines_before,
+            harness.slam().lines().len(),
+            lines_merged
+        );
+
         // Finalize to generate visualization
         let _test_result = harness.finalize();
 
@@ -326,7 +362,9 @@ mod tests {
             cycles,
             collisions,
             virtual_walls,
+            map_lines_before,
             map_lines: harness.slam().lines().len(),
+            lines_merged,
             initial_frontiers,
             remaining_frontiers: harness.slam().frontiers().len(),
         }

@@ -59,7 +59,7 @@ impl FeatureSet {
     /// Add a line from components.
     #[inline]
     pub fn add_line_from_points(&mut self, start: Point2D, end: Point2D) {
-        self.lines.push(start.x, start.y, end.x, end.y, 1);
+        self.lines.push_full(start.x, start.y, end.x, end.y, 1, 0);
     }
 
     /// Number of lines.

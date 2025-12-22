@@ -119,6 +119,98 @@ impl LidarNoiseModel {
     }
 }
 
+/// Configuration for exploration mode with point-cloud-based line re-fitting.
+///
+/// When exploration mode is enabled, VectorMap stores raw scan data and
+/// periodically re-fits lines from accumulated point clouds. This eliminates
+/// first-scan bias in line extraction.
+///
+/// # Example
+/// ```rust,ignore
+/// use vastu_map::config::ExplorationConfig;
+///
+/// let config = ExplorationConfig::default()
+///     .with_refit_interval(10)
+///     .with_gap_threshold(0.3);
+///
+/// map.enable_exploration_mode(config);
+/// ```
+#[derive(Clone, Debug)]
+pub struct ExplorationConfig {
+    /// Re-fit lines every N observations.
+    /// Default: 10
+    pub refit_interval: usize,
+
+    /// Minimum points per line to trigger re-fitting.
+    /// Lines with fewer associated points keep their current geometry.
+    /// Default: 10
+    pub min_points_per_line: usize,
+
+    /// Maximum perpendicular distance for point-to-line association (meters).
+    /// Points farther than this from any line are not associated.
+    /// Default: 0.10m (10cm)
+    pub max_point_distance: f32,
+
+    /// Gap threshold for splitting lines (meters).
+    /// If consecutive points along a line have a gap larger than this,
+    /// the line is split into multiple segments.
+    /// Default: 0.30m (30cm)
+    pub gap_threshold: f32,
+
+    /// Noise model for range-based weighting during re-fitting.
+    /// Closer points get higher weight.
+    pub noise_model: LidarNoiseModel,
+}
+
+impl Default for ExplorationConfig {
+    fn default() -> Self {
+        Self {
+            refit_interval: 10,
+            min_points_per_line: 10,
+            max_point_distance: 0.10,
+            gap_threshold: 0.30,
+            noise_model: LidarNoiseModel::default(),
+        }
+    }
+}
+
+impl ExplorationConfig {
+    /// Create a new configuration with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the re-fit interval (every N observations).
+    pub fn with_refit_interval(mut self, interval: usize) -> Self {
+        self.refit_interval = interval;
+        self
+    }
+
+    /// Set the minimum points per line for re-fitting.
+    pub fn with_min_points(mut self, min_points: usize) -> Self {
+        self.min_points_per_line = min_points;
+        self
+    }
+
+    /// Set the maximum point-to-line distance for association.
+    pub fn with_max_point_distance(mut self, distance: f32) -> Self {
+        self.max_point_distance = distance;
+        self
+    }
+
+    /// Set the gap threshold for line splitting.
+    pub fn with_gap_threshold(mut self, gap: f32) -> Self {
+        self.gap_threshold = gap;
+        self
+    }
+
+    /// Set the noise model for range-based weighting.
+    pub fn with_noise_model(mut self, model: LidarNoiseModel) -> Self {
+        self.noise_model = model;
+        self
+    }
+}
+
 /// Configuration for VectorMap SLAM.
 ///
 /// All parameters have sensible defaults. Create with `Default::default()`
@@ -464,5 +556,29 @@ mod tests {
 
         assert_eq!(config.noise_model.sigma_base, 0.02);
         assert_eq!(config.noise_model.sigma_range, 0.002);
+    }
+
+    #[test]
+    fn test_exploration_config_default() {
+        let config = ExplorationConfig::default();
+
+        assert_eq!(config.refit_interval, 10);
+        assert_eq!(config.min_points_per_line, 10);
+        assert!((config.max_point_distance - 0.10).abs() < 1e-6);
+        assert!((config.gap_threshold - 0.30).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_exploration_config_builder() {
+        let config = ExplorationConfig::new()
+            .with_refit_interval(20)
+            .with_min_points(15)
+            .with_max_point_distance(0.15)
+            .with_gap_threshold(0.5);
+
+        assert_eq!(config.refit_interval, 20);
+        assert_eq!(config.min_points_per_line, 15);
+        assert!((config.max_point_distance - 0.15).abs() < 1e-6);
+        assert!((config.gap_threshold - 0.5).abs() < 1e-6);
     }
 }

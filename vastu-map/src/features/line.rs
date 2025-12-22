@@ -29,6 +29,8 @@ pub struct Line2D {
     pub end: Point2D,
     /// Number of times this line has been observed (for merging).
     pub observation_count: u32,
+    /// Number of scan points that formed this line (for dominance).
+    pub point_count: u32,
 }
 
 impl Line2D {
@@ -39,6 +41,7 @@ impl Line2D {
             start,
             end,
             observation_count: 1,
+            point_count: 0,
         }
     }
 
@@ -49,6 +52,37 @@ impl Line2D {
             start,
             end,
             observation_count: count,
+            point_count: 0,
+        }
+    }
+
+    /// Create a line segment with a specific point count.
+    ///
+    /// Used when extracting lines from scan points where point_count
+    /// indicates how many scan points formed this line.
+    #[inline]
+    pub fn with_point_count(start: Point2D, end: Point2D, point_count: u32) -> Self {
+        Self {
+            start,
+            end,
+            observation_count: 1,
+            point_count,
+        }
+    }
+
+    /// Create a line segment with all fields specified.
+    #[inline]
+    pub fn full(
+        start: Point2D,
+        end: Point2D,
+        observation_count: u32,
+        point_count: u32,
+    ) -> Self {
+        Self {
+            start,
+            end,
+            observation_count,
+            point_count,
         }
     }
 
@@ -160,10 +194,11 @@ impl Line2D {
             (self.end.y - self.start.y) * 0.5 * factor,
         );
 
-        Line2D::with_observation_count(
+        Line2D::full(
             Point2D::new(mid.x - half_dir.x, mid.y - half_dir.y),
             Point2D::new(mid.x + half_dir.x, mid.y + half_dir.y),
             self.observation_count,
+            self.point_count,
         )
     }
 
@@ -284,6 +319,7 @@ impl Line2D {
             start: pose.transform_point(self.start),
             end: pose.transform_point(self.end),
             observation_count: self.observation_count,
+            point_count: self.point_count,
         }
     }
 
@@ -392,6 +428,7 @@ impl Default for Line2D {
             start: Point2D::zero(),
             end: Point2D::zero(),
             observation_count: 0,
+            point_count: 0,
         }
     }
 }

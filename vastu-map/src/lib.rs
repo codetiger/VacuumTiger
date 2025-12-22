@@ -139,6 +139,9 @@ pub use extraction::{LineExtractor, SplitMergeExtractor};
 pub use loop_closure::LoopDetector;
 pub use matching::ScanMatcher;
 
+// Re-export scan storage for exploration
+pub use integration::{ScanStore, ScanStoreConfig, ScanStoreStats, StoredScan};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Map Trait and Supporting Types
 // ─────────────────────────────────────────────────────────────────────────────

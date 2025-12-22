@@ -59,6 +59,8 @@ pub struct LineCollection {
     pub end_ys: Vec<f32>,
     /// Observation counts for each line.
     pub observation_counts: Vec<u32>,
+    /// Point counts for each line (scan points that formed the line).
+    pub point_counts: Vec<u32>,
 
     // === Pre-computed cached values for performance ===
     /// X components of unit normal vectors.
@@ -84,6 +86,7 @@ impl LineCollection {
             end_xs: Vec::with_capacity(capacity),
             end_ys: Vec::with_capacity(capacity),
             observation_counts: Vec::with_capacity(capacity),
+            point_counts: Vec::with_capacity(capacity),
             normal_xs: Vec::with_capacity(capacity),
             normal_ys: Vec::with_capacity(capacity),
             inv_lengths: Vec::with_capacity(capacity),
@@ -126,14 +129,23 @@ impl LineCollection {
 
     /// Add a line to the collection.
     #[inline]
-    pub fn push(&mut self, start_x: f32, start_y: f32, end_x: f32, end_y: f32, count: u32) {
+    pub fn push_full(
+        &mut self,
+        start_x: f32,
+        start_y: f32,
+        end_x: f32,
+        end_y: f32,
+        obs_count: u32,
+        pt_count: u32,
+    ) {
         let (nx, ny, inv_len) = Self::compute_cached_values(start_x, start_y, end_x, end_y);
 
         self.start_xs.push(start_x);
         self.start_ys.push(start_y);
         self.end_xs.push(end_x);
         self.end_ys.push(end_y);
-        self.observation_counts.push(count);
+        self.observation_counts.push(obs_count);
+        self.point_counts.push(pt_count);
         self.normal_xs.push(nx);
         self.normal_ys.push(ny);
         self.inv_lengths.push(inv_len);
@@ -142,12 +154,13 @@ impl LineCollection {
     /// Add a Line2D to the collection.
     #[inline]
     pub fn push_line(&mut self, line: &Line2D) {
-        self.push(
+        self.push_full(
             line.start.x,
             line.start.y,
             line.end.x,
             line.end.y,
             line.observation_count,
+            line.point_count,
         );
     }
 
@@ -195,10 +208,11 @@ impl LineCollection {
     #[inline]
     pub fn get(&self, index: usize) -> Option<Line2D> {
         if index < self.len() {
-            Some(Line2D::with_observation_count(
+            Some(Line2D::full(
                 Point2D::new(self.start_xs[index], self.start_ys[index]),
                 Point2D::new(self.end_xs[index], self.end_ys[index]),
                 self.observation_counts[index],
+                self.point_counts[index],
             ))
         } else {
             None
@@ -209,10 +223,11 @@ impl LineCollection {
     pub fn to_lines(&self) -> Vec<Line2D> {
         (0..self.len())
             .map(|i| {
-                Line2D::with_observation_count(
+                Line2D::full(
                     Point2D::new(self.start_xs[i], self.start_ys[i]),
                     Point2D::new(self.end_xs[i], self.end_ys[i]),
                     self.observation_counts[i],
+                    self.point_counts[i],
                 )
             })
             .collect()
@@ -600,6 +615,7 @@ impl LineCollection {
         result.normal_xs.resize(n, 0.0);
         result.normal_ys.resize(n, 0.0);
         result.observation_counts = self.observation_counts.clone();
+        result.point_counts = self.point_counts.clone();
         // Inverse lengths are preserved by rotation+translation
         result.inv_lengths = self.inv_lengths.clone();
 
@@ -675,6 +691,7 @@ impl LineCollection {
         self.end_xs.clear();
         self.end_ys.clear();
         self.observation_counts.clear();
+        self.point_counts.clear();
         self.normal_xs.clear();
         self.normal_ys.clear();
         self.inv_lengths.clear();
@@ -687,6 +704,7 @@ impl LineCollection {
         self.end_xs.swap_remove(index);
         self.end_ys.swap_remove(index);
         self.observation_counts.swap_remove(index);
+        self.point_counts.swap_remove(index);
         self.normal_xs.swap_remove(index);
         self.normal_ys.swap_remove(index);
         self.inv_lengths.swap_remove(index);
@@ -695,10 +713,11 @@ impl LineCollection {
     /// Iterate over lines.
     pub fn iter(&self) -> impl Iterator<Item = Line2D> + '_ {
         (0..self.len()).map(move |i| {
-            Line2D::with_observation_count(
+            Line2D::full(
                 Point2D::new(self.start_xs[i], self.start_ys[i]),
                 Point2D::new(self.end_xs[i], self.end_ys[i]),
                 self.observation_counts[i],
+                self.point_counts[i],
             )
         })
     }
@@ -729,8 +748,8 @@ mod tests {
     #[test]
     fn test_to_lines() {
         let mut collection = LineCollection::new();
-        collection.push(0.0, 0.0, 1.0, 0.0, 1);
-        collection.push(0.0, 1.0, 1.0, 1.0, 2);
+        collection.push_full(0.0, 0.0, 1.0, 0.0, 1, 10);
+        collection.push_full(0.0, 1.0, 1.0, 1.0, 2, 20);
 
         let lines = collection.to_lines();
 
@@ -738,7 +757,9 @@ mod tests {
         assert_eq!(lines[0].start, Point2D::new(0.0, 0.0));
         assert_eq!(lines[0].end, Point2D::new(1.0, 0.0));
         assert_eq!(lines[0].observation_count, 1);
+        assert_eq!(lines[0].point_count, 10);
         assert_eq!(lines[1].observation_count, 2);
+        assert_eq!(lines[1].point_count, 20);
     }
 
     #[test]

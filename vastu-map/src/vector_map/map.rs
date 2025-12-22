@@ -2,11 +2,14 @@
 
 use std::time::Instant;
 
+use crate::config::ExplorationConfig;
 use crate::core::{Bounds, Point2D, PointCloud2D, Pose2D};
 use crate::extraction::{detect_corners, extract_lines, extract_lines_hybrid};
 use crate::features::{Corner2D, FeatureSet, Line2D};
 use crate::integration::{
-    batch_merge, create_new_line, find_associations, find_unmatched_scan_lines,
+    associate_points_to_lines, batch_merge, create_new_line, find_associations,
+    find_unmatched_scan_lines, refit_line, PointAssociationConfig, RefitConfig, RefitResult,
+    RefitStats, ScanStore, ScanStoreConfig,
 };
 use crate::loop_closure::{LoopClosure, LoopClosureDetector};
 use crate::matching::PointToLineIcp;
@@ -158,6 +161,13 @@ pub struct VectorMap {
 
     /// Pre-allocated scratch space for observe pipeline (zero-allocation).
     observe_scratch: ObserveScratchSpace,
+
+    /// Scan storage for exploration mode.
+    /// When enabled, stores raw scan data for point-cloud-based line re-fitting.
+    scan_store: Option<ScanStore>,
+
+    /// Exploration configuration (None if exploration mode disabled).
+    exploration_config: Option<ExplorationConfig>,
 }
 
 impl VectorMap {
@@ -175,6 +185,8 @@ impl VectorMap {
             loop_closures: Vec::new(),
             icp_matcher,
             observe_scratch: ObserveScratchSpace::default_capacity(),
+            scan_store: None,
+            exploration_config: None,
         }
     }
 
@@ -228,6 +240,75 @@ impl VectorMap {
     /// Clear all loop closures.
     pub fn clear_loop_closures(&mut self) {
         self.loop_closures.clear();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Exploration Mode
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Enable exploration mode with the given configuration.
+    ///
+    /// In exploration mode, VectorMap stores raw scan data and periodically
+    /// re-fits lines from accumulated point clouds, eliminating first-scan bias.
+    ///
+    /// # Arguments
+    /// * `config` - Exploration configuration
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use vastu_map::config::ExplorationConfig;
+    ///
+    /// let config = ExplorationConfig::default()
+    ///     .with_refit_interval(10)
+    ///     .with_gap_threshold(0.3);
+    ///
+    /// map.enable_exploration_mode(config);
+    /// ```
+    pub fn enable_exploration_mode(&mut self, config: ExplorationConfig) {
+        let scan_config = ScanStoreConfig::default();
+        self.scan_store = Some(ScanStore::new(scan_config));
+        self.exploration_config = Some(config);
+    }
+
+    /// Enable exploration mode with custom scan store configuration.
+    ///
+    /// Allows configuring max scans, distance/rotation filtering, etc.
+    pub fn enable_exploration_mode_with_scan_config(
+        &mut self,
+        exploration_config: ExplorationConfig,
+        scan_config: ScanStoreConfig,
+    ) {
+        self.scan_store = Some(ScanStore::new(scan_config));
+        self.exploration_config = Some(exploration_config);
+    }
+
+    /// Disable exploration mode and return the accumulated scan store.
+    ///
+    /// Returns the ScanStore containing all accumulated scans, or None
+    /// if exploration mode was not enabled.
+    pub fn disable_exploration_mode(&mut self) -> Option<ScanStore> {
+        self.exploration_config = None;
+        self.scan_store.take()
+    }
+
+    /// Check if exploration mode is enabled.
+    pub fn is_exploration_mode(&self) -> bool {
+        self.exploration_config.is_some()
+    }
+
+    /// Get the exploration configuration (if exploration mode is enabled).
+    pub fn exploration_config(&self) -> Option<&ExplorationConfig> {
+        self.exploration_config.as_ref()
+    }
+
+    /// Get the scan store (if exploration mode is enabled).
+    pub fn scan_store(&self) -> Option<&ScanStore> {
+        self.scan_store.as_ref()
+    }
+
+    /// Get mutable access to the scan store (if exploration mode is enabled).
+    pub fn scan_store_mut(&mut self) -> Option<&mut ScanStore> {
+        self.scan_store.as_mut()
     }
 
     /// Add a line to the map.
@@ -336,6 +417,17 @@ impl VectorMap {
 
         self.current_pose = final_pose;
 
+        // ─── Scan Storage (Exploration Mode) ───
+        if let Some(ref mut store) = self.scan_store {
+            store.add_scan(
+                odometry,
+                final_pose,
+                scan,
+                0, // features_extracted - will be updated after extraction
+                confidence,
+            );
+        }
+
         // ─── Feature Extraction ───
         // (robot_frame_points already filled in scratch above)
         let features = self.extract_features_timed(&final_pose, &mut timing);
@@ -346,6 +438,18 @@ impl VectorMap {
         } else {
             (0, 0)
         };
+
+        // ─── Periodic Line Re-fitting (Exploration Mode) ───
+        if let Some(ref config) = self.exploration_config {
+            if config.refit_interval > 0 && self.observation_count % config.refit_interval == 0 {
+                log::debug!(
+                    "Triggering line re-fit at observation {}",
+                    self.observation_count
+                );
+                // Trigger line re-fitting from accumulated scans
+                let _ = self.refit_lines_from_scans();
+            }
+        }
 
         // ─── Loop Closure ───
         let loop_closure_detected = if self.config.loop_closure_enabled {
@@ -395,6 +499,17 @@ impl VectorMap {
 
         // Fill scratch with robot frame points (used by feature extraction and loop closure)
         self.observe_scratch.fill_robot_frame_points(scan);
+
+        // ─── Scan Storage (Exploration Mode) ───
+        if let Some(ref mut store) = self.scan_store {
+            store.add_scan(
+                odometry,
+                odometry,  // First scan: odometry = estimated pose
+                scan,
+                0,   // features_extracted - unknown at this point
+                0.0, // confidence - no ICP for first scan
+            );
+        }
 
         // Extract features from robot-frame scan, transform to world using odometry
         let features = self.extract_features_timed(&odometry, &mut timing);
@@ -535,6 +650,158 @@ impl VectorMap {
     /// Update corners based on current lines.
     fn update_corners(&mut self) {
         self.corners = detect_corners(self.line_store.lines(), &self.config.corner);
+    }
+
+    /// Optimize map by merging coplanar line segments.
+    ///
+    /// Call this periodically (e.g., after N observations) to clean up
+    /// redundant line segments that represent the same wall.
+    ///
+    /// # Arguments
+    /// * `config` - Configuration for coplanar merging thresholds
+    ///
+    /// # Returns
+    /// Number of lines merged (removed from the map)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// use vastu_map::integration::CoplanarMergeConfig;
+    ///
+    /// // After exploration...
+    /// let config = CoplanarMergeConfig::default()
+    ///     .with_max_angle_diff(0.0175)  // 1 degree
+    ///     .with_max_perpendicular_dist(0.02);  // 2cm
+    /// let merged = map.optimize_lines(&config);
+    /// println!("Merged {} redundant lines", merged);
+    /// ```
+    pub fn optimize_lines(
+        &mut self,
+        config: &crate::integration::CoplanarMergeConfig,
+    ) -> usize {
+        let merged = crate::integration::optimize_coplanar_lines(self.line_store.lines_mut(), config);
+
+        if merged > 0 {
+            // Rebuild auxiliary structures
+            self.line_store.rebuild_all();
+            // Update corners based on new line set
+            self.update_corners();
+        }
+
+        merged
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Line Re-fitting from Accumulated Scans
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Re-fit all map lines from accumulated scan points.
+    ///
+    /// This method uses points from the ScanStore to re-fit line geometry,
+    /// eliminating first-scan bias. Call this periodically during exploration.
+    ///
+    /// Requires exploration mode to be enabled.
+    ///
+    /// # Returns
+    /// Statistics about the re-fitting operation, or None if exploration mode
+    /// is not enabled.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// if map.is_exploration_mode() && map.observation_count() % 10 == 0 {
+    ///     if let Some(stats) = map.refit_lines_from_scans() {
+    ///         println!("Refitted lines: {}/{} success rate",
+    ///             stats.lines_refitted_single + stats.lines_split,
+    ///             stats.total_processed());
+    ///     }
+    /// }
+    /// ```
+    pub fn refit_lines_from_scans(&mut self) -> Option<RefitStats> {
+        // Get exploration config and scan store
+        let exploration_config = self.exploration_config.as_ref()?;
+        let scan_store = self.scan_store.as_ref()?;
+
+        if self.line_store.is_empty() || scan_store.is_empty() {
+            return Some(RefitStats::default());
+        }
+
+        // Build association config from exploration config
+        let assoc_config = PointAssociationConfig::default()
+            .with_max_distance(exploration_config.max_point_distance);
+
+        // Associate all stored points with map lines
+        let associations = associate_points_to_lines(
+            scan_store,
+            self.line_store.lines(),
+            self.line_store.index(),
+            &assoc_config,
+        );
+
+        log::debug!(
+            "Refit: {} scans, {} lines, {} points associated ({:.1}% rate)",
+            scan_store.len(),
+            self.line_store.lines().len(),
+            associations.total_associated,
+            associations.association_rate() * 100.0
+        );
+
+        // Build robot pose map for weighted fitting
+        let robot_poses: std::collections::HashMap<u32, Pose2D> = scan_store
+            .iter()
+            .map(|scan| (scan.scan_id, scan.estimated_pose))
+            .collect();
+
+        // Build refit config from exploration config
+        let refit_config = RefitConfig::default()
+            .with_min_points(exploration_config.min_points_per_line)
+            .with_gap_threshold(exploration_config.gap_threshold)
+            .with_noise_model(exploration_config.noise_model);
+
+        // Re-fit each line
+        let mut stats = RefitStats::default();
+        let mut new_lines: Vec<Line2D> = Vec::new();
+
+        for (line_idx, associated_points) in associations.line_points.iter().enumerate() {
+            let original = &self.line_store.lines()[line_idx];
+
+            let result = refit_line(
+                associated_points,
+                original,
+                &robot_poses,
+                &refit_config,
+            );
+
+            match result {
+                RefitResult::Single(line) => {
+                    new_lines.push(line);
+                    stats.lines_refitted_single += 1;
+                }
+                RefitResult::Split(lines) => {
+                    stats.total_segments_created += lines.len();
+                    new_lines.extend(lines);
+                    stats.lines_split += 1;
+                }
+                RefitResult::Insufficient => {
+                    // Keep original line
+                    new_lines.push(original.clone());
+                    stats.lines_insufficient += 1;
+                }
+            }
+        }
+
+        // Replace all lines and rebuild
+        *self.line_store.lines_mut() = new_lines;
+        self.line_store.rebuild_all();
+        self.update_corners();
+
+        log::debug!(
+            "Refit complete: {} single, {} split, {} insufficient, {} new segments",
+            stats.lines_refitted_single,
+            stats.lines_split,
+            stats.lines_insufficient,
+            stats.total_segments_created
+        );
+
+        Some(stats)
     }
 }
 
