@@ -117,29 +117,32 @@ impl WheelOdometry {
         let delta_theta = (delta_right - delta_left) / self.wheel_base;
         let delta_linear = (delta_left + delta_right) / 2.0;
 
-        // Arc-based motion model for accurate integration
-        let (dx, dy) = if delta_theta.abs() < 1e-6 {
-            // Nearly straight motion - avoid division by zero
-            let theta = self.cumulative_pose.theta;
-            (delta_linear * theta.cos(), delta_linear * theta.sin())
+        // Robot-frame delta (for return value, used by SLAM's compose())
+        let (dx_robot, dy_robot) = if delta_theta.abs() < 1e-6 {
+            // Straight motion: forward is +X in robot frame
+            (delta_linear, 0.0)
         } else {
-            // Arc motion
+            // Arc motion in robot's starting frame
             let radius = delta_linear / delta_theta;
-            let theta = self.cumulative_pose.theta;
-            let new_theta = theta + delta_theta;
             (
-                radius * (new_theta.sin() - theta.sin()),
-                radius * (theta.cos() - new_theta.cos()),
+                radius * delta_theta.sin(),         // Forward displacement
+                radius * (1.0 - delta_theta.cos()), // Lateral displacement (left +)
             )
         };
 
-        // Create delta pose (in world frame)
-        let delta = Pose2D::new(dx, dy, delta_theta);
+        // World-frame delta (for cumulative pose tracking)
+        let theta = self.cumulative_pose.theta;
+        let (sin_t, cos_t) = theta.sin_cos();
+        let dx_world = dx_robot * cos_t - dy_robot * sin_t;
+        let dy_world = dx_robot * sin_t + dy_robot * cos_t;
 
-        // Update cumulative pose
+        // Create delta pose (in robot frame for compose())
+        let delta = Pose2D::new(dx_robot, dy_robot, delta_theta);
+
+        // Update cumulative pose (world frame)
         self.cumulative_pose = Pose2D::new(
-            self.cumulative_pose.x + dx,
-            self.cumulative_pose.y + dy,
+            self.cumulative_pose.x + dx_world,
+            self.cumulative_pose.y + dy_world,
             crate::core::math::normalize_angle(self.cumulative_pose.theta + delta_theta),
         );
 
@@ -361,5 +364,42 @@ mod tests {
 
         // Should show forward motion of 100 ticks = 0.1m
         assert_relative_eq!(delta.x, 0.1, epsilon = 0.001);
+    }
+
+    #[test]
+    fn test_delta_is_robot_frame_after_rotation() {
+        // This test verifies that update() returns robot-frame delta,
+        // not world-frame. After rotating 90°, moving forward should
+        // give delta.x > 0 (forward in robot frame), not delta.y > 0.
+        let mut odom = WheelOdometry::new(0.3, 1000.0);
+
+        // Initialize
+        odom.update(0, 0);
+
+        // Rotate 90° CCW (in-place rotation)
+        // arc = wheel_base * theta / 2 = 0.3 * π/2 / 2 = 0.2356m per wheel
+        let ticks = (0.3 * PI / 4.0 * 1000.0) as i32; // ~236 ticks
+        let left = -ticks;
+        let right = ticks;
+        odom.update(left, right);
+
+        // Verify we're now at ~90° heading
+        let cum = odom.cumulative();
+        assert_relative_eq!(cum.theta, PI / 2.0, epsilon = 0.02);
+
+        // Now move forward 0.5m (equal wheel ticks)
+        let forward_ticks = 500;
+        let delta = odom.update(left + forward_ticks, right + forward_ticks);
+
+        // Delta should be in ROBOT frame: forward is +X regardless of world heading
+        // If bug existed (world frame), delta would be (0, 0.5) since robot faces +Y
+        assert_relative_eq!(delta.x, 0.5, epsilon = 0.01); // Forward in robot frame
+        assert_relative_eq!(delta.y, 0.0, epsilon = 0.01); // No lateral movement
+        assert_relative_eq!(delta.theta, 0.0, epsilon = 0.01); // No rotation
+
+        // But cumulative should be in WORLD frame: robot at ~(0, 0.5)
+        let cum2 = odom.cumulative();
+        assert_relative_eq!(cum2.x, 0.0, epsilon = 0.05); // Started near origin
+        assert_relative_eq!(cum2.y, 0.5, epsilon = 0.05); // Moved in +Y direction
     }
 }

@@ -26,6 +26,6 @@ mod yaml_config;
 mod yaml_runner;
 
 // Re-export for test convenience
-pub use harness::{HarnessConfig, TestHarness, TestResult};
+pub use harness::{HarnessConfig, StepResult, TestHarness, TestResult};
 pub use metrics::{AcceptanceCriteria, TestMetrics, TimingStats};
 pub use path_generator::PathSegment;

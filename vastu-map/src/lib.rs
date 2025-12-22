@@ -112,6 +112,7 @@
 
 pub mod config;
 pub mod core;
+pub mod exploration;
 pub mod extraction;
 pub mod features;
 pub mod integration;
@@ -126,6 +127,12 @@ pub mod vector_map;
 // Re-export main types at crate root
 pub use motion_model::MotionModel;
 pub use vector_map::{ConfigError, VectorMap, VectorMapConfig};
+
+// Re-export exploration types
+pub use exploration::{
+    CollisionEvent, CollisionType, ExplorationConfig, ExplorationController, ExplorationState,
+    ExplorationStep, PathFollower, VelocityCommand, VirtualWall,
+};
 
 // Re-export extensibility traits
 pub use extraction::{LineExtractor, SplitMergeExtractor};

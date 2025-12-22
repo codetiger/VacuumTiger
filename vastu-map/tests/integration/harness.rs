@@ -10,7 +10,9 @@ use sangam_io::devices::mock::noise::NoiseGenerator;
 use sangam_io::devices::mock::physics::PhysicsState;
 
 use vastu_map::core::Pose2D;
+use vastu_map::core::math::normalize_angle;
 use vastu_map::odometry::WheelOdometry;
+use vastu_map::query::PathPlanningConfig;
 use vastu_map::{Map, VectorMap, VectorMapConfig};
 
 use crate::adapters::lidar_to_point_cloud;
@@ -104,6 +106,41 @@ impl HarnessConfig {
         let map_file = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../sangam-io/maps/large_room_obstacles.yaml"
+        );
+        Self {
+            map_file: map_file.to_string(),
+            start_x: 5.0,
+            start_y: 5.0,
+            ..Default::default()
+        }
+    }
+
+    /// Create config for the medium_room map (8x8m with obstacles).
+    ///
+    /// Uses non-conservative path planning to allow paths to frontiers
+    /// (which are at map edges and may be in "unknown" space).
+    pub fn medium_room() -> Self {
+        let map_file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/scenarios/maps/medium_room.yaml"
+        );
+        // Use non-conservative path planning for exploration
+        let slam = VectorMapConfig::default()
+            .with_path_planning(PathPlanningConfig::default().with_conservative(false));
+        Self {
+            map_file: map_file.to_string(),
+            start_x: 4.0,
+            start_y: 4.0,
+            slam,
+            ..Default::default()
+        }
+    }
+
+    /// Create config for the large_room map.
+    pub fn large_room() -> Self {
+        let map_file = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/scenarios/maps/large_room.yaml"
         );
         Self {
             map_file: map_file.to_string(),
@@ -363,19 +400,23 @@ impl TestHarness {
         // Get ground truth pose for metrics/visualization
         let current_truth = Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta());
 
-        // Get odometry from wheel encoders using vastu-map's WheelOdometry module
+        // Compute relative odometry from ground truth physics poses
+        // This mimics perfect wheel encoders that measure actual motion.
+        // Note: We also update WheelOdometry for cumulative tracking, but use
+        // ground-truth-derived odometry for SLAM to avoid commanded vs actual mismatch.
         let odometry = if self.observations == 0 {
-            // First observation - initialize odometry and use absolute pose as initial guess
-            // This triggers WheelOdometry initialization with the encoder baseline
+            // First observation - use absolute pose as initial guess
             let _ = self
                 .wheel_odometry
                 .update(self.left_encoder_ticks, self.right_encoder_ticks);
             current_truth
         } else {
-            // Subsequent observations - get delta from wheel odometry
-            // WheelOdometry::update returns the delta pose in robot frame
-            self.wheel_odometry
-                .update(self.left_encoder_ticks, self.right_encoder_ticks)
+            // Update wheel odometry for tracking (though we use ground truth for SLAM)
+            let _ = self
+                .wheel_odometry
+                .update(self.left_encoder_ticks, self.right_encoder_ticks);
+            // Compute relative pose from physics (like perfect encoders)
+            self.compute_relative_odometry(current_truth)
         };
 
         // Feed to SLAM
@@ -416,6 +457,25 @@ impl TestHarness {
         );
     }
 
+    /// Compute relative odometry between consecutive ground truth poses.
+    ///
+    /// Uses physics poses (not SLAM poses) to mimic real-world encoders that
+    /// measure actual wheel motion independent of SLAM corrections.
+    fn compute_relative_odometry(&self, current_truth: Pose2D) -> Pose2D {
+        // Compute delta from previous physics pose (like real encoders)
+        let dx = current_truth.x - self.last_physics_pose.x;
+        let dy = current_truth.y - self.last_physics_pose.y;
+        let dtheta = normalize_angle(current_truth.theta - self.last_physics_pose.theta);
+
+        // Transform to robot frame using previous physics pose orientation
+        let cos_th = self.last_physics_pose.theta.cos();
+        let sin_th = self.last_physics_pose.theta.sin();
+        let dx_robot = dx * cos_th + dy * sin_th;
+        let dy_robot = -dx * sin_th + dy * cos_th;
+
+        Pose2D::new(dx_robot, dy_robot, dtheta)
+    }
+
     /// Simulate encoder ticks from commanded wheel velocities.
     ///
     /// Computes individual wheel velocities from linear/angular velocity commands
@@ -444,7 +504,9 @@ impl TestHarness {
     }
 
     /// Finalize the test and compute metrics.
-    fn finalize(&mut self) -> TestResult {
+    ///
+    /// This generates the visualization SVG if enabled.
+    pub fn finalize(&mut self) -> TestResult {
         let final_pose = self.slam.current_pose();
         let ground_truth_pose =
             Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta());
@@ -488,8 +550,163 @@ impl TestHarness {
         &self.slam
     }
 
+    /// Get mutable reference to SLAM map (for adding virtual walls).
+    pub fn slam_mut(&mut self) -> &mut VectorMap {
+        &mut self.slam
+    }
+
     /// Get current physics state.
     pub fn physics(&self) -> &PhysicsState {
         &self.physics
+    }
+
+    /// Get current SLAM pose estimate.
+    pub fn slam_pose(&self) -> Pose2D {
+        self.last_slam_pose
+    }
+
+    /// Get current physics (ground truth) pose.
+    pub fn physics_pose(&self) -> Pose2D {
+        Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta())
+    }
+
+    /// Get configuration.
+    pub fn config(&self) -> &HarnessConfig {
+        &self.config
+    }
+
+    /// Get simulation map (for collision checking).
+    pub fn simulation_map(&self) -> &SimulationMap {
+        &self.map
+    }
+
+    /// Run a single simulation step and return collision status.
+    ///
+    /// This is used for interactive exploration tests where the controller
+    /// needs to react to sensor feedback at each step.
+    ///
+    /// # Arguments
+    /// * `linear_vel` - Linear velocity command (m/s)
+    /// * `angular_vel` - Angular velocity command (rad/s)
+    ///
+    /// # Returns
+    /// StepResult containing collision status and updated poses.
+    pub fn step(&mut self, linear_vel: f32, angular_vel: f32) -> StepResult {
+        let dt = if self.config.fast_mode {
+            self.config.dt * self.config.lidar_interval as f32
+        } else {
+            self.config.dt
+        };
+
+        // Simulate encoder ticks
+        self.simulate_encoder_ticks(dt, linear_vel, angular_vel);
+
+        // Update physics and get collision status
+        let collided =
+            self.physics
+                .update(dt, linear_vel, angular_vel, &self.map, &self.config.robot);
+
+        self.sim_time += dt;
+        self.tick_count += 1;
+
+        // Check bumper sensors using the physics simulation
+        let (left_bumper, right_bumper) = self.check_bumpers();
+
+        StepResult {
+            collided,
+            left_bumper,
+            right_bumper,
+            physics_pose: Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta()),
+            slam_pose: self.last_slam_pose,
+            sim_time: self.sim_time,
+        }
+    }
+
+    /// Check bumper sensors based on current position.
+    ///
+    /// Uses simple distance-based collision detection against the map.
+    fn check_bumpers(&self) -> (bool, bool) {
+        use std::f32::consts::FRAC_PI_4;
+
+        let x = self.physics.x();
+        let y = self.physics.y();
+        let theta = self.physics.theta();
+        let radius = self.config.robot.robot_radius;
+
+        // Check points on left and right front bumper zones
+        let check_distance = radius + 0.02; // Slightly past robot surface
+
+        // Left bumper zone (front-left quadrant)
+        let left_angle = theta + FRAC_PI_4;
+        let left_x = x + check_distance * left_angle.cos();
+        let left_y = y + check_distance * left_angle.sin();
+        let left_triggered = self.map.is_occupied(left_x, left_y);
+
+        // Right bumper zone (front-right quadrant)
+        let right_angle = theta - FRAC_PI_4;
+        let right_x = x + check_distance * right_angle.cos();
+        let right_y = y + check_distance * right_angle.sin();
+        let right_triggered = self.map.is_occupied(right_x, right_y);
+
+        // Also check center front
+        let center_x = x + check_distance * theta.cos();
+        let center_y = y + check_distance * theta.sin();
+        let center_triggered = self.map.is_occupied(center_x, center_y);
+
+        (
+            left_triggered || center_triggered,
+            right_triggered || center_triggered,
+        )
+    }
+
+    /// Process a lidar scan and feed to SLAM (public version).
+    ///
+    /// Call this at lidar intervals during exploration.
+    pub fn process_lidar(&mut self) {
+        self.process_lidar_scan();
+    }
+
+    /// Check if it's time for a lidar scan (based on tick count).
+    pub fn should_scan(&self) -> bool {
+        self.tick_count >= self.config.lidar_interval
+    }
+
+    /// Get the lidar scan interval.
+    pub fn lidar_interval(&self) -> usize {
+        self.config.lidar_interval
+    }
+
+    /// Get current simulation time.
+    pub fn sim_time(&self) -> f32 {
+        self.sim_time
+    }
+
+    /// Get number of observations processed.
+    pub fn observation_count(&self) -> usize {
+        self.observations
+    }
+}
+
+/// Result of a single simulation step.
+#[derive(Clone, Debug)]
+pub struct StepResult {
+    /// Whether a collision occurred during this step.
+    pub collided: bool,
+    /// Whether the left bumper is triggered.
+    pub left_bumper: bool,
+    /// Whether the right bumper is triggered.
+    pub right_bumper: bool,
+    /// Current physics (ground truth) pose.
+    pub physics_pose: Pose2D,
+    /// Current SLAM pose estimate.
+    pub slam_pose: Pose2D,
+    /// Current simulation time.
+    pub sim_time: f32,
+}
+
+impl StepResult {
+    /// Check if any bumper is triggered.
+    pub fn any_bumper(&self) -> bool {
+        self.left_bumper || self.right_bumper
     }
 }

@@ -1,14 +1,17 @@
-//! YAML-based test scenarios for integration tests
+//! Test scenarios for integration tests
 //!
-//! Each scenario is defined in a YAML file with:
-//! - Map reference (PGM + YAML)
-//! - Start pose
-//! - Path as wheel distance commands
+//! Contains both YAML-based predefined path tests and
+//! autonomous exploration tests.
 //!
 //! # Running Tests
 //!
 //! ```bash
+//! # Run all integration tests
 //! cargo test --features integration-tests -- --nocapture
+//!
+//! # Run exploration test
+//! cargo test --features integration-tests exploration -- --nocapture
 //! ```
 
+mod exploration_test;
 mod yaml_tests;
