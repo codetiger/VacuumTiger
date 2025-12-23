@@ -1,0 +1,11 @@
+# Floor plan converter and apartment generator dependencies
+opencv-python>=4.5.0
+numpy>=1.20.0
+pillow>=8.0.0
+pyyaml>=5.4.0
+
+# Optional: for SVG support
+# cairosvg>=2.5.0
+
+# Optional: for PDF support
+# pdf2image>=1.14.0

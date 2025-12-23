@@ -11,9 +11,9 @@ extraction:
   # Minimum points to form a valid line
   min_points: 5
   # Minimum line length to keep (m)
-  min_length: 0.10
+  min_length: 0.05
   # Maximum gap between consecutive points (m)
-  max_point_gap: 0.30
+  max_point_gap: 0.10
   # Merge threshold for collinear segments (m)
   merge_threshold: 0.05
   # Coefficient for range-adaptive threshold scaling
@@ -135,15 +135,29 @@ merger:
   min_extension: 0.05
 
 # ============================================================================
-# Frontier Detection
+# Frontier Detection (Gap-Based)
 # ============================================================================
 frontier:
   # Maximum endpoint distance for "connected" (m)
   connection_distance: 0.3
   # Minimum distance from robot for valid frontier (m)
-  min_distance_from_robot: 0.5
-  # Minimum openness score for valid frontier
-  min_openness: 0.3
+  min_distance_from_robot: 1.0
+  # Safety margin: viewpoint offset from wall (m)
+  safety_margin: 0.4
+  # Gap probe distance: how far to probe for unexplored gaps (m)
+  gap_probe_distance: 2.0
+  # Robot radius for viewpoint validation (m)
+  robot_radius: 0.16
+  # Maximum iterations for viewpoint adjustment
+  max_viewpoint_iterations: 5
+  # Viewpoint adjustment step size (m)
+  viewpoint_step: 0.1
+  # Minimum gap width for safe robot passage (m)
+  # Gaps narrower than this are ignored (robot can't fit)
+  min_gap_width: 0.4
+  # Maximum gap width to consider as a single gap (m)
+  # Allow gaps across rooms (up to 10m)
+  max_gap_width: 10.0
 
 # ============================================================================
 # Occupancy Queries
@@ -153,15 +167,13 @@ occupancy:
   obstacle_distance: 0.1
   # Distance threshold for "known" (m)
   known_distance: 2.0
-  # Use winding number for inside/outside determination
-  use_winding_number: false
 
 # ============================================================================
 # Path Planning
 # ============================================================================
 path_planning:
   # Robot radius for collision checking (m)
-  robot_radius: 0.15
+  robot_radius: 0.16
   # Maximum visibility graph nodes
   max_nodes: 1000
   # Only plan through known free space

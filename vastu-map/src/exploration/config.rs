@@ -3,6 +3,8 @@
 use crate::query::frontier::FrontierConfig;
 use crate::query::path_planning::PathPlanningConfig;
 
+use super::planner::PlannerConfig;
+
 /// Configuration for exploration behavior.
 #[derive(Clone, Debug)]
 pub struct ExplorationConfig {
@@ -35,10 +37,22 @@ pub struct ExplorationConfig {
     pub lookahead_distance: f32,
 
     /// Frontier detection configuration.
+    /// Note: With shadow-based frontiers, viewpoints are already safe observation points.
     pub frontier_config: FrontierConfig,
 
     /// Path planning configuration.
     pub path_planning_config: PathPlanningConfig,
+
+    /// Region-based exploration planner configuration.
+    pub planner_config: PlannerConfig,
+
+    /// Cell size for visit history tracking (meters).
+    /// Default: 0.5
+    pub history_cell_size: f32,
+
+    /// Maximum number of recent positions to track in history.
+    /// Default: 100
+    pub history_max_recent: usize,
 }
 
 impl Default for ExplorationConfig {
@@ -53,6 +67,9 @@ impl Default for ExplorationConfig {
             lookahead_distance: 0.3,
             frontier_config: FrontierConfig::default(),
             path_planning_config: PathPlanningConfig::default().with_robot_radius(0.15),
+            planner_config: PlannerConfig::default(),
+            history_cell_size: 0.5,
+            history_max_recent: 100,
         }
     }
 }
@@ -115,6 +132,24 @@ impl ExplorationConfig {
     /// Builder-style setter for path planning config.
     pub fn with_path_planning_config(mut self, config: PathPlanningConfig) -> Self {
         self.path_planning_config = config;
+        self
+    }
+
+    /// Builder-style setter for planner config.
+    pub fn with_planner_config(mut self, config: PlannerConfig) -> Self {
+        self.planner_config = config;
+        self
+    }
+
+    /// Builder-style setter for history cell size.
+    pub fn with_history_cell_size(mut self, size: f32) -> Self {
+        self.history_cell_size = size;
+        self
+    }
+
+    /// Builder-style setter for history max recent.
+    pub fn with_history_max_recent(mut self, max: usize) -> Self {
+        self.history_max_recent = max;
         self
     }
 }

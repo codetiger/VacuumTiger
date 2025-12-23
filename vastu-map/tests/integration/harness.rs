@@ -32,8 +32,8 @@ use vastu_map::core::Pose2D;
 use vastu_map::core::math::normalize_angle;
 use vastu_map::integration::{ScanStore, ScanStoreConfig};
 use vastu_map::odometry::WheelOdometry;
-use vastu_map::query::PathPlanningConfig;
-use vastu_map::{Map, VectorMap, VectorMapConfig};
+use vastu_map::query::{PathPlanningConfig, VisibilityGraph};
+use vastu_map::{Map, Path as PlannedPath, VectorMap, VectorMapConfig};
 
 use crate::adapters::lidar_to_point_cloud;
 use crate::metrics::{ConvergenceStats, TestMetrics, TimingStats};
@@ -616,6 +616,59 @@ impl TestHarness {
                 &self.scan_store,
                 &self.trajectory,
                 &metrics,
+            );
+        }
+
+        // Print timing summary
+        self.timing_stats.print_summary();
+
+        TestResult {
+            metrics,
+            final_pose,
+            ground_truth_pose,
+            observations: self.observations,
+            sim_time: self.sim_time,
+        }
+    }
+
+    /// Finalize the test with visibility graph visualization.
+    ///
+    /// Extended version of `finalize` that also renders the visibility graph
+    /// and planned path in the SVG output.
+    ///
+    /// # Arguments
+    /// * `graph` - Optional visibility graph to visualize
+    /// * `path` - Optional planned path to visualize
+    pub fn finalize_with_graph(
+        &mut self,
+        graph: Option<&VisibilityGraph>,
+        path: Option<&PlannedPath>,
+    ) -> TestResult {
+        let final_pose = self.slam.current_pose();
+        let ground_truth_pose =
+            Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta());
+
+        // Compute metrics using the simulation map, including convergence stats
+        let metrics = TestMetrics::compute(
+            &self.slam,
+            &self.map,
+            final_pose,
+            ground_truth_pose,
+            self.convergence_stats.clone(),
+        );
+
+        // Generate enhanced visualization with graph if enabled
+        if let Some(ref viz) = self.visualizer {
+            viz.render_with_path_planning(
+                &self.slam,
+                &self.map,
+                final_pose,
+                ground_truth_pose,
+                &self.scan_store,
+                &self.trajectory,
+                &metrics,
+                graph,
+                path,
             );
         }
 

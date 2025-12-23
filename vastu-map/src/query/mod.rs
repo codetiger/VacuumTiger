@@ -36,7 +36,7 @@ pub mod raycast;
 // Re-export main types and functions
 pub use frontier::{
     FrontierConfig, FrontierDetector, cluster_centroid, cluster_frontiers, detect_frontiers,
-    detect_frontiers_from_robot, get_best_frontier, rank_frontiers,
+    get_best_frontier, rank_frontiers,
 };
 pub use occupancy::{
     OccupancyConfig, is_path_clear, is_region_clear, query_occupancy, query_occupancy_batch,

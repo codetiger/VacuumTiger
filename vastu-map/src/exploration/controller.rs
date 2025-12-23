@@ -3,13 +3,24 @@
 //! Manages frontier-based exploration with collision recovery.
 //! The primary goal is complete map coverage, with obstacle avoidance
 //! as the secondary priority.
+//!
+//! # Region-Based Exploration
+//!
+//! This controller uses a hierarchical exploration strategy:
+//! 1. Cluster frontiers into exploration regions
+//! 2. Order regions using greedy TSP to minimize travel
+//! 3. Select frontiers within each region using heading-aligned selection
+//!
+//! This approach eliminates ping-pong behavior and improves coverage efficiency.
 
 use crate::core::{Point2D, Pose2D};
 use crate::{Frontier, Map, Path};
 
 use super::collision::{CollisionEvent, VirtualWall};
 use super::config::ExplorationConfig;
+use super::history::ExplorationHistory;
 use super::path_follower::{PathFollower, VelocityCommand};
+use super::planner::ExplorationPlanner;
 
 /// Current exploration state.
 #[derive(Clone, Debug)]
@@ -179,12 +190,27 @@ pub struct ExplorationController {
 
     /// Distance threshold to consider frontiers as same location.
     frontier_match_distance: f32,
+
+    /// Region-based exploration planner.
+    planner: ExplorationPlanner,
+
+    /// Exploration history for visit tracking.
+    history: ExplorationHistory,
+
+    /// Time accumulator for dt calculation (seconds).
+    last_update_time: Option<std::time::Instant>,
+
+    /// Robot position when unreachable frontiers were last cleared.
+    /// Used to re-evaluate unreachable frontiers after robot moves significantly.
+    position_at_last_unreachable_clear: Option<Point2D>,
 }
 
 impl ExplorationController {
     /// Create a new exploration controller.
     pub fn new(config: ExplorationConfig) -> Self {
         let path_follower = PathFollower::new(&config);
+        let planner = ExplorationPlanner::new(config.planner_config.clone());
+        let history = ExplorationHistory::new(config.history_cell_size, config.history_max_recent);
 
         Self {
             state: ExplorationState::Idle,
@@ -194,6 +220,10 @@ impl ExplorationController {
             max_failed_attempts: 3,
             unreachable_frontiers: Vec::new(),
             frontier_match_distance: 0.5,
+            planner,
+            history,
+            last_update_time: None,
+            position_at_last_unreachable_clear: None,
         }
     }
 
@@ -202,6 +232,10 @@ impl ExplorationController {
         self.state = ExplorationState::SelectingFrontier;
         self.failed_planning_attempts = 0;
         self.unreachable_frontiers.clear();
+        self.planner.reset();
+        self.history.clear();
+        self.last_update_time = Some(std::time::Instant::now());
+        self.position_at_last_unreachable_clear = None;
     }
 
     /// Reset to idle state.
@@ -209,6 +243,10 @@ impl ExplorationController {
         self.state = ExplorationState::Idle;
         self.failed_planning_attempts = 0;
         self.unreachable_frontiers.clear();
+        self.planner.reset();
+        self.history.clear();
+        self.last_update_time = None;
+        self.position_at_last_unreachable_clear = None;
     }
 
     /// Get current state.
@@ -308,17 +346,57 @@ impl ExplorationController {
         step
     }
 
-    /// Select the next frontier to explore.
+    /// Select the next frontier to explore using region-based strategy.
+    ///
+    /// The algorithm:
+    /// 1. Update exploration history with current position
+    /// 2. Update the region-based planner with current frontiers
+    /// 3. Select the best frontier from the current region
+    /// 4. Plan a path to the selected frontier
+    /// 5. If path planning fails, try next frontier or advance to next region
     fn select_frontier<M: Map>(&mut self, map: &M, current_pose: Pose2D) -> ExplorationStep {
         let robot_pos = current_pose.position();
+
+        // Calculate dt for planner update
+        let dt = self
+            .last_update_time
+            .map(|t| t.elapsed().as_secs_f32())
+            .unwrap_or(0.1);
+        self.last_update_time = Some(std::time::Instant::now());
+
+        // Update history with current position
+        self.history.mark_visited(robot_pos);
 
         // Get all frontiers
         let all_frontiers = map.frontiers();
 
-        // Filter out unreachable frontiers
-        let reachable_frontiers: Vec<&Frontier> = all_frontiers
+        // Re-evaluate unreachable frontiers when robot has moved significantly.
+        // This allows frontiers that were previously unreachable from position A
+        // to be reconsidered when the robot has moved to position B.
+        // Use 1.5m for more aggressive retry - robot tries new positions sooner.
+        const UNREACHABLE_RESET_DISTANCE: f32 = 1.5; // meters
+        if !self.unreachable_frontiers.is_empty() {
+            let should_clear = match self.position_at_last_unreachable_clear {
+                Some(last_pos) => robot_pos.distance(last_pos) > UNREACHABLE_RESET_DISTANCE,
+                None => false, // First time through, don't clear
+            };
+
+            if should_clear {
+                log::debug!(
+                    "Clearing {} unreachable frontiers after robot moved {:.1}m",
+                    self.unreachable_frontiers.len(),
+                    UNREACHABLE_RESET_DISTANCE
+                );
+                self.unreachable_frontiers.clear();
+                self.position_at_last_unreachable_clear = Some(robot_pos);
+            }
+        }
+
+        // Filter out unreachable frontiers (using viewpoint for distance checks)
+        let reachable_frontiers: Vec<Frontier> = all_frontiers
             .iter()
-            .filter(|f| !self.is_frontier_unreachable(f.point))
+            .filter(|f| !self.is_frontier_unreachable(f.viewpoint))
+            .cloned()
             .collect();
 
         if reachable_frontiers.is_empty() {
@@ -340,85 +418,144 @@ impl ExplorationController {
             }
         }
 
-        // Find closest reachable frontier
-        let best_frontier = reachable_frontiers
-            .iter()
-            .min_by(|a, b| {
-                let dist_a = robot_pos.distance(a.point);
-                let dist_b = robot_pos.distance(b.point);
-                dist_a
-                    .partial_cmp(&dist_b)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|f| f.point);
+        // Update the region-based planner
+        self.planner
+            .update(&reachable_frontiers, robot_pos, &self.history, dt);
 
-        let target = match best_frontier {
-            Some(p) => p,
-            None => {
-                self.state = ExplorationState::Complete;
-                return ExplorationStep::idle(self.state.clone());
-            }
-        };
+        // Try to find a frontier with a valid path
+        loop {
+            // Check if we've exhausted all regions
+            if self.planner.plan().is_complete() {
+                // Force replan to pick up any new frontiers
+                self.planner
+                    .force_replan(&reachable_frontiers, robot_pos, &self.history);
 
-        log::debug!(
-            "Selected frontier at ({:.2}, {:.2}), distance: {:.2}m",
-            target.x,
-            target.y,
-            robot_pos.distance(target)
-        );
-
-        // Plan path to frontier
-        match map.get_path(robot_pos, target) {
-            Some(path) => {
-                log::debug!(
-                    "Path planned: {} waypoints, {:.2}m total",
-                    path.points.len(),
-                    path.length
-                );
-
-                self.failed_planning_attempts = 0;
-
-                // Immediately start following the path
-                let result = self.path_follower.follow(
-                    current_pose,
-                    &path,
-                    0,
-                    self.config.waypoint_tolerance,
-                );
-
-                self.state = ExplorationState::FollowingPath {
-                    path: path.clone(),
-                    waypoint_idx: result.waypoint_idx,
-                    target_frontier: target,
-                };
-
-                let mut step = ExplorationStep::with_velocity(result.velocity, self.state.clone());
-                step.path_planned = true;
-                step.target_frontier = Some(target);
-                step.distance_to_target = result.distance_to_waypoint;
-                step
-            }
-            None => {
-                log::warn!(
-                    "Failed to plan path to frontier at ({:.2}, {:.2})",
-                    target.x,
-                    target.y
-                );
-
-                self.failed_planning_attempts += 1;
-
-                if self.failed_planning_attempts >= self.max_failed_attempts {
-                    // Mark this frontier as unreachable
-                    self.unreachable_frontiers.push(target);
-                    self.failed_planning_attempts = 0;
-                    log::warn!(
-                        "Frontier marked as unreachable after {} failed attempts",
-                        self.max_failed_attempts
-                    );
+                if self.planner.plan().is_complete() || self.planner.plan().is_empty() {
+                    // Still no regions - exploration complete
+                    log::info!("Exploration complete: all regions exhausted");
+                    self.state = ExplorationState::Complete;
+                    return ExplorationStep::idle(self.state.clone());
                 }
+            }
 
-                // Stay in SelectingFrontier to try another
-                ExplorationStep::idle(self.state.clone())
+            // Get current region
+            let region = match self.planner.plan().current_region() {
+                Some(r) => r,
+                None => {
+                    self.state = ExplorationState::Complete;
+                    return ExplorationStep::idle(self.state.clone());
+                }
+            };
+
+            // Select best frontier in current region (heading-aligned)
+            let selected_frontier =
+                self.planner
+                    .select_frontier_in_region(region, robot_pos, current_pose.theta);
+
+            // With shadow-based frontiers, viewpoint is already a safe observation point
+            let target = match selected_frontier {
+                Some(f) => f.viewpoint, // Use viewpoint directly - it's already safe!
+                None => {
+                    // Current region exhausted, advance to next
+                    log::debug!("Region {} exhausted, advancing to next", region.id);
+                    self.planner.plan_mut().advance_region();
+                    continue;
+                }
+            };
+
+            // Check if we're already close enough to this viewpoint
+            let distance_to_target = robot_pos.distance(target);
+            if distance_to_target <= self.config.waypoint_tolerance {
+                // Already at this viewpoint - skip to next
+                log::debug!(
+                    "Skipping frontier viewpoint at ({:.2}, {:.2}) - already there ({:.2}m <= {:.2}m)",
+                    target.x,
+                    target.y,
+                    distance_to_target,
+                    self.config.waypoint_tolerance
+                );
+                // Mark as visited so we don't keep selecting it
+                self.history.mark_visited(target);
+                self.planner.plan_mut().advance_region();
+                continue;
+            }
+
+            log::debug!(
+                "Selected frontier viewpoint at ({:.2}, {:.2}) from region {}, distance: {:.2}m",
+                target.x,
+                target.y,
+                region.id,
+                distance_to_target
+            );
+
+            // Plan path directly to viewpoint (no offset needed - viewpoint is already safe)
+            match map.get_path(robot_pos, target) {
+                Some(path) => {
+                    log::debug!(
+                        "Path planned: {} waypoints, {:.2}m total",
+                        path.points.len(),
+                        path.length
+                    );
+
+                    self.failed_planning_attempts = 0;
+
+                    // Immediately start following the path
+                    let result = self.path_follower.follow(
+                        current_pose,
+                        &path,
+                        0,
+                        self.config.waypoint_tolerance,
+                    );
+
+                    self.state = ExplorationState::FollowingPath {
+                        path: path.clone(),
+                        waypoint_idx: result.waypoint_idx,
+                        target_frontier: target, // Viewpoint is already a safe target
+                    };
+
+                    let mut step =
+                        ExplorationStep::with_velocity(result.velocity, self.state.clone());
+                    step.path_planned = true;
+                    step.target_frontier = Some(target);
+                    step.distance_to_target = result.distance_to_waypoint;
+                    return step;
+                }
+                None => {
+                    log::warn!(
+                        "Failed to plan path to frontier at ({:.2}, {:.2})",
+                        target.x,
+                        target.y
+                    );
+
+                    self.failed_planning_attempts += 1;
+
+                    if self.failed_planning_attempts >= self.max_failed_attempts {
+                        // Track position when we first mark any frontier as unreachable
+                        // (so we can re-evaluate after robot moves 3m)
+                        if self.unreachable_frontiers.is_empty() {
+                            self.position_at_last_unreachable_clear = Some(robot_pos);
+                        }
+
+                        // Mark this frontier as unreachable
+                        self.unreachable_frontiers.push(target);
+                        self.failed_planning_attempts = 0;
+                        log::warn!(
+                            "Frontier marked as unreachable after {} failed attempts",
+                            self.max_failed_attempts
+                        );
+
+                        // Remove from current region and try again
+                        if let Some(region) = self.planner.plan_mut().current_region_mut() {
+                            region
+                                .frontiers
+                                .retain(|f| f.viewpoint.distance(target) > 0.1);
+                        }
+                        continue;
+                    }
+
+                    // Try another frontier in same region
+                    continue;
+                }
             }
         }
     }
@@ -514,6 +651,7 @@ impl ExplorationController {
     /// Clear unreachable frontiers (useful after map updates).
     pub fn clear_unreachable_frontiers(&mut self) {
         self.unreachable_frontiers.clear();
+        self.position_at_last_unreachable_clear = None;
     }
 
     /// Get the current configuration.
@@ -544,10 +682,14 @@ mod tests {
         }
 
         fn with_frontier(mut self, x: f32, y: f32) -> Self {
+            // Create a frontier with viewpoint at (x, y)
+            // In real usage, the viewpoint is computed from line endpoints
             self.frontiers.push(Frontier {
-                point: Point2D::new(x, y),
+                viewpoint: Point2D::new(x, y),
+                look_direction: Point2D::new(1.0, 0.0), // Default: looking right
+                endpoint: Point2D::new(x - 0.4, y),     // Endpoint is offset back
                 line_idx: 0,
-                is_start: true,
+                estimated_area: 4.0,
             });
             self
         }

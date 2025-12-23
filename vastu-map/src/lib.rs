@@ -159,15 +159,46 @@ pub enum Occupancy {
     Unknown,
 }
 
-/// Exploration frontier (unconnected line endpoint).
+/// Exploration frontier representing an unexplored shadow area.
+///
+/// A frontier is a safe observation point from which the robot can
+/// scan an unexplored region (gap between unconnected lines).
+///
+/// # Key Concept
+///
+/// Instead of targeting line endpoints (which are walls), frontiers
+/// now represent viewpoints that can observe unexplored gaps:
+///
+/// ```text
+/// Wall ─────┐ endpoint
+///           │
+///   GAP     │  ← Unexplored shadow area
+///   HERE    │
+///           │
+/// Wall ─────┘ endpoint
+///
+/// Viewpoint is offset from wall, looking into the gap
+/// ```
 #[derive(Debug, Clone)]
 pub struct Frontier {
-    /// Position of the frontier point.
-    pub point: Point2D,
-    /// Index of the line this endpoint belongs to.
+    /// Safe observation point where robot should navigate to.
+    /// This is offset from the wall to ensure the robot stays in free space.
+    pub viewpoint: Point2D,
+
+    /// Direction towards the unexplored area (unit vector).
+    /// The robot's lidar will scan in this direction when it reaches the viewpoint.
+    pub look_direction: Point2D,
+
+    /// Original line endpoint that created this frontier.
+    /// Used for tracking which gap this frontier observes.
+    pub endpoint: Point2D,
+
+    /// Index of the source line in the map.
     pub line_idx: usize,
-    /// True if this is the start endpoint, false if end.
-    pub is_start: bool,
+
+    /// Estimated unexplored area visible from this viewpoint (m²).
+    /// Used for prioritizing larger unexplored regions.
+    pub estimated_area: f32,
 }
 
 /// A planned path through the map.

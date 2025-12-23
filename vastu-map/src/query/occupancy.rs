@@ -22,12 +22,6 @@ pub struct OccupancyConfig {
     /// Points must be within this distance of some map feature to be known.
     /// Default: 2.0m
     pub known_distance: f32,
-
-    /// Whether to use winding number for inside/outside determination.
-    /// If true, uses contour-based occupancy (like font rendering).
-    /// If false, uses simple distance-based occupancy.
-    /// Default: false (distance-based is simpler and usually sufficient)
-    pub use_winding_number: bool,
 }
 
 impl Default for OccupancyConfig {
@@ -35,7 +29,6 @@ impl Default for OccupancyConfig {
         Self {
             obstacle_distance: 0.1,
             known_distance: 2.0,
-            use_winding_number: false,
         }
     }
 }

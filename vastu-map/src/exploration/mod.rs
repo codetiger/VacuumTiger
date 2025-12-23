@@ -64,10 +64,16 @@
 mod collision;
 mod config;
 mod controller;
+pub mod history;
 mod path_follower;
+pub mod planner;
+pub mod region;
 
 // Re-export public types
 pub use collision::{CollisionEvent, CollisionType, VirtualWall};
 pub use config::ExplorationConfig;
 pub use controller::{ExplorationController, ExplorationState, ExplorationStep};
+pub use history::ExplorationHistory;
 pub use path_follower::{FollowResult, PathFollower, VelocityCommand};
+pub use planner::{ExplorationPlan, ExplorationPlanner, PlannerConfig};
+pub use region::{ExplorationRegion, RegionConfig, RegionDetector};

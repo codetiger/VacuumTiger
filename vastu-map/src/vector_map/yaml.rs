@@ -250,11 +250,16 @@ merger:
 frontier:
   connection_distance: 0.3
   min_distance_from_robot: 0.5
-  min_openness: 0.3
+  safety_margin: 0.4
+  gap_probe_distance: 2.0
+  robot_radius: 0.15
+  max_viewpoint_iterations: 5
+  viewpoint_step: 0.1
+  min_gap_width: 0.4
+  max_gap_width: 10.0
 occupancy:
   obstacle_distance: 0.1
   known_distance: 2.0
-  use_winding_number: false
 path_planning:
   robot_radius: 0.15
   max_nodes: 1000
@@ -368,11 +373,16 @@ merger:
 frontier:
   connection_distance: 0.3
   min_distance_from_robot: 0.5
-  min_openness: 0.3
+  safety_margin: 0.4
+  gap_probe_distance: 2.0
+  robot_radius: 0.15
+  max_viewpoint_iterations: 5
+  viewpoint_step: 0.1
+  min_gap_width: 0.4
+  max_gap_width: 10.0
 occupancy:
   obstacle_distance: 0.1
   known_distance: 2.0
-  use_winding_number: false
 path_planning:
   robot_radius: 0.15
   max_nodes: 1000

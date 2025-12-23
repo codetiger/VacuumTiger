@@ -814,7 +814,12 @@ impl Map for VectorMap {
     }
 
     fn frontiers(&self) -> Vec<Frontier> {
-        detect_frontiers(self.line_store.lines(), &self.config.frontier)
+        // Use current robot pose for distance-based filtering
+        detect_frontiers(
+            self.line_store.lines(),
+            self.current_pose.position(),
+            &self.config.frontier,
+        )
     }
 
     fn get_path(&self, from: Point2D, to: Point2D) -> Option<Path> {

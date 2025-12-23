@@ -16,9 +16,11 @@ use svg::node::element::{
     Circle, Definitions, Group, Line, Marker, Path, Polyline, Rectangle, Text,
 };
 
+use vastu_map::Path as PlannedPath;
 use vastu_map::VectorMap;
 use vastu_map::core::{Point2D, Pose2D};
 use vastu_map::integration::ScanStore;
+use vastu_map::query::VisibilityGraph;
 
 use crate::harness::TrajectoryHistory;
 use crate::metrics::TestMetrics;
@@ -39,6 +41,16 @@ mod colors {
     pub const LIDAR_SCAN: &str = "#56B4E9";
     /// Lidar scan history - lighter, semi-transparent
     pub const LIDAR_SCAN_HISTORY: &str = "#56B4E9";
+    /// Visibility graph nodes - purple
+    pub const GRAPH_NODE: &str = "#CC79A7";
+    /// Visibility graph edges - light purple
+    pub const GRAPH_EDGE: &str = "#CC79A7";
+    /// Planned path - green
+    pub const PLANNED_PATH: &str = "#009E73";
+    /// Start node - green
+    pub const START_NODE: &str = "#00FF00";
+    /// Goal node - red
+    pub const GOAL_NODE: &str = "#FF0000";
 }
 
 /// Interval for displaying drift vectors (every Nth observation).
@@ -349,6 +361,8 @@ impl Visualizer {
             (colors::TRUTH_PATH, "Ground Truth Path", "line"),
             ("gradient", "Estimated Path (Confidence)", "gradient"),
             (colors::DRIFT_VECTOR, "Drift Vector", "arrow"),
+            (colors::GRAPH_NODE, "Graph Nodes", "circle"),
+            (colors::PLANNED_PATH, "Planned Path", "line"),
         ];
 
         for (color, label, icon_type) in items {
@@ -639,6 +653,288 @@ impl Visualizer {
             .set("stroke-width", 3);
 
         Group::new().add(body).add(direction)
+    }
+
+    /// Render a visibility graph showing nodes and edges.
+    ///
+    /// # Arguments
+    /// * `graph` - The visibility graph to render
+    /// * `svg_height` - SVG canvas height for coordinate transformation
+    /// * `show_edges` - Whether to show edges (can be noisy for large graphs)
+    pub fn render_visibility_graph(
+        &self,
+        graph: &VisibilityGraph,
+        svg_height: f32,
+        show_edges: bool,
+    ) -> Group {
+        let mut group = Group::new().set("id", "visibility_graph");
+
+        let nodes = graph.nodes();
+        let start_idx = graph.start_idx();
+        let goal_idx = graph.goal_idx();
+
+        // Render edges first (so nodes appear on top)
+        if show_edges {
+            let edge_group = self.render_graph_edges(graph, svg_height);
+            group = group.add(edge_group);
+        }
+
+        // Render nodes
+        for (idx, &node) in nodes.iter().enumerate() {
+            let (sx, sy) = self.transform_point(node, 0.0, 0.0, svg_height);
+
+            // Choose color based on node type
+            let (color, radius, opacity) = if idx == start_idx {
+                (colors::START_NODE, 6.0, 0.9)
+            } else if idx == goal_idx {
+                (colors::GOAL_NODE, 6.0, 0.9)
+            } else {
+                (colors::GRAPH_NODE, 4.0, 0.7)
+            };
+
+            let circle = Circle::new()
+                .set("cx", sx)
+                .set("cy", sy)
+                .set("r", radius)
+                .set("fill", color)
+                .set("opacity", opacity);
+
+            group = group.add(circle);
+        }
+
+        group
+    }
+
+    /// Render visibility graph edges.
+    fn render_graph_edges(&self, graph: &VisibilityGraph, svg_height: f32) -> Group {
+        let mut group = Group::new().set("id", "graph_edges");
+
+        let nodes = graph.nodes();
+        let edge_list = graph.edge_list();
+
+        for (from_idx, to_idx, _dist) in edge_list {
+            let from_node = nodes[from_idx];
+            let to_node = nodes[to_idx];
+
+            let line = self.create_line(
+                from_node,
+                to_node,
+                0.0,
+                0.0,
+                svg_height,
+                colors::GRAPH_EDGE,
+                0.5,
+                Some("2,2"), // Dashed line for edges
+            );
+
+            group = group.add(line.set("opacity", 0.3));
+        }
+
+        group
+    }
+
+    /// Render a planned path.
+    ///
+    /// # Arguments
+    /// * `path` - The planned path to render
+    /// * `svg_height` - SVG canvas height for coordinate transformation
+    pub fn render_planned_path(&self, path: &PlannedPath, svg_height: f32) -> Group {
+        let mut group = Group::new().set("id", "planned_path");
+
+        if path.points.len() < 2 {
+            return group;
+        }
+
+        // Render path as connected line segments
+        for i in 1..path.points.len() {
+            let from = path.points[i - 1];
+            let to = path.points[i];
+
+            let line = self.create_line(
+                from,
+                to,
+                0.0,
+                0.0,
+                svg_height,
+                colors::PLANNED_PATH,
+                3.0,
+                None,
+            );
+
+            group = group.add(line);
+        }
+
+        // Render waypoint markers
+        for (i, &point) in path.points.iter().enumerate() {
+            let (sx, sy) = self.transform_point(point, 0.0, 0.0, svg_height);
+
+            // First and last points are start/goal, middle points are waypoints
+            let (color, radius) = if i == 0 {
+                (colors::START_NODE, 5.0)
+            } else if i == path.points.len() - 1 {
+                (colors::GOAL_NODE, 5.0)
+            } else {
+                (colors::PLANNED_PATH, 3.0)
+            };
+
+            let circle = Circle::new()
+                .set("cx", sx)
+                .set("cy", sy)
+                .set("r", radius)
+                .set("fill", color)
+                .set("stroke", "white")
+                .set("stroke-width", 1.0);
+
+            group = group.add(circle);
+        }
+
+        group
+    }
+
+    /// Render full visualization with visibility graph.
+    ///
+    /// Extended version of `render_full` that also shows the visibility graph
+    /// and planned path for path planning debugging.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_path_planning(
+        &self,
+        slam: &VectorMap,
+        map: &SimulationMap,
+        final_pose: Pose2D,
+        truth_pose: Pose2D,
+        scan_store: &ScanStore,
+        trajectory: &TrajectoryHistory,
+        metrics: &TestMetrics,
+        graph: Option<&VisibilityGraph>,
+        path: Option<&PlannedPath>,
+    ) {
+        // Compute bounds from map
+        let map_width_m = map.width() as f32 * map.resolution();
+        let map_height_m = map.height() as f32 * map.resolution();
+
+        let width = (map_width_m * self.scale + 2.0 * self.margin) as i32;
+        let height = (map_height_m * self.scale + 2.0 * self.margin) as i32;
+
+        // Create document with arrow marker definition
+        let mut doc = Document::new()
+            .set("width", width)
+            .set("height", height)
+            .set("viewBox", (0, 0, width, height));
+
+        // Add marker definitions for arrows
+        let defs = self.create_marker_definitions();
+        doc = doc.add(defs);
+
+        // Layer 0: Background
+        doc = doc.add(
+            Rectangle::new()
+                .set("x", 0)
+                .set("y", 0)
+                .set("width", width)
+                .set("height", height)
+                .set("fill", "white"),
+        );
+
+        // Layer 1: Map walls (gray)
+        doc = doc.add(self.render_map_walls(map, height as f32));
+
+        // Layer 2: All scans from scan store (semi-transparent)
+        doc = doc.add(self.render_all_scans(scan_store, height as f32));
+
+        // Layer 3: Final lidar scan (full opacity) - use last scan from store
+        if let Some(last_scan) = scan_store.latest() {
+            let world_points = last_scan.world_points();
+            doc = doc.add(self.render_world_points(&world_points, height as f32));
+        }
+
+        // Layer 4: Detected walls (teal)
+        doc = doc.add(self.render_detected(slam, height as f32));
+
+        // Layer 5: Visibility graph (if provided)
+        if let Some(g) = graph {
+            doc = doc.add(self.render_visibility_graph(g, height as f32, true));
+        }
+
+        // Layer 6: Planned path (if provided)
+        if let Some(p) = path {
+            doc = doc.add(self.render_planned_path(p, height as f32));
+        }
+
+        // Layer 7: Trajectories with confidence heatmap
+        doc = doc.add(self.render_trajectories(trajectory, height as f32));
+
+        // Layer 8: Drift vectors
+        doc = doc.add(self.render_drift_vectors(trajectory, height as f32));
+
+        // Layer 9: Final poses
+        doc = doc.add(self.render_poses(final_pose, truth_pose, height as f32));
+
+        // Layer 10: Enhanced legend
+        doc = doc.add(self.render_enhanced_legend(height as f32));
+
+        // Layer 11: Metrics overlay
+        doc = doc.add(self.render_metrics_overlay(metrics, width));
+
+        // Ensure output directory exists
+        if let Some(parent) = std::path::Path::new(&self.output_path).parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+
+        // Save
+        svg::save(&self.output_path, &doc).expect("Failed to save SVG");
+    }
+
+    /// Render standalone visibility graph visualization.
+    ///
+    /// Creates a simple SVG showing just the visibility graph, detected walls,
+    /// and optionally a planned path. Useful for path planning debugging.
+    #[allow(dead_code)]
+    pub fn render_graph_only(
+        &self,
+        slam: &VectorMap,
+        graph: &VisibilityGraph,
+        path: Option<&PlannedPath>,
+        bounds: (f32, f32, f32, f32), // (min_x, min_y, max_x, max_y)
+    ) {
+        let (min_x, min_y, max_x, max_y) = bounds;
+        let map_width_m = max_x - min_x;
+        let map_height_m = max_y - min_y;
+
+        let width = (map_width_m * self.scale + 2.0 * self.margin) as i32;
+        let height = (map_height_m * self.scale + 2.0 * self.margin) as i32;
+
+        let mut doc = Document::new()
+            .set("width", width)
+            .set("height", height)
+            .set("viewBox", (0, 0, width, height));
+
+        // Background
+        doc = doc.add(
+            Rectangle::new()
+                .set("x", 0)
+                .set("y", 0)
+                .set("width", width)
+                .set("height", height)
+                .set("fill", "white"),
+        );
+
+        // Detected walls
+        doc = doc.add(self.render_detected(slam, height as f32));
+
+        // Visibility graph
+        doc = doc.add(self.render_visibility_graph(graph, height as f32, true));
+
+        // Planned path (if provided)
+        if let Some(p) = path {
+            doc = doc.add(self.render_planned_path(p, height as f32));
+        }
+
+        // Ensure output directory exists
+        if let Some(parent) = std::path::Path::new(&self.output_path).parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+
+        svg::save(&self.output_path, &doc).expect("Failed to save SVG");
     }
 }
 

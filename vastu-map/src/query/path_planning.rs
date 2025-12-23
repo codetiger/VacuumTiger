@@ -331,6 +331,30 @@ impl VisibilityGraph {
     pub fn edge_count(&self) -> usize {
         self.edges.iter().map(|e| e.len()).sum::<usize>() / 2
     }
+
+    /// Get the adjacency list of edges.
+    ///
+    /// Returns a slice of edge lists, where each inner list contains
+    /// (neighbor_index, distance) pairs for the corresponding node.
+    pub fn edges(&self) -> &[Vec<(usize, f32)>] {
+        &self.edges
+    }
+
+    /// Get all unique edges as (from_node, to_node, distance) tuples.
+    ///
+    /// Each edge is returned only once (not duplicated for both directions).
+    pub fn edge_list(&self) -> Vec<(usize, usize, f32)> {
+        let mut edges = Vec::new();
+        for (from_idx, neighbors) in self.edges.iter().enumerate() {
+            for &(to_idx, dist) in neighbors {
+                // Only include each edge once (from < to)
+                if from_idx < to_idx {
+                    edges.push((from_idx, to_idx, dist));
+                }
+            }
+        }
+        edges
+    }
 }
 
 /// State for Dijkstra's algorithm priority queue.
@@ -418,6 +442,14 @@ impl PathPlanner {
             }
         }
 
+        // Try direct path first - much faster than building full visibility graph
+        if is_straight_path_clear(from, to, lines, self.config.robot_radius) {
+            return Some(Path {
+                points: vec![from, to],
+                length: from.distance(to),
+            });
+        }
+
         // Build visibility graph
         let graph = VisibilityGraph::build(
             lines,
@@ -450,6 +482,30 @@ impl PathPlanner {
     /// Get the configuration.
     pub fn config(&self) -> &PathPlanningConfig {
         &self.config
+    }
+
+    /// Build a visibility graph for visualization.
+    ///
+    /// This builds the full visibility graph without planning a path,
+    /// useful for debugging and visualization purposes.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - Start position
+    /// * `to` - Goal position
+    /// * `lines` - Map lines (obstacles)
+    ///
+    /// # Returns
+    ///
+    /// The visibility graph with all nodes and edges.
+    pub fn build_graph(&self, from: Point2D, to: Point2D, lines: &[Line2D]) -> VisibilityGraph {
+        VisibilityGraph::build(
+            lines,
+            from,
+            to,
+            self.config.robot_radius,
+            self.config.max_nodes,
+        )
     }
 }
 
