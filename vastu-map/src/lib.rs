@@ -120,7 +120,6 @@ pub mod loop_closure;
 pub mod matching;
 pub mod motion_model;
 pub mod odometry;
-pub mod preprocessing;
 pub mod query;
 pub mod vector_map;
 

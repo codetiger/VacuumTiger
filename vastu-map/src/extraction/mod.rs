@@ -48,14 +48,12 @@ pub mod split_merge;
 pub mod traits;
 
 pub use corner_detection::{
-    CornerConfig, deduplicate_corners, detect_all_corners, detect_corners,
-    detect_curvature_corners, detect_hybrid_corners,
+    CornerConfig, deduplicate_corners, detect_corners, detect_curvature_corners,
+    detect_hybrid_corners,
 };
 pub use line_fitting::{
-    FitError, LineFitConfig, compute_range_weights, fit_line, fit_line_checked,
-    fit_line_from_sensor, fit_line_from_sensor_with_config, fit_line_segment, fit_line_weighted,
-    fit_line_weighted_with_config, fit_line_with_config, fitting_error, fitting_error_weighted,
-    max_distance_point, split_line_by_length, split_lines_by_length,
+    FitError, compute_range_weights, fit_line, fit_line_from_sensor, fit_line_weighted,
+    fitting_error, fitting_error_weighted, max_distance_point, split_line_by_length,
 };
 // Re-export from ransac_lines module
 pub use ransac_lines::{

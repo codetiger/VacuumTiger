@@ -18,86 +18,11 @@
 //! let points = vec![/* lidar hits */];
 //! let line = fit_line_from_sensor(&points, sensor_pos, None);
 //! ```
-//!
-//! # Error Handling
-//!
-//! For explicit error handling, use the `_checked` variants that return `Result`:
-//!
-//! ```rust,ignore
-//! use vastu_map::extraction::{fit_line_checked, FitError};
-//!
-//! match fit_line_checked(&points) {
-//!     Ok(line) => println!("Fitted line: {:?}", line),
-//!     Err(FitError::InsufficientPoints { got, required }) => {
-//!         println!("Need {} points, got {}", required, got);
-//!     }
-//!     Err(FitError::DegenerateGeometry) => {
-//!         println!("Points are collocated or form a circle");
-//!     }
-//! }
-//! ```
 
 use crate::config::LidarNoiseModel;
 use crate::core::Point2D;
 use crate::core::math::{compute_centroid, compute_covariance, principal_direction};
 use crate::features::Line2D;
-
-// ============================================================================
-// Configuration
-// ============================================================================
-
-/// Configuration for line fitting operations.
-///
-/// Controls how lines are fitted to point sets, including maximum line length
-/// constraints that can improve robustness by creating smaller line segments
-/// that are later merged by the integration layer.
-///
-/// # Example
-/// ```
-/// use vastu_map::extraction::LineFitConfig;
-///
-/// // Create config with 1m max line length
-/// let config = LineFitConfig::new()
-///     .with_max_line_length(1.0);
-///
-/// // Lines longer than 1m will be split into smaller segments
-/// ```
-#[derive(Debug, Clone, Default)]
-pub struct LineFitConfig {
-    /// Maximum length for a single line segment.
-    ///
-    /// If a fitted line exceeds this length, it will be split into multiple
-    /// smaller segments. This can improve robustness as shorter segments are
-    /// less prone to fitting errors from outliers.
-    ///
-    /// Set to `None` (default) for no length limit.
-    pub max_line_length: Option<f32>,
-}
-
-impl LineFitConfig {
-    /// Create a new configuration with default settings.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the maximum line length.
-    ///
-    /// Lines longer than this will be split into smaller segments.
-    /// Pass `None` to disable length limiting (default).
-    ///
-    /// # Arguments
-    /// * `length` - Maximum length in meters, or None for no limit
-    pub fn with_max_line_length(mut self, length: f32) -> Self {
-        self.max_line_length = Some(length);
-        self
-    }
-
-    /// Set the maximum line length (optional variant).
-    pub fn with_max_line_length_opt(mut self, length: Option<f32>) -> Self {
-        self.max_line_length = length;
-        self
-    }
-}
 
 // ============================================================================
 // Line Splitting
@@ -166,17 +91,6 @@ pub fn split_line_by_length(line: &Line2D, max_length: f32) -> Vec<Line2D> {
     }
 
     segments
-}
-
-/// Split multiple lines by maximum length.
-///
-/// Convenience function that applies `split_line_by_length` to all lines.
-pub fn split_lines_by_length(lines: &[Line2D], max_length: f32) -> Vec<Line2D> {
-    let mut result = Vec::new();
-    for line in lines {
-        result.extend(split_line_by_length(line, max_length));
-    }
-    result
 }
 
 // ============================================================================
@@ -316,29 +230,6 @@ fn fit_line_impl(points: &[Point2D]) -> Result<Line2D, FitError> {
     );
 
     Ok(Line2D::with_point_count(start, end, points.len() as u32))
-}
-
-/// Fit a line to a set of points using Total Least Squares (with explicit errors).
-///
-/// This is the error-returning variant of [`fit_line`]. Use this when you need
-/// to distinguish between different failure modes.
-///
-/// # Errors
-///
-/// Returns `Err(FitError::InsufficientPoints)` if fewer than 2 points provided.
-/// Returns `Err(FitError::DegenerateGeometry)` if points are collocated or form a circle.
-///
-/// # Example
-/// ```
-/// use vastu_map::extraction::{fit_line_checked, FitError};
-/// use vastu_map::core::Point2D;
-///
-/// let points = vec![Point2D::new(0.0, 0.0)]; // Only one point
-/// let result = fit_line_checked(&points);
-/// assert!(matches!(result, Err(FitError::InsufficientPoints { .. })));
-/// ```
-pub fn fit_line_checked(points: &[Point2D]) -> Result<Line2D, FitError> {
-    fit_line_impl(points)
 }
 
 /// Simple line fitting fallback (shared implementation).
@@ -526,119 +417,6 @@ pub fn fit_line_from_sensor(
     fit_line_weighted(points, &weights)
 }
 
-// ============================================================================
-// Config-based Line Fitting (with max length splitting)
-// ============================================================================
-
-/// Fit a line to points with configuration, potentially splitting into segments.
-///
-/// If `config.max_line_length` is set, lines longer than this threshold
-/// will be split into smaller segments for improved robustness.
-///
-/// # Arguments
-/// * `points` - Points to fit line to
-/// * `config` - Configuration controlling fitting behavior
-///
-/// # Returns
-/// Vector of fitted line segments. Returns empty if fitting fails.
-///
-/// # Example
-/// ```
-/// use vastu_map::extraction::{fit_line_with_config, LineFitConfig};
-/// use vastu_map::core::Point2D;
-///
-/// let points: Vec<Point2D> = (0..50)
-///     .map(|i| Point2D::new(i as f32 * 0.1, 0.0))  // 5m line
-///     .collect();
-///
-/// let config = LineFitConfig::new().with_max_line_length(1.0);
-/// let lines = fit_line_with_config(&points, &config);
-///
-/// // Line is split into ~5 segments of ~1m each
-/// assert!(lines.len() >= 4);
-/// ```
-pub fn fit_line_with_config(points: &[Point2D], config: &LineFitConfig) -> Vec<Line2D> {
-    let Some(line) = fit_line(points) else {
-        return Vec::new();
-    };
-
-    match config.max_line_length {
-        Some(max_len) if max_len > 0.0 => split_line_by_length(&line, max_len),
-        _ => vec![line],
-    }
-}
-
-/// Fit a line to points with weighting and configuration.
-///
-/// Combines weighted fitting with max length splitting for robust line extraction.
-///
-/// # Arguments
-/// * `points` - Points to fit line to
-/// * `weights` - Weight for each point
-/// * `config` - Configuration controlling fitting behavior
-///
-/// # Returns
-/// Vector of fitted line segments. Returns empty if fitting fails.
-pub fn fit_line_weighted_with_config(
-    points: &[Point2D],
-    weights: &[f32],
-    config: &LineFitConfig,
-) -> Vec<Line2D> {
-    let Some(line) = fit_line_weighted(points, weights) else {
-        return Vec::new();
-    };
-
-    match config.max_line_length {
-        Some(max_len) if max_len > 0.0 => split_line_by_length(&line, max_len),
-        _ => vec![line],
-    }
-}
-
-/// Fit a line using sensor-based weighting with configuration.
-///
-/// Combines range-based weighting with max length splitting.
-///
-/// # Arguments
-/// * `points` - Points to fit line to
-/// * `sensor_pos` - Position of the sensor (typically robot position)
-/// * `noise_model` - Lidar noise model parameters (uses default if None)
-/// * `config` - Configuration controlling fitting behavior
-///
-/// # Returns
-/// Vector of fitted line segments. Returns empty if fitting fails.
-///
-/// # Example
-/// ```
-/// use vastu_map::extraction::{fit_line_from_sensor_with_config, LineFitConfig};
-/// use vastu_map::core::Point2D;
-///
-/// let sensor_pos = Point2D::new(0.0, 0.0);
-/// let points: Vec<Point2D> = (1..30)
-///     .map(|i| Point2D::new(i as f32 * 0.1, 1.0))  // ~3m wall
-///     .collect();
-///
-/// let config = LineFitConfig::new().with_max_line_length(0.5);
-/// let lines = fit_line_from_sensor_with_config(&points, sensor_pos, None, &config);
-///
-/// // Wall is split into ~6 segments of ~0.5m each
-/// assert!(lines.len() >= 5);
-/// ```
-pub fn fit_line_from_sensor_with_config(
-    points: &[Point2D],
-    sensor_pos: Point2D,
-    noise_model: Option<&LidarNoiseModel>,
-    config: &LineFitConfig,
-) -> Vec<Line2D> {
-    let Some(line) = fit_line_from_sensor(points, sensor_pos, noise_model) else {
-        return Vec::new();
-    };
-
-    match config.max_line_length {
-        Some(max_len) if max_len > 0.0 => split_line_by_length(&line, max_len),
-        _ => vec![line],
-    }
-}
-
 /// Compute weighted fitting error (RMS distance to line, weighted by measurement quality).
 ///
 /// Returns the weighted root-mean-square of perpendicular distances.
@@ -701,29 +479,6 @@ pub fn max_distance_point(points: &[Point2D], line: &Line2D) -> Option<(usize, f
     }
 
     Some((max_idx, max_dist))
-}
-
-/// Fit a line segment to points with known start and end indices.
-///
-/// The endpoints are snapped to actual point positions for accurate
-/// segment boundaries.
-pub fn fit_line_segment(points: &[Point2D], start_idx: usize, end_idx: usize) -> Option<Line2D> {
-    if start_idx >= points.len() || end_idx >= points.len() || start_idx >= end_idx {
-        return None;
-    }
-
-    let segment_points = &points[start_idx..=end_idx];
-    let mut line = fit_line(segment_points)?;
-
-    // Snap endpoints to actual point projections
-    // This ensures the segment covers exactly the input points
-    let start_proj = line.project_point_onto_line(points[start_idx]);
-    let end_proj = line.project_point_onto_line(points[end_idx]);
-
-    line.start = start_proj;
-    line.end = end_proj;
-
-    Some(line)
 }
 
 #[cfg(test)]
@@ -861,23 +616,6 @@ mod tests {
 
         assert_eq!(idx, 1);
         assert_relative_eq!(dist, 3.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_fit_line_segment() {
-        let points = vec![
-            Point2D::new(0.0, 0.0), // idx 0
-            Point2D::new(1.0, 0.0), // idx 1
-            Point2D::new(2.0, 0.0), // idx 2
-            Point2D::new(3.0, 0.0), // idx 3
-            Point2D::new(4.0, 0.0), // idx 4
-        ];
-
-        let line = fit_line_segment(&points, 1, 3).unwrap();
-
-        // Should span from point 1 to point 3
-        assert_relative_eq!(line.start.x, 1.0, epsilon = 0.01);
-        assert_relative_eq!(line.end.x, 3.0, epsilon = 0.01);
     }
 
     // ========================================
@@ -1144,117 +882,5 @@ mod tests {
 
         let segments_neg = split_line_by_length(&line, -1.0);
         assert_eq!(segments_neg.len(), 1);
-    }
-
-    #[test]
-    fn test_split_lines_by_length() {
-        let lines = vec![
-            Line2D::with_point_count(Point2D::new(0.0, 0.0), Point2D::new(3.0, 0.0), 30),
-            Line2D::with_point_count(Point2D::new(0.0, 1.0), Point2D::new(0.5, 1.0), 5),
-        ];
-
-        let segments = split_lines_by_length(&lines, 1.0);
-
-        // First line splits into 3, second line stays as 1
-        assert_eq!(segments.len(), 4);
-    }
-
-    // ========================================
-    // Config-based Fitting Tests
-    // ========================================
-
-    #[test]
-    fn test_line_fit_config_default() {
-        let config = LineFitConfig::default();
-        assert!(config.max_line_length.is_none());
-    }
-
-    #[test]
-    fn test_line_fit_config_builder() {
-        let config = LineFitConfig::new().with_max_line_length(1.5);
-
-        assert_eq!(config.max_line_length, Some(1.5));
-    }
-
-    #[test]
-    fn test_fit_line_with_config_no_split() {
-        let points: Vec<Point2D> = (0..10).map(|i| Point2D::new(i as f32 * 0.1, 0.0)).collect();
-
-        // Config with no max length
-        let config = LineFitConfig::new();
-        let lines = fit_line_with_config(&points, &config);
-
-        assert_eq!(lines.len(), 1);
-    }
-
-    #[test]
-    fn test_fit_line_with_config_with_split() {
-        // Create a 5m horizontal line
-        let points: Vec<Point2D> = (0..51).map(|i| Point2D::new(i as f32 * 0.1, 0.0)).collect();
-
-        // Config with 1m max length
-        let config = LineFitConfig::new().with_max_line_length(1.0);
-        let lines = fit_line_with_config(&points, &config);
-
-        // 5m line should split into 5 segments
-        assert_eq!(lines.len(), 5);
-
-        // Each segment should be approximately 1m
-        for line in &lines {
-            assert!(
-                line.length() <= 1.01,
-                "Line length {} > 1.01",
-                line.length()
-            );
-        }
-    }
-
-    #[test]
-    fn test_fit_line_with_config_empty_input() {
-        let points: Vec<Point2D> = vec![];
-        let config = LineFitConfig::new().with_max_line_length(1.0);
-
-        let lines = fit_line_with_config(&points, &config);
-
-        assert!(lines.is_empty());
-    }
-
-    #[test]
-    fn test_fit_line_from_sensor_with_config() {
-        let sensor_pos = Point2D::new(0.0, 0.0);
-        let points: Vec<Point2D> = (10..40)
-            .map(|i| Point2D::new(i as f32 * 0.1, 1.0)) // 3m wall at y=1
-            .collect();
-
-        let config = LineFitConfig::new().with_max_line_length(0.5);
-        let lines = fit_line_from_sensor_with_config(&points, sensor_pos, None, &config);
-
-        // 3m line should split into 6 segments of ~0.5m
-        assert!(
-            lines.len() >= 5,
-            "Expected >= 5 segments, got {}",
-            lines.len()
-        );
-
-        // All segments should be approximately horizontal
-        for line in &lines {
-            assert!(
-                line.angle().abs() < 0.1,
-                "Line angle {} is not horizontal",
-                line.angle()
-            );
-        }
-    }
-
-    #[test]
-    fn test_fit_line_weighted_with_config() {
-        let points: Vec<Point2D> = (0..31).map(|i| Point2D::new(i as f32 * 0.1, 0.0)).collect();
-        let weights: Vec<f32> = vec![1.0; 31];
-
-        let config = LineFitConfig::new().with_max_line_length(1.0);
-        let lines = fit_line_weighted_with_config(&points, &weights, &config);
-
-        // 3m line should split into 3 segments
-        assert_eq!(lines.len(), 3);
     }
 }

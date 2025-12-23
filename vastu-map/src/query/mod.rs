@@ -42,15 +42,9 @@ pub use frontier::{
     FrontierConfig, FrontierDetector, cluster_centroid, cluster_frontiers, detect_frontiers,
     get_best_frontier, rank_frontiers,
 };
-pub use occupancy::{
-    OccupancyConfig, is_path_clear, is_region_clear, query_occupancy, query_occupancy_batch,
-    query_occupancy_indexed,
-};
+pub use occupancy::{OccupancyConfig, is_path_clear, is_region_clear, query_occupancy};
 pub use path_planning::is_straight_path_clear;
-pub use raycast::{
-    RaycastResult, raycast, raycast_360, raycast_batch, raycast_detailed, raycast_indexed,
-    raycast_sweep,
-};
+pub use raycast::{RaycastResult, raycast, raycast_detailed};
 
 // Re-export CBVG types
 pub use cbvg::{CBVGConfig, CBVGNode, ClearanceVisibilityGraph, NodeType};

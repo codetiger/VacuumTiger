@@ -79,16 +79,6 @@ impl Corner2D {
         self.position.approx_eq(other.position, pos_epsilon)
             && (self.angle - other.angle).abs() <= angle_epsilon
     }
-
-    /// Check if the corner angle is valid (between min and max thresholds).
-    ///
-    /// # Arguments
-    /// * `min_angle` - Minimum valid angle in radians
-    /// * `max_angle` - Maximum valid angle in radians
-    #[inline]
-    pub fn is_valid_angle(&self, min_angle: f32, max_angle: f32) -> bool {
-        self.angle >= min_angle && self.angle <= max_angle
-    }
 }
 
 impl Default for Corner2D {
@@ -286,14 +276,6 @@ mod tests {
         let c2 = Corner2D::new(Point2D::new(3.0, 4.0), 2, 3, FRAC_PI_2);
 
         assert_eq!(c1.distance(&c2), 5.0);
-    }
-
-    #[test]
-    fn test_corner_is_valid_angle() {
-        let corner = Corner2D::new(Point2D::new(0.0, 0.0), 0, 1, FRAC_PI_2);
-
-        assert!(corner.is_valid_angle(FRAC_PI_4, std::f32::consts::PI - FRAC_PI_4));
-        assert!(!corner.is_valid_angle(FRAC_PI_2 + 0.1, std::f32::consts::PI));
     }
 
     #[test]

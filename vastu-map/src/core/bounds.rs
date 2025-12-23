@@ -75,15 +75,6 @@ impl Bounds {
         }
     }
 
-    /// Create bounds from center and half-size.
-    #[inline]
-    pub fn from_center_half_size(center: Point2D, half_size: Point2D) -> Self {
-        Self {
-            min: center - half_size,
-            max: center + half_size,
-        }
-    }
-
     /// Width of the bounding box (x extent).
     #[inline]
     pub fn width(&self) -> f32 {
@@ -109,18 +100,6 @@ impl Bounds {
             (self.min.x + self.max.x) * 0.5,
             (self.min.y + self.max.y) * 0.5,
         )
-    }
-
-    /// Half-size of the bounding box.
-    #[inline]
-    pub fn half_size(&self) -> Point2D {
-        Point2D::new(self.width() * 0.5, self.height() * 0.5)
-    }
-
-    /// Area of the bounding box.
-    #[inline]
-    pub fn area(&self) -> f32 {
-        self.width() * self.height()
     }
 
     /// Check if a point is inside the bounding box.
@@ -238,14 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn test_from_center_half_size() {
-        let bounds = Bounds::from_center_half_size(Point2D::new(5.0, 5.0), Point2D::new(2.0, 3.0));
-
-        assert_eq!(bounds.min, Point2D::new(3.0, 2.0));
-        assert_eq!(bounds.max, Point2D::new(7.0, 8.0));
-    }
-
-    #[test]
     fn test_dimensions() {
         let bounds = Bounds::new(Point2D::new(1.0, 2.0), Point2D::new(5.0, 8.0));
 
@@ -253,8 +224,6 @@ mod tests {
         assert_eq!(bounds.height(), 6.0);
         assert_eq!(bounds.size(), Point2D::new(4.0, 6.0));
         assert_eq!(bounds.center(), Point2D::new(3.0, 5.0));
-        assert_eq!(bounds.half_size(), Point2D::new(2.0, 3.0));
-        assert_eq!(bounds.area(), 24.0);
     }
 
     #[test]

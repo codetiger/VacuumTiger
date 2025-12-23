@@ -56,12 +56,6 @@ impl FeatureSet {
         self.lines.push_line(&line);
     }
 
-    /// Add a line from components.
-    #[inline]
-    pub fn add_line_from_points(&mut self, start: Point2D, end: Point2D) {
-        self.lines.push_full(start.x, start.y, end.x, end.y, 1, 0);
-    }
-
     /// Number of lines.
     #[inline]
     pub fn line_count(&self) -> usize {
@@ -94,13 +88,6 @@ impl FeatureSet {
     /// Iterate over lines.
     pub fn iter_lines(&self) -> impl Iterator<Item = Line2D> + '_ {
         self.lines.iter()
-    }
-
-    /// Remove a line by index (swap-remove).
-    pub fn remove_line(&mut self, index: usize) {
-        self.lines.swap_remove(index);
-        // Note: This invalidates corner line indices!
-        // Caller should update or clear corners after removing lines.
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -201,31 +188,12 @@ impl FeatureSet {
         self.corners.clear();
     }
 
-    /// Clear only corners (useful after modifying lines).
-    pub fn clear_corners(&mut self) {
-        self.corners.clear();
-    }
-
     /// Find the nearest line to a point.
     ///
     /// Returns (index, distance) or None if no lines.
     #[inline]
     pub fn nearest_line(&self, point: Point2D) -> Option<(usize, f32)> {
         self.lines.nearest_line(point)
-    }
-
-    /// Find the nearest corner to a point.
-    ///
-    /// Returns (index, distance) or None if no corners.
-    #[inline]
-    pub fn nearest_corner(&self, point: Point2D) -> Option<(usize, f32)> {
-        self.corners.nearest_corner(point)
-    }
-
-    /// Compute distances from a point to all lines.
-    #[inline]
-    pub fn distances_to_lines(&self, point: Point2D) -> Vec<f32> {
-        self.lines.distances_to_point(point)
     }
 
     /// Merge another feature set into this one.
@@ -261,7 +229,7 @@ mod tests {
     fn test_add_line() {
         let mut fs = FeatureSet::new();
         fs.add_line(Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(1.0, 0.0)));
-        fs.add_line_from_points(Point2D::new(0.0, 1.0), Point2D::new(1.0, 1.0));
+        fs.add_line(Line2D::new(Point2D::new(0.0, 1.0), Point2D::new(1.0, 1.0)));
 
         assert_eq!(fs.line_count(), 2);
         assert!(!fs.is_empty());

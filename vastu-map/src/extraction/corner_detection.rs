@@ -164,31 +164,6 @@ pub fn detect_corners(lines: &[Line2D], config: &CornerConfig) -> Vec<Corner2D> 
     corners
 }
 
-/// Detect corners from all pairs of lines (not just adjacent).
-///
-/// This is useful for finding corners in maps where lines may not be
-/// in sequential order.
-///
-/// # Note
-/// This has O(n²) complexity, so use sparingly for large line sets.
-pub fn detect_all_corners(lines: &[Line2D], config: &CornerConfig) -> Vec<Corner2D> {
-    if lines.len() < 2 {
-        return Vec::new();
-    }
-
-    let mut corners = Vec::new();
-
-    for i in 0..lines.len() {
-        for j in i + 1..lines.len() {
-            if let Some(corner) = detect_corner_between(&lines[i], &lines[j], i, j, config) {
-                corners.push(corner);
-            }
-        }
-    }
-
-    corners
-}
-
 /// Detect corner between two specific lines.
 fn detect_corner_between(
     line1: &Line2D,
@@ -603,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_all_corners() {
+    fn test_detect_multiple_corners() {
         // Three lines forming two corners
         let lines = vec![
             Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(1.0, 0.0)),

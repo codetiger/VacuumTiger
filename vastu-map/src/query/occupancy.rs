@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::Occupancy;
 use crate::core::{Bounds, Point2D};
 use crate::features::Line2D;
-use crate::integration::SpatialIndex;
 
 /// Configuration for occupancy queries.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -105,58 +104,6 @@ pub fn query_occupancy(
 
     // Point is far from all lines - unknown
     Occupancy::Unknown
-}
-
-/// Query occupancy using spatial index for efficiency.
-pub fn query_occupancy_indexed(
-    point: Point2D,
-    lines: &[Line2D],
-    index: &SpatialIndex,
-    bounds: Option<&Bounds>,
-    config: &OccupancyConfig,
-) -> Occupancy {
-    // First check if point is outside map bounds
-    if let Some(b) = bounds
-        && !b.contains(point)
-    {
-        return Occupancy::Unknown;
-    }
-
-    if lines.is_empty() {
-        return Occupancy::Unknown;
-    }
-
-    // Use spatial index to find nearest line
-    if let Some((_idx, dist)) = index.nearest_line(point) {
-        // Point is very close to a line - occupied
-        if dist < config.obstacle_distance {
-            return Occupancy::Occupied;
-        }
-
-        // Check if any lines are within known distance
-        let nearby = index.lines_within_distance(point, config.known_distance);
-        if !nearby.is_empty() {
-            return Occupancy::Free;
-        }
-    }
-
-    // No nearby lines - unknown
-    Occupancy::Unknown
-}
-
-/// Query occupancy for multiple points.
-///
-/// Returns occupancy for each point.
-pub fn query_occupancy_batch(
-    points: &[Point2D],
-    lines: &[Line2D],
-    bounds: Option<&Bounds>,
-    config: &OccupancyConfig,
-) -> Vec<Occupancy> {
-    points
-        .iter()
-        .map(|&p| query_occupancy(p, lines, bounds, config))
-        .collect()
 }
 
 /// Check if a path is collision-free.
@@ -305,25 +252,6 @@ mod tests {
         let result = query_occupancy(Point2D::zero(), &lines, None, &config);
 
         assert_eq!(result, Occupancy::Unknown);
-    }
-
-    #[test]
-    fn test_query_batch() {
-        let lines = make_room();
-        // Center is 5m from walls, so need larger known_distance
-        let config = OccupancyConfig::default().with_known_distance(6.0);
-
-        let points = vec![
-            Point2D::zero(),         // Free (center)
-            Point2D::new(0.0, -5.0), // Occupied (on wall)
-            Point2D::new(2.0, 0.0),  // Free (inside room, near walls)
-        ];
-
-        let results = query_occupancy_batch(&points, &lines, None, &config);
-
-        assert_eq!(results[0], Occupancy::Free);
-        assert_eq!(results[1], Occupancy::Occupied);
-        assert_eq!(results[2], Occupancy::Free);
     }
 
     #[test]

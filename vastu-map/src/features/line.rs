@@ -135,68 +135,6 @@ impl Line2D {
         )
     }
 
-    /// Get a perpendicular line at parameter t along this line.
-    ///
-    /// Returns a unit-length line perpendicular to this line,
-    /// centered at `point_at(t)`.
-    ///
-    /// # Arguments
-    /// * `t` - Parameter along line (0=start, 1=end, 0.5=midpoint)
-    /// * `length` - Length of the perpendicular line (centered on the point)
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(4.0, 0.0));
-    /// let perp = line.perpendicular_at(0.5, 2.0);
-    /// // perp goes from (2, -1) to (2, 1) - perpendicular at midpoint
-    /// ```
-    #[inline]
-    pub fn perpendicular_at(&self, t: f32, length: f32) -> Line2D {
-        let center = self.point_at(t);
-        let normal = self.normal();
-        let half_len = length * 0.5;
-
-        Line2D::new(
-            Point2D::new(
-                center.x - normal.x * half_len,
-                center.y - normal.y * half_len,
-            ),
-            Point2D::new(
-                center.x + normal.x * half_len,
-                center.y + normal.y * half_len,
-            ),
-        )
-    }
-
-    /// Extend this line by a factor in both directions.
-    ///
-    /// # Arguments
-    /// * `factor` - Extension factor (1.0 = no change, 2.0 = double length)
-    ///
-    /// The line is extended symmetrically from its midpoint.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0));
-    /// let extended = line.extended(2.0);
-    /// // extended goes from (-1, 0) to (3, 0) - doubled in length
-    /// ```
-    #[inline]
-    pub fn extended(&self, factor: f32) -> Line2D {
-        let mid = self.midpoint();
-        let half_dir = Point2D::new(
-            (self.end.x - self.start.x) * 0.5 * factor,
-            (self.end.y - self.start.y) * 0.5 * factor,
-        );
-
-        Line2D::full(
-            Point2D::new(mid.x - half_dir.x, mid.y - half_dir.y),
-            Point2D::new(mid.x + half_dir.x, mid.y + half_dir.y),
-            self.observation_count,
-            self.point_count,
-        )
-    }
-
     /// Angle of the line direction from X-axis (in radians, [-π, π]).
     #[inline]
     pub fn angle(&self) -> f32 {
@@ -261,13 +199,6 @@ impl Line2D {
 
         let to_point = point - self.start;
         to_point.dot(dir) / len_sq
-    }
-
-    /// Get the projected point on the infinite line.
-    #[inline]
-    pub fn project_point_onto_line(&self, point: Point2D) -> Point2D {
-        let t = self.project_point(point);
-        self.point_at(t)
     }
 
     /// Check if a projection parameter t falls within the segment [0, 1].
@@ -562,50 +493,6 @@ mod tests {
         assert_eq!(line.point_at(0.0), line.start);
         assert_eq!(line.point_at(1.0), line.end);
         assert_eq!(line.point_at(0.5), Point2D::new(5.0, 0.0));
-    }
-
-    #[test]
-    fn test_perpendicular_at() {
-        // Horizontal line
-        let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(4.0, 0.0));
-
-        // Perpendicular at midpoint with length 2
-        let perp = line.perpendicular_at(0.5, 2.0);
-
-        // Center should be at (2, 0)
-        assert_relative_eq!(perp.midpoint().x, 2.0, epsilon = 1e-6);
-        assert_relative_eq!(perp.midpoint().y, 0.0, epsilon = 1e-6);
-
-        // Should be vertical (length 2)
-        assert_relative_eq!(perp.length(), 2.0, epsilon = 1e-6);
-
-        // Endpoints should be at (2, -1) and (2, 1)
-        assert_relative_eq!(perp.start.x, 2.0, epsilon = 1e-6);
-        assert_relative_eq!(perp.end.x, 2.0, epsilon = 1e-6);
-        assert_relative_eq!((perp.start.y - perp.end.y).abs(), 2.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_extended() {
-        let line = Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(2.0, 0.0));
-
-        // Double the length
-        let ext = line.extended(2.0);
-
-        // Midpoint should be same
-        assert_relative_eq!(ext.midpoint().x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(ext.midpoint().y, 0.0, epsilon = 1e-6);
-
-        // Length should be doubled
-        assert_relative_eq!(ext.length(), 4.0, epsilon = 1e-6);
-
-        // Endpoints should be at (-1, 0) and (3, 0)
-        assert_relative_eq!(ext.start.x, -1.0, epsilon = 1e-6);
-        assert_relative_eq!(ext.end.x, 3.0, epsilon = 1e-6);
-
-        // No change when factor is 1.0
-        let same = line.extended(1.0);
-        assert_relative_eq!(same.length(), 2.0, epsilon = 1e-6);
     }
 
     #[test]
