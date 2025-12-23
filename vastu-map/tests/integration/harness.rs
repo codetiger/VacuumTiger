@@ -32,7 +32,7 @@ use vastu_map::core::Pose2D;
 use vastu_map::core::math::normalize_angle;
 use vastu_map::integration::{ScanStore, ScanStoreConfig};
 use vastu_map::odometry::WheelOdometry;
-use vastu_map::query::{PathPlanningConfig, VisibilityGraph};
+use vastu_map::query::ClearanceVisibilityGraph;
 use vastu_map::{Map, Path as PlannedPath, VectorMap, VectorMapConfig};
 
 use crate::adapters::lidar_to_point_cloud;
@@ -186,22 +186,16 @@ impl HarnessConfig {
     }
 
     /// Create config for the medium_room map (8x8m with obstacles).
-    ///
-    /// Uses non-conservative path planning to allow paths to frontiers
-    /// (which are at map edges and may be in "unknown" space).
     pub fn medium_room() -> Self {
         let map_file = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/integration/scenarios/maps/medium_room.yaml"
         );
-        // Load base config from YAML, then override path planning for exploration
-        let slam = load_slam_config()
-            .with_path_planning(PathPlanningConfig::default().with_conservative(false));
         Self {
             map_file: map_file.to_string(),
             start_x: 4.0,
             start_y: 4.0,
-            slam,
+            slam: load_slam_config(),
             ..Default::default()
         }
     }
@@ -631,17 +625,17 @@ impl TestHarness {
         }
     }
 
-    /// Finalize the test with visibility graph visualization.
+    /// Finalize the test with CBVG visualization.
     ///
-    /// Extended version of `finalize` that also renders the visibility graph
-    /// and planned path in the SVG output.
+    /// Extended version of `finalize` that also renders the clearance-based
+    /// visibility graph and planned path in the SVG output.
     ///
     /// # Arguments
-    /// * `graph` - Optional visibility graph to visualize
+    /// * `graph` - Optional CBVG to visualize
     /// * `path` - Optional planned path to visualize
     pub fn finalize_with_graph(
         &mut self,
-        graph: Option<&VisibilityGraph>,
+        graph: Option<&ClearanceVisibilityGraph>,
         path: Option<&PlannedPath>,
     ) -> TestResult {
         let final_pose = self.slam.current_pose();

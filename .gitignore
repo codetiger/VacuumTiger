@@ -58,3 +58,5 @@ analysis/
 *.log
 
 results/
+dataset/
+maps/

@@ -389,6 +389,20 @@ pub trait Map: Send + Sync {
     /// Path if one exists, None otherwise.
     fn get_path(&self, from: Point2D, to: Point2D) -> Option<Path>;
 
+    /// Find the nearest CBVG node to a target point.
+    ///
+    /// This is useful for exploration to find reachable navigation targets
+    /// near frontiers. CBVG nodes are guaranteed to be in visible, reachable
+    /// areas with proper wall clearance.
+    ///
+    /// # Arguments
+    /// * `target` - The point to find the nearest node to
+    /// * `max_distance` - Maximum distance to search
+    ///
+    /// # Returns
+    /// The position of the nearest CBVG node, or None if no node is within range.
+    fn nearest_cbvg_node(&self, target: Point2D, max_distance: f32) -> Option<Point2D>;
+
     /// Check if a straight-line path between two points is clear.
     ///
     /// # Arguments

@@ -1,7 +1,6 @@
 //! Configuration for exploration behavior.
 
 use crate::query::frontier::FrontierConfig;
-use crate::query::path_planning::PathPlanningConfig;
 
 use super::planner::PlannerConfig;
 
@@ -40,9 +39,6 @@ pub struct ExplorationConfig {
     /// Note: With shadow-based frontiers, viewpoints are already safe observation points.
     pub frontier_config: FrontierConfig,
 
-    /// Path planning configuration.
-    pub path_planning_config: PathPlanningConfig,
-
     /// Region-based exploration planner configuration.
     pub planner_config: PlannerConfig,
 
@@ -66,7 +62,6 @@ impl Default for ExplorationConfig {
             robot_radius: 0.15,
             lookahead_distance: 0.3,
             frontier_config: FrontierConfig::default(),
-            path_planning_config: PathPlanningConfig::default().with_robot_radius(0.15),
             planner_config: PlannerConfig::default(),
             history_cell_size: 0.5,
             history_max_recent: 100,
@@ -113,7 +108,6 @@ impl ExplorationConfig {
     /// Builder-style setter for robot radius.
     pub fn with_robot_radius(mut self, radius: f32) -> Self {
         self.robot_radius = radius;
-        self.path_planning_config = self.path_planning_config.with_robot_radius(radius);
         self
     }
 
@@ -126,12 +120,6 @@ impl ExplorationConfig {
     /// Builder-style setter for frontier config.
     pub fn with_frontier_config(mut self, config: FrontierConfig) -> Self {
         self.frontier_config = config;
-        self
-    }
-
-    /// Builder-style setter for path planning config.
-    pub fn with_path_planning_config(mut self, config: PathPlanningConfig) -> Self {
-        self.path_planning_config = config;
         self
     }
 
@@ -177,6 +165,5 @@ mod tests {
 
         assert_eq!(config.max_linear_speed, 0.5);
         assert_eq!(config.robot_radius, 0.2);
-        assert_eq!(config.path_planning_config.robot_radius, 0.2);
     }
 }

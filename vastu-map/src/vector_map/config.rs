@@ -6,7 +6,8 @@ use crate::extraction::{CornerConfig, RansacLineConfig, SplitMergeConfig};
 use crate::integration::{AssociationConfig, MergerConfig};
 use crate::loop_closure::LoopClosureConfig;
 use crate::matching::IcpConfig;
-use crate::query::{FrontierConfig, OccupancyConfig, PathPlanningConfig};
+use crate::query::cbvg::CBVGConfig;
+use crate::query::{FrontierConfig, OccupancyConfig};
 
 // ============================================================================
 // Configuration Validation
@@ -118,8 +119,9 @@ pub struct VectorMapConfig {
     /// Configuration for occupancy queries.
     pub occupancy: OccupancyConfig,
 
-    /// Configuration for path planning.
-    pub path_planning: PathPlanningConfig,
+    /// Configuration for clearance-based visibility graph (CBVG).
+    #[serde(default)]
+    pub cbvg: CBVGConfig,
 
     /// Configuration for loop closure detection.
     pub loop_closure: LoopClosureConfig,
@@ -151,7 +153,7 @@ impl Default for VectorMapConfig {
             merger: MergerConfig::default(),
             frontier: FrontierConfig::default(),
             occupancy: OccupancyConfig::default(),
-            path_planning: PathPlanningConfig::default(),
+            cbvg: CBVGConfig::default(),
             loop_closure: LoopClosureConfig::default(),
             min_match_confidence: 0.3,
             mapping_enabled: true,
@@ -306,17 +308,20 @@ impl VectorMapConfig {
         self
     }
 
-    /// Builder-style setter for robot radius (path planning).
+    /// Builder-style setter for robot radius.
     ///
-    /// Sets the robot radius used for collision checking in path planning.
+    /// Sets the robot radius used for collision checking in path planning
+    /// and frontier detection.
     pub fn with_robot_radius(mut self, radius: f32) -> Self {
-        self.path_planning.robot_radius = radius;
+        self.frontier.robot_radius = radius;
+        // Update CBVG narrow clearance to match (robot_radius + small margin)
+        self.cbvg.min_clearance_narrow = radius + 0.02;
         self
     }
 
-    /// Builder-style setter for path planning configuration.
-    pub fn with_path_planning(mut self, config: PathPlanningConfig) -> Self {
-        self.path_planning = config;
+    /// Builder-style setter for CBVG configuration.
+    pub fn with_cbvg(mut self, config: CBVGConfig) -> Self {
+        self.cbvg = config;
         self
     }
 

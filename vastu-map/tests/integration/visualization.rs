@@ -20,7 +20,7 @@ use vastu_map::Path as PlannedPath;
 use vastu_map::VectorMap;
 use vastu_map::core::{Point2D, Pose2D};
 use vastu_map::integration::ScanStore;
-use vastu_map::query::VisibilityGraph;
+use vastu_map::query::{ClearanceVisibilityGraph, NodeType};
 
 use crate::harness::TrajectoryHistory;
 use crate::metrics::TestMetrics;
@@ -655,41 +655,44 @@ impl Visualizer {
         Group::new().add(body).add(direction)
     }
 
-    /// Render a visibility graph showing nodes and edges.
+    /// Render a clearance-based visibility graph showing nodes and edges.
     ///
     /// # Arguments
-    /// * `graph` - The visibility graph to render
+    /// * `graph` - The CBVG to render
     /// * `svg_height` - SVG canvas height for coordinate transformation
     /// * `show_edges` - Whether to show edges (can be noisy for large graphs)
-    pub fn render_visibility_graph(
+    pub fn render_cbvg(
         &self,
-        graph: &VisibilityGraph,
+        graph: &ClearanceVisibilityGraph,
         svg_height: f32,
         show_edges: bool,
     ) -> Group {
-        let mut group = Group::new().set("id", "visibility_graph");
+        let mut group = Group::new().set("id", "cbvg");
 
         let nodes = graph.nodes();
-        let start_idx = graph.start_idx();
-        let goal_idx = graph.goal_idx();
 
         // Render edges first (so nodes appear on top)
         if show_edges {
-            let edge_group = self.render_graph_edges(graph, svg_height);
+            let edge_group = self.render_cbvg_edges(graph, svg_height);
             group = group.add(edge_group);
         }
 
         // Render nodes
-        for (idx, &node) in nodes.iter().enumerate() {
-            let (sx, sy) = self.transform_point(node, 0.0, 0.0, svg_height);
+        for node in nodes {
+            let (sx, sy) = self.transform_point(node.position, 0.0, 0.0, svg_height);
 
-            // Choose color based on node type
-            let (color, radius, opacity) = if idx == start_idx {
-                (colors::START_NODE, 6.0, 0.9)
-            } else if idx == goal_idx {
-                (colors::GOAL_NODE, 6.0, 0.9)
-            } else {
-                (colors::GRAPH_NODE, 4.0, 0.7)
+            // Choose color and size based on node type
+            let (color, radius, opacity) = match node.node_type {
+                NodeType::Robot => (colors::START_NODE, 6.0, 0.9),
+                NodeType::Goal => (colors::GOAL_NODE, 6.0, 0.9),
+                NodeType::Junction => ("#9966FF", 5.0, 0.8), // Purple for junctions
+                NodeType::MedialAxis => {
+                    if node.is_narrow_passage {
+                        ("#FF9900", 4.0, 0.7) // Orange for narrow passage nodes
+                    } else {
+                        (colors::GRAPH_NODE, 4.0, 0.7) // Default color for medial axis
+                    }
+                }
             };
 
             let circle = Circle::new()
@@ -705,29 +708,34 @@ impl Visualizer {
         group
     }
 
-    /// Render visibility graph edges.
-    fn render_graph_edges(&self, graph: &VisibilityGraph, svg_height: f32) -> Group {
-        let mut group = Group::new().set("id", "graph_edges");
+    /// Render CBVG edges.
+    fn render_cbvg_edges(&self, graph: &ClearanceVisibilityGraph, svg_height: f32) -> Group {
+        let mut group = Group::new().set("id", "cbvg_edges");
 
         let nodes = graph.nodes();
-        let edge_list = graph.edge_list();
+        let edges = graph.edges();
 
-        for (from_idx, to_idx, _dist) in edge_list {
-            let from_node = nodes[from_idx];
-            let to_node = nodes[to_idx];
+        for (from_idx, neighbors) in edges.iter().enumerate() {
+            for (to_idx, _dist) in neighbors {
+                // Only draw each edge once (when from_idx < to_idx)
+                if from_idx < *to_idx {
+                    let from_node = nodes[from_idx].position;
+                    let to_node = nodes[*to_idx].position;
 
-            let line = self.create_line(
-                from_node,
-                to_node,
-                0.0,
-                0.0,
-                svg_height,
-                colors::GRAPH_EDGE,
-                0.5,
-                Some("2,2"), // Dashed line for edges
-            );
+                    let line = self.create_line(
+                        from_node,
+                        to_node,
+                        0.0,
+                        0.0,
+                        svg_height,
+                        colors::GRAPH_EDGE,
+                        0.5,
+                        Some("2,2"), // Dashed line for edges
+                    );
 
-            group = group.add(line.set("opacity", 0.3));
+                    group = group.add(line.set("opacity", 0.3));
+                }
+            }
         }
 
         group
@@ -791,9 +799,9 @@ impl Visualizer {
         group
     }
 
-    /// Render full visualization with visibility graph.
+    /// Render full visualization with clearance-based visibility graph.
     ///
-    /// Extended version of `render_full` that also shows the visibility graph
+    /// Extended version of `render_full` that also shows the CBVG
     /// and planned path for path planning debugging.
     #[allow(clippy::too_many_arguments)]
     pub fn render_with_path_planning(
@@ -805,7 +813,7 @@ impl Visualizer {
         scan_store: &ScanStore,
         trajectory: &TrajectoryHistory,
         metrics: &TestMetrics,
-        graph: Option<&VisibilityGraph>,
+        graph: Option<&ClearanceVisibilityGraph>,
         path: Option<&PlannedPath>,
     ) {
         // Compute bounds from map
@@ -850,9 +858,9 @@ impl Visualizer {
         // Layer 4: Detected walls (teal)
         doc = doc.add(self.render_detected(slam, height as f32));
 
-        // Layer 5: Visibility graph (if provided)
+        // Layer 5: Clearance-based visibility graph (if provided)
         if let Some(g) = graph {
-            doc = doc.add(self.render_visibility_graph(g, height as f32, true));
+            doc = doc.add(self.render_cbvg(g, height as f32, true));
         }
 
         // Layer 6: Planned path (if provided)
@@ -884,15 +892,15 @@ impl Visualizer {
         svg::save(&self.output_path, &doc).expect("Failed to save SVG");
     }
 
-    /// Render standalone visibility graph visualization.
+    /// Render standalone CBVG visualization.
     ///
-    /// Creates a simple SVG showing just the visibility graph, detected walls,
+    /// Creates a simple SVG showing just the CBVG, detected walls,
     /// and optionally a planned path. Useful for path planning debugging.
     #[allow(dead_code)]
     pub fn render_graph_only(
         &self,
         slam: &VectorMap,
-        graph: &VisibilityGraph,
+        graph: &ClearanceVisibilityGraph,
         path: Option<&PlannedPath>,
         bounds: (f32, f32, f32, f32), // (min_x, min_y, max_x, max_y)
     ) {
@@ -921,8 +929,8 @@ impl Visualizer {
         // Detected walls
         doc = doc.add(self.render_detected(slam, height as f32));
 
-        // Visibility graph
-        doc = doc.add(self.render_visibility_graph(graph, height as f32, true));
+        // CBVG
+        doc = doc.add(self.render_cbvg(graph, height as f32, true));
 
         // Planned path (if provided)
         if let Some(p) = path {

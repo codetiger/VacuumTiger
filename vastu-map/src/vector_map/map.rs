@@ -13,9 +13,8 @@ use crate::integration::{
 };
 use crate::loop_closure::{LoopClosure, LoopClosureDetector};
 use crate::matching::PointToLineIcp;
-use crate::query::{
-    PathPlanner, detect_frontiers, is_straight_path_clear, query_occupancy, raycast,
-};
+use crate::query::cbvg::{ClearanceVisibilityGraph, VisibilityRegion};
+use crate::query::{detect_frontiers, is_straight_path_clear, query_occupancy, raycast};
 use crate::{Frontier, Map, ObserveResult, Occupancy, Path, TimingBreakdown};
 
 use super::config::VectorMapConfig;
@@ -168,6 +167,17 @@ pub struct VectorMap {
 
     /// Exploration configuration (None if exploration mode disabled).
     exploration_config: Option<ExplorationConfig>,
+
+    /// Clearance-based visibility graph for path planning.
+    /// Automatically updated when lines are added to the map.
+    cbvg: ClearanceVisibilityGraph,
+
+    /// Whether the CBVG needs rebuilding.
+    cbvg_dirty: bool,
+
+    /// Visibility region tracking lidar-scanned areas.
+    /// Used to ensure CBVG nodes are only placed in observed areas.
+    visibility: VisibilityRegion,
 }
 
 impl VectorMap {
@@ -175,6 +185,9 @@ impl VectorMap {
     pub fn new(config: VectorMapConfig) -> Self {
         let loop_detector = LoopClosureDetector::new(config.loop_closure.clone());
         let icp_matcher = PointToLineIcp::with_config(config.matching.clone());
+        let cbvg = ClearanceVisibilityGraph::new(config.cbvg.clone());
+        // Use CBVG coverage_node_interval as visibility resolution for consistency
+        let visibility = VisibilityRegion::new(config.cbvg.coverage_node_interval * 0.5);
         Self {
             config,
             line_store: LineStore::new(),
@@ -187,6 +200,9 @@ impl VectorMap {
             observe_scratch: ObserveScratchSpace::default_capacity(),
             scan_store: None,
             exploration_config: None,
+            cbvg,
+            cbvg_dirty: true,
+            visibility,
         }
     }
 
@@ -240,6 +256,47 @@ impl VectorMap {
     /// Clear all loop closures.
     pub fn clear_loop_closures(&mut self) {
         self.loop_closures.clear();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Visibility and Path Planning
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get the visibility region (for visualization/debugging).
+    pub fn visibility(&self) -> &VisibilityRegion {
+        &self.visibility
+    }
+
+    /// Build and return a CBVG for visualization.
+    ///
+    /// Uses visibility-based node generation if visibility data is available.
+    pub fn build_cbvg(&self) -> ClearanceVisibilityGraph {
+        let mut cbvg = ClearanceVisibilityGraph::new(self.config.cbvg.clone());
+
+        if !self.visibility.is_empty() {
+            cbvg.build_from_visibility(&self.visibility, self.line_store.lines());
+        } else {
+            cbvg.build(self.line_store.lines(), self.line_store.bounds());
+        }
+
+        cbvg
+    }
+
+    /// Find the nearest CBVG node to a target point.
+    ///
+    /// This is useful for exploration to find reachable navigation targets
+    /// near frontiers. CBVG nodes are guaranteed to be in visible, reachable
+    /// areas with proper wall clearance.
+    ///
+    /// # Arguments
+    /// * `target` - The point to find the nearest node to
+    /// * `max_distance` - Maximum distance to search (nodes farther are ignored)
+    ///
+    /// # Returns
+    /// The position of the nearest CBVG node, or None if no node is within range.
+    pub fn nearest_cbvg_node(&self, target: Point2D, max_distance: f32) -> Option<Point2D> {
+        let cbvg = self.build_cbvg();
+        cbvg.nearest_node(target, max_distance)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -417,6 +474,19 @@ impl VectorMap {
 
         self.current_pose = final_pose;
 
+        // ─── Visibility Update ───
+        // Update visibility region with scan points in world frame
+        // robot_frame_points are already in scratch buffer
+        let world_scan_points: Vec<Point2D> = self
+            .observe_scratch
+            .robot_frame_points()
+            .iter()
+            .map(|&p| final_pose.transform_point(p))
+            .collect();
+        self.visibility
+            .update_from_scan(final_pose, &world_scan_points);
+        self.cbvg_dirty = true;
+
         // ─── Scan Storage (Exploration Mode) ───
         if let Some(ref mut store) = self.scan_store {
             store.add_scan(
@@ -498,6 +568,18 @@ impl VectorMap {
 
         // Fill scratch with robot frame points (used by feature extraction and loop closure)
         self.observe_scratch.fill_robot_frame_points(scan);
+
+        // ─── Visibility Update ───
+        // Update visibility region with scan points in world frame
+        let world_scan_points: Vec<Point2D> = self
+            .observe_scratch
+            .robot_frame_points()
+            .iter()
+            .map(|&p| odometry.transform_point(p))
+            .collect();
+        self.visibility
+            .update_from_scan(odometry, &world_scan_points);
+        self.cbvg_dirty = true;
 
         // ─── Scan Storage (Exploration Mode) ───
         if let Some(ref mut store) = self.scan_store {
@@ -823,14 +905,23 @@ impl Map for VectorMap {
     }
 
     fn get_path(&self, from: Point2D, to: Point2D) -> Option<Path> {
-        let planner = PathPlanner::new(self.config.path_planning.clone());
-        planner.plan(
-            from,
-            to,
-            self.line_store.lines(),
-            self.line_store.bounds(),
-            &self.config.occupancy,
-        )
+        // Use CBVG for path planning with visibility-aware node generation
+        // This ensures nodes are only placed in lidar-scanned areas
+        let mut cbvg = ClearanceVisibilityGraph::new(self.config.cbvg.clone());
+
+        // Use visibility-based build if we have visibility data
+        if !self.visibility.is_empty() {
+            cbvg.build_from_visibility(&self.visibility, self.line_store.lines());
+        } else {
+            // Fallback to wall-based build for legacy/testing
+            cbvg.build(self.line_store.lines(), self.line_store.bounds());
+        }
+
+        cbvg.find_path(from, to, self.line_store.lines())
+    }
+
+    fn nearest_cbvg_node(&self, target: Point2D, max_distance: f32) -> Option<Point2D> {
+        self.nearest_cbvg_node(target, max_distance)
     }
 
     fn is_path_clear(&self, from: Point2D, to: Point2D) -> bool {
@@ -838,7 +929,7 @@ impl Map for VectorMap {
             from,
             to,
             self.line_store.lines(),
-            self.config.path_planning.robot_radius,
+            self.config.frontier.robot_radius,
         )
     }
 
@@ -857,6 +948,10 @@ impl Map for VectorMap {
         self.loop_detector.clear();
         self.loop_closures.clear();
         self.icp_matcher.update_last_confidence(1.0);
+        self.cbvg.clear();
+        self.cbvg_dirty = true;
+        // Reset visibility to empty (create new instance with same resolution)
+        self.visibility = VisibilityRegion::new(self.config.cbvg.coverage_node_interval * 0.5);
     }
 }
 

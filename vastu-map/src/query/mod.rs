@@ -4,12 +4,13 @@
 //! - **Raycast**: Find distance to obstacles in a direction
 //! - **Occupancy**: Query whether a point is free, occupied, or unknown
 //! - **Frontier**: Detect unexplored boundaries for exploration
-//! - **Path Planning**: Find paths using visibility graph
+//! - **CBVG**: Clearance-based visibility graph for safe path planning
 //!
 //! # Example
 //!
 //! ```rust,ignore
-//! use vastu_map::query::{raycast, query_occupancy, detect_frontiers, PathPlanner};
+//! use vastu_map::query::{raycast, query_occupancy, detect_frontiers};
+//! use vastu_map::query::{ClearanceVisibilityGraph, CBVGConfig};
 //! use vastu_map::core::Point2D;
 //!
 //! // Raycast to find wall distance
@@ -23,11 +24,14 @@
 //! // Find exploration frontiers
 //! let frontiers = detect_frontiers(&map_lines, &frontier_config);
 //!
-//! // Plan a path
-//! let planner = PathPlanner::new(Default::default());
-//! let path = planner.plan(start, goal, &lines, None, &occupancy_config);
+//! // Plan a path using CBVG
+//! let config = CBVGConfig::default();
+//! let mut graph = ClearanceVisibilityGraph::new(config);
+//! graph.build(&lines, None);
+//! let path = graph.find_path(start, goal, &lines);
 //! ```
 
+pub mod cbvg;
 pub mod frontier;
 pub mod occupancy;
 pub mod path_planning;
@@ -42,8 +46,11 @@ pub use occupancy::{
     OccupancyConfig, is_path_clear, is_region_clear, query_occupancy, query_occupancy_batch,
     query_occupancy_indexed,
 };
-pub use path_planning::{PathPlanner, PathPlanningConfig, VisibilityGraph, is_straight_path_clear};
+pub use path_planning::is_straight_path_clear;
 pub use raycast::{
     RaycastResult, raycast, raycast_360, raycast_batch, raycast_detailed, raycast_indexed,
     raycast_sweep,
 };
+
+// Re-export CBVG types
+pub use cbvg::{CBVGConfig, CBVGNode, ClearanceVisibilityGraph, NodeType};

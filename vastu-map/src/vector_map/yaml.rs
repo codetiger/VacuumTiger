@@ -260,10 +260,6 @@ frontier:
 occupancy:
   obstacle_distance: 0.1
   known_distance: 2.0
-path_planning:
-  robot_radius: 0.15
-  max_nodes: 1000
-  conservative: true
 loop_closure:
   min_travel_distance: 5.0
   max_descriptor_distance: 0.5
@@ -383,10 +379,6 @@ frontier:
 occupancy:
   obstacle_distance: 0.1
   known_distance: 2.0
-path_planning:
-  robot_radius: 0.15
-  max_nodes: 1000
-  conservative: true
 loop_closure:
   min_travel_distance: 5.0
   max_descriptor_distance: 0.5

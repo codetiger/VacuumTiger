@@ -452,9 +452,16 @@ impl ExplorationController {
                 self.planner
                     .select_frontier_in_region(region, robot_pos, current_pose.theta);
 
-            // With shadow-based frontiers, viewpoint is already a safe observation point
+            // Find nearest CBVG node to the frontier - guaranteed reachable
+            // CBVG nodes are in visible areas with proper wall clearance
             let target = match selected_frontier {
-                Some(f) => f.viewpoint, // Use viewpoint directly - it's already safe!
+                Some(f) => {
+                    // Try to find nearest CBVG node (within 2m of frontier viewpoint)
+                    match map.nearest_cbvg_node(f.viewpoint, 2.0) {
+                        Some(node_pos) => node_pos,
+                        None => f.viewpoint, // Fallback to viewpoint if no node nearby
+                    }
+                }
                 None => {
                     // Current region exhausted, advance to next
                     log::debug!("Region {} exhausted, advancing to next", region.id);
@@ -722,6 +729,11 @@ mod tests {
                 points: vec![from, to],
                 length: from.distance(to),
             })
+        }
+
+        fn nearest_cbvg_node(&self, target: Point2D, _max_distance: f32) -> Option<Point2D> {
+            // For testing, just return the target point
+            Some(target)
         }
 
         fn is_path_clear(&self, _from: Point2D, _to: Point2D) -> bool {

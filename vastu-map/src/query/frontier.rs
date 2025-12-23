@@ -229,12 +229,15 @@ impl FrontierDetector {
             // Find the closest unconnected endpoint that forms a valid gap
             let mut best_pair: Option<(usize, f32)> = None;
 
-            for j in (i + 1)..self.unconnected.len() {
-                if used_endpoints[j] {
+            for (j, (used, ep2)) in used_endpoints
+                .iter()
+                .zip(self.unconnected.iter())
+                .enumerate()
+                .skip(i + 1)
+            {
+                if *used {
                     continue;
                 }
-
-                let ep2 = &self.unconnected[j];
                 let distance = ep1.point.distance(ep2.point);
 
                 // Check if this pair forms a valid gap

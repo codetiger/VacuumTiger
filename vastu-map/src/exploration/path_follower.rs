@@ -55,15 +55,17 @@ pub struct FollowResult {
     pub distance_to_waypoint: f32,
 }
 
-/// Pure pursuit path follower.
+/// Path follower for waypoint-based navigation.
 ///
-/// Generates velocity commands to follow a path of waypoints using
-/// a simple pure pursuit algorithm:
+/// Generates velocity commands to follow a path of waypoints:
 ///
 /// 1. Transform target waypoint to robot frame
 /// 2. Compute angle to target
 /// 3. Generate proportional angular velocity for steering
 /// 4. Reduce linear velocity when turning sharply
+///
+/// The follower visits each waypoint in sequence to ensure the robot
+/// follows the planned CBVG path through the medial axis of free space.
 ///
 /// # Example
 ///
@@ -84,8 +86,6 @@ pub struct FollowResult {
 /// ```
 #[derive(Clone, Debug)]
 pub struct PathFollower {
-    /// Lookahead distance for pure pursuit.
-    lookahead_distance: f32,
     /// Maximum linear velocity.
     max_linear: f32,
     /// Maximum angular velocity.
@@ -100,7 +100,6 @@ impl PathFollower {
     /// Create a new path follower from exploration config.
     pub fn new(config: &ExplorationConfig) -> Self {
         Self {
-            lookahead_distance: config.lookahead_distance,
             max_linear: config.max_linear_speed,
             max_angular: config.max_angular_speed,
             angular_gain: 2.0, // Responsive steering
@@ -109,9 +108,8 @@ impl PathFollower {
     }
 
     /// Create a path follower with custom parameters.
-    pub fn with_params(lookahead_distance: f32, max_linear: f32, max_angular: f32) -> Self {
+    pub fn with_params(max_linear: f32, max_angular: f32) -> Self {
         Self {
-            lookahead_distance,
             max_linear,
             max_angular,
             angular_gain: 2.0,
@@ -171,9 +169,9 @@ impl PathFollower {
             };
         }
 
-        // Get target waypoint (use lookahead if possible)
-        let target_idx = self.find_lookahead_point(path, current_idx, robot_pos);
-        let target = path.points[target_idx];
+        // Target current waypoint directly (no lookahead skipping)
+        // This ensures the robot follows each CBVG node in sequence
+        let target = path.points[current_idx];
 
         // Transform target to robot frame
         let local_target = current_pose.inverse_transform_point(target);
@@ -191,33 +189,6 @@ impl PathFollower {
             path_complete: false,
             distance_to_waypoint,
         }
-    }
-
-    /// Find the lookahead point on the path.
-    fn find_lookahead_point(&self, path: &Path, start_idx: usize, robot_pos: Point2D) -> usize {
-        let mut best_idx = start_idx;
-        let mut accumulated_dist = 0.0;
-
-        for i in start_idx..path.points.len() {
-            let distance_to_point = robot_pos.distance(path.points[i]);
-
-            // If this point is beyond lookahead, use it
-            if distance_to_point >= self.lookahead_distance {
-                return i;
-            }
-
-            // Track accumulated path distance
-            if i > start_idx {
-                accumulated_dist += path.points[i - 1].distance(path.points[i]);
-                if accumulated_dist >= self.lookahead_distance {
-                    return i;
-                }
-            }
-
-            best_idx = i;
-        }
-
-        best_idx
     }
 
     /// Compute velocity command from angle and distance to target.

@@ -34,7 +34,7 @@ use vastu_map::exploration::{
     VelocityCommand,
 };
 use vastu_map::integration::CoplanarMergeConfig;
-use vastu_map::query::{PathPlanner, PathPlanningConfig, VisibilityGraph};
+use vastu_map::query::cbvg::ClearanceVisibilityGraph;
 
 /// Maximum simulation time in seconds.
 const MAX_TIME: f32 = 200.0; // 3.3 minutes
@@ -173,8 +173,8 @@ mod tests {
         let mut collisions = 0;
         let mut virtual_walls = 0;
 
-        // Variables to capture the last visibility graph and path for visualization
-        let mut last_visibility_graph: Option<VisibilityGraph> = None;
+        // Variables to capture the last CBVG and path for visualization
+        let mut last_cbvg: Option<ClearanceVisibilityGraph> = None;
         let mut last_planned_path: Option<PlannedPath> = None;
 
         println!("Starting exploration with region-based TSP planning...");
@@ -254,16 +254,9 @@ mod tests {
                             path.points.len()
                         );
 
-                        // Capture visibility graph for this path for visualization
-                        let path_config = PathPlanningConfig::default()
-                            .with_robot_radius(config.robot_radius)
-                            .with_conservative(false);
-                        let planner = PathPlanner::new(path_config);
-                        last_visibility_graph = Some(planner.build_graph(
-                            robot_pos,
-                            *target_frontier,
-                            harness.slam().lines(),
-                        ));
+                        // Capture CBVG for visualization using visibility-based building
+                        // This ensures nodes are only in lidar-scanned areas
+                        last_cbvg = Some(harness.slam().build_cbvg());
                         last_planned_path = Some(path.clone());
                     }
 
@@ -362,9 +355,9 @@ mod tests {
             lines_merged
         );
 
-        // Finalize to generate visualization with visibility graph
+        // Finalize to generate visualization with CBVG
         let _test_result =
-            harness.finalize_with_graph(last_visibility_graph.as_ref(), last_planned_path.as_ref());
+            harness.finalize_with_graph(last_cbvg.as_ref(), last_planned_path.as_ref());
 
         ExplorationTestResult {
             completed: harness.slam().frontiers().is_empty(),

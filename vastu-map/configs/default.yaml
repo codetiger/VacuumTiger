@@ -169,15 +169,29 @@ occupancy:
   known_distance: 2.0
 
 # ============================================================================
-# Path Planning
+# Clearance-Based Visibility Graph (CBVG) - Path Planning
 # ============================================================================
-path_planning:
-  # Robot radius for collision checking (m)
-  robot_radius: 0.16
-  # Maximum visibility graph nodes
-  max_nodes: 1000
-  # Only plan through known free space
-  conservative: true
+cbvg:
+  # Minimum clearance from walls in open areas (m)
+  min_clearance: 0.3
+  # Minimum clearance in narrow passages (m)
+  # Used when corridor is too narrow for full clearance
+  min_clearance_narrow: 0.18
+  # Sample resolution along Voronoi edges (m)
+  voronoi_sample_step: 0.1
+  # Maximum edge length between nodes (m)
+  max_edge_length: 0.8
+  # Interval for placing coverage nodes in open areas (m)
+  # Ensures nodes exist even in areas without medial axis
+  coverage_node_interval: 0.35
+  # Distance threshold for merging nearby nodes (m)
+  node_merge_distance: 0.15
+  # Maximum nodes in the graph
+  max_nodes: 500
+  # Clearance sample step for edge validation (m)
+  edge_clearance_step: 0.05
+  # Wall sampling step for Voronoi approximation (m)
+  wall_sample_step: 0.1
 
 # ============================================================================
 # Loop Closure Detection
