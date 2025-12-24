@@ -13,7 +13,7 @@
 # Path: Zigzag covering ~20m total distance
 
 name: "drift_long_path"
-map: "maps/large_room.yaml"
+map: "../maps/large_room.yaml"
 
 start_pose:
   x: 2.0

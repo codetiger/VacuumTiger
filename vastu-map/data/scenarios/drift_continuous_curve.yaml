@@ -13,7 +13,7 @@
 # Path: Series of arcs creating an S-curve pattern
 
 name: "drift_continuous_curve"
-map: "maps/medium_room.yaml"
+map: "../maps/medium_room.yaml"
 
 start_pose:
   x: 4.0

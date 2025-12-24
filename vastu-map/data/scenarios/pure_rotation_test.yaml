@@ -9,7 +9,7 @@
 # Expected: Final orientation within 5 degrees of starting orientation (0 rad)
 
 name: "pure_rotation_360"
-map: "maps/medium_room.yaml"
+map: "../maps/medium_room.yaml"
 
 start_pose:
   x: 4.0

@@ -7,7 +7,7 @@
 # Move 1m forward in a straight line
 
 name: "straight_line_test"
-map: "maps/medium_room.yaml"
+map: "../maps/medium_room.yaml"
 
 start_pose:
   x: 2.0

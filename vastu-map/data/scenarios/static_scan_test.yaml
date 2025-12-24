@@ -12,7 +12,7 @@
 # - Map building accuracy without motion
 
 name: "static_scan_5s"
-map: "maps/medium_room.yaml"
+map: "../maps/medium_room.yaml"
 
 start_pose:
   x: 4.0

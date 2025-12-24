@@ -14,7 +14,7 @@
 # Expected: Final pose within 15cm/5 degrees of starting pose
 
 name: "loop_closure_square"
-map: "maps/medium_room.yaml"
+map: "../maps/medium_room.yaml"
 
 start_pose:
   x: 3.5

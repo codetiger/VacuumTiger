@@ -2,10 +2,11 @@
 //!
 //! Loads and executes test scenarios defined in YAML files.
 
-use crate::harness::{HarnessConfig, TestHarness, TestResult};
-use crate::path_generator::PathSegment;
-use crate::yaml_config::{PathCommand, ScenarioConfig};
 use std::path::Path;
+
+use super::config::{PathCommand, ScenarioConfig};
+use crate::harness::harness::{HarnessConfig, TestHarness, TestResult};
+use crate::harness::path::PathSegment;
 
 /// Wheel base of the robot in meters (from RobotConfig default).
 const WHEEL_BASE: f32 = 0.233;
@@ -62,7 +63,7 @@ pub fn run_scenario<P: AsRef<Path>>(
 /// Handles both wheel commands and stop commands:
 /// - Wheel commands use differential drive kinematics
 /// - Stop commands create stationary segments
-fn convert_path_commands(commands: &[PathCommand]) -> Vec<PathSegment> {
+pub fn convert_path_commands(commands: &[PathCommand]) -> Vec<PathSegment> {
     commands
         .iter()
         .filter_map(|cmd| match cmd {
@@ -148,7 +149,7 @@ pub fn run_all_scenarios<P: AsRef<Path>>(dir: P) -> Vec<(String, Result<TestResu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::yaml_config::WheelCommand;
+    use crate::harness::scenario::config::WheelCommand;
 
     #[test]
     fn test_wheel_command_forward() {

@@ -13,7 +13,7 @@
 # Path: Move 3m down the corridor
 
 name: "icp_sparse_corridor"
-map: "maps/corridor.yaml"
+map: "../maps/corridor.yaml"
 
 start_pose:
   x: 0.5   # Center of 1m-wide corridor

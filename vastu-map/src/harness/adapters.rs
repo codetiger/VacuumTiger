@@ -3,7 +3,7 @@
 //! sangam-io's lidar simulator produces `Vec<(f32, f32, u8)>` which maps
 //! directly to vastu-map's `PolarScan.points` format.
 
-use vastu_map::core::{PointCloud2D, PolarScan};
+use crate::core::{PointCloud2D, PolarScan};
 
 /// Convert lidar scan data from sangam-io format to vastu-map PointCloud2D.
 ///

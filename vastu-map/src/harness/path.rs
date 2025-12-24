@@ -1,8 +1,6 @@
-//! Robot path segment for integration tests
+//! Robot path segment for simulation and testing
 //!
-//! Provides PathSegment for defining robot motion commands in YAML scenarios.
-
-use std::f32::consts::PI;
+//! Provides PathSegment for defining robot motion commands.
 
 /// A path segment with velocity commands and duration.
 #[derive(Clone, Debug)]

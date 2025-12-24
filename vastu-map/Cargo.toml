@@ -26,9 +26,8 @@ criterion = "0.8"        # Benchmarks
 env_logger = "0.11"      # Test logging
 approx = "0.5"           # Approximate comparisons (tests only)
 
-[[test]]
-name = "integration"
-path = "tests/integration/mod.rs"
+[[example]]
+name = "exploration"
 required-features = ["integration-tests"]
 
 [profile.release]

@@ -10,7 +10,7 @@
 # - Small box at (2m, 6m)
 
 name: "medium_room_obstacles"
-map: "maps/medium_room.yaml"
+map: "../maps/medium_room.yaml"
 
 start_pose:
   x: 4.0

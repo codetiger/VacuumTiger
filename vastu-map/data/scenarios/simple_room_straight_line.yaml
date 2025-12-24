@@ -8,7 +8,7 @@
 # Move 0.5m forward in a straight line
 
 name: "simple_room_straight_line"
-map: "maps/simple_room.yaml"
+map: "../maps/simple_room.yaml"
 
 start_pose:
   x: 1.5

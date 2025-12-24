@@ -7,7 +7,7 @@
 # Wheel base: 0.233m
 
 name: "medium_room_exploration"
-map: "maps/medium_room.yaml"
+map: "../maps/medium_room.yaml"
 
 start_pose:
   x: 4.0

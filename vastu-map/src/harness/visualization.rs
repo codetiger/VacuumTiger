@@ -16,14 +16,14 @@ use svg::node::element::{
     Circle, Definitions, Group, Line, Marker, Path, Polyline, Rectangle, Text,
 };
 
-use vastu_map::Path as PlannedPath;
-use vastu_map::VectorMap;
-use vastu_map::core::{Point2D, Pose2D};
-use vastu_map::integration::ScanStore;
-use vastu_map::query::{ClearanceVisibilityGraph, NodeType};
+use crate::Path as PlannedPath;
+use crate::VectorMap;
+use crate::core::{Point2D, Pose2D};
+use crate::integration::ScanStore;
+use crate::query::{ClearanceVisibilityGraph, NodeType};
 
-use crate::harness::TrajectoryHistory;
-use crate::metrics::TestMetrics;
+use super::harness::TrajectoryHistory;
+use super::metrics::TestMetrics;
 
 /// Colorblind-friendly color palette (Okabe-Ito).
 mod colors {

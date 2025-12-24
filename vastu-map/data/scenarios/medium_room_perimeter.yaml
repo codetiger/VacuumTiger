@@ -7,7 +7,7 @@
 # Path: Rectangle around the room (keeping 1m from walls)
 
 name: "medium_room_perimeter"
-map: "maps/medium_room.yaml"
+map: "../maps/medium_room.yaml"
 
 start_pose:
   x: 1.0

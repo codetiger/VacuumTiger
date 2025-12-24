@@ -1,4 +1,4 @@
-//! Core test harness for integration tests
+//! Core test harness for integration tests and examples
 //!
 //! Provides synchronous simulation using sangam-io's mock device components
 //! directly (without spawning daemon threads).
@@ -13,10 +13,10 @@
 //!
 //! ```bash
 //! # Use custom config
-//! VASTU_MAP_CONFIG=my_config.yaml cargo test --features integration-tests
+//! VASTU_MAP_CONFIG=my_config.yaml cargo run --example exploration
 //!
 //! # Use default config file
-//! cargo test --features integration-tests
+//! cargo run --example exploration
 //! ```
 
 use std::path::Path;
@@ -27,18 +27,18 @@ use sangam_io::devices::mock::map_loader::SimulationMap;
 use sangam_io::devices::mock::noise::NoiseGenerator;
 use sangam_io::devices::mock::physics::PhysicsState;
 
-use vastu_map::config::ExplorationConfig;
-use vastu_map::core::Pose2D;
-use vastu_map::core::math::normalize_angle;
-use vastu_map::integration::{ScanStore, ScanStoreConfig};
-use vastu_map::odometry::WheelOdometry;
-use vastu_map::query::ClearanceVisibilityGraph;
-use vastu_map::{Map, Path as PlannedPath, VectorMap, VectorMapConfig};
+use crate::config::ExplorationConfig;
+use crate::core::Pose2D;
+use crate::core::math::normalize_angle;
+use crate::integration::{ScanStore, ScanStoreConfig};
+use crate::odometry::WheelOdometry;
+use crate::query::ClearanceVisibilityGraph;
+use crate::{Map, Path as PlannedPath, VectorMap, VectorMapConfig};
 
-use crate::adapters::lidar_to_point_cloud;
-use crate::metrics::{ConvergenceStats, TestMetrics, TimingStats};
-use crate::path_generator::PathSegment;
-use crate::visualization::Visualizer;
+use super::adapters::lidar_to_point_cloud;
+use super::metrics::{ConvergenceStats, TestMetrics, TimingStats};
+use super::path::PathSegment;
+use super::visualization::Visualizer;
 
 /// Test harness configuration.
 #[derive(Clone)]
@@ -158,11 +158,7 @@ impl Default for HarnessConfig {
 impl HarnessConfig {
     /// Create config for the simple_room map.
     pub fn simple_room() -> Self {
-        // Use env!() to get project root at compile time
-        let map_file = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../sangam-io/maps/simple_room.yaml"
-        );
+        let map_file = concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps/simple_room.yaml");
         Self {
             map_file: map_file.to_string(),
             start_x: 2.5,
@@ -171,26 +167,9 @@ impl HarnessConfig {
         }
     }
 
-    /// Create config for the large_room_obstacles map.
-    pub fn large_room_obstacles() -> Self {
-        let map_file = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../sangam-io/maps/large_room_obstacles.yaml"
-        );
-        Self {
-            map_file: map_file.to_string(),
-            start_x: 5.0,
-            start_y: 5.0,
-            ..Default::default()
-        }
-    }
-
     /// Create config for the medium_room map (8x8m with obstacles).
     pub fn medium_room() -> Self {
-        let map_file = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/integration/scenarios/maps/medium_room.yaml"
-        );
+        let map_file = concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps/medium_room.yaml");
         Self {
             map_file: map_file.to_string(),
             start_x: 4.0,
@@ -202,14 +181,22 @@ impl HarnessConfig {
 
     /// Create config for the large_room map.
     pub fn large_room() -> Self {
-        let map_file = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/integration/scenarios/maps/large_room.yaml"
-        );
+        let map_file = concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps/large_room.yaml");
         Self {
             map_file: map_file.to_string(),
             start_x: 5.0,
             start_y: 5.0,
+            ..Default::default()
+        }
+    }
+
+    /// Create config for the corridor map.
+    pub fn corridor() -> Self {
+        let map_file = concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps/corridor.yaml");
+        Self {
+            map_file: map_file.to_string(),
+            start_x: 1.0,
+            start_y: 2.5,
             ..Default::default()
         }
     }
@@ -285,7 +272,7 @@ pub struct TestHarness {
     /// Ground truth pose from last scan (for computing odometry)
     last_physics_pose: Pose2D,
     /// Last lidar scan in robot frame (for visualization)
-    last_scan_robot_frame: Option<vastu_map::core::PointCloud2D>,
+    last_scan_robot_frame: Option<crate::core::PointCloud2D>,
     /// ICP convergence statistics across all observations
     convergence_stats: ConvergenceStats,
     /// Trajectory history for enhanced visualization

@@ -6,10 +6,11 @@
 //! - Timing statistics for algorithm performance
 
 use sangam_io::devices::mock::map_loader::SimulationMap;
-use vastu_map::TimingBreakdown;
-use vastu_map::VectorMap;
-use vastu_map::core::Pose2D;
-use vastu_map::features::Line2D;
+
+use crate::TimingBreakdown;
+use crate::VectorMap;
+use crate::core::Pose2D;
+use crate::features::Line2D;
 
 /// Statistics collected during ICP matching over a test run.
 #[derive(Debug, Clone, Default)]
