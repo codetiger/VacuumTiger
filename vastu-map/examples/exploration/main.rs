@@ -10,11 +10,14 @@
 //! # Running
 //!
 //! ```bash
-//! cargo run --example exploration --release --features integration-tests
+//! cargo run --example exploration --release
 //! ```
 //!
 //! Output SVG is saved to `results/exploration_test.svg`
 
+mod harness;
+
+use harness::{HarnessConfig, TestHarness};
 use vastu_map::Map;
 use vastu_map::Path as PlannedPath;
 use vastu_map::config::ExplorationConfig as MapExplorationConfig;
@@ -23,7 +26,6 @@ use vastu_map::exploration::{
     CollisionEvent, CollisionType, ExplorationConfig, ExplorationController, ExplorationState,
     VelocityCommand,
 };
-use vastu_map::harness::{HarnessConfig, TestHarness};
 use vastu_map::integration::CoplanarMergeConfig;
 use vastu_map::query::cbvg::ClearanceVisibilityGraph;
 
@@ -61,8 +63,13 @@ fn main() {
     // Ensure results directory exists
     std::fs::create_dir_all("results").ok();
 
-    // Setup harness with medium_room map and visualization
-    let harness_config = HarnessConfig::medium_room();
+    // Setup harness with map file and starting position
+    let harness_config = HarnessConfig {
+        map_file: concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps/medium_room.yaml").to_string(),
+        start_x: 4.0,
+        start_y: 4.0,
+        ..Default::default()
+    };
 
     // Enable VectorMap exploration mode for point-cloud-based line re-fitting
     // This will re-fit lines every 10 observations using accumulated scan data
@@ -294,7 +301,7 @@ fn run_exploration_loop(harness: &mut TestHarness, config: ExplorationConfig) ->
     );
 
     // Finalize to generate visualization with CBVG
-    let _test_result = harness.finalize_with_graph(last_cbvg.as_ref(), last_planned_path.as_ref());
+    harness.finalize_with_graph(last_cbvg.as_ref(), last_planned_path.as_ref());
 
     ExplorationResult {
         completed: harness.slam().frontiers().is_empty(),

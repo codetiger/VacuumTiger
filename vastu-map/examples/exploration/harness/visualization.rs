@@ -16,11 +16,11 @@ use svg::node::element::{
     Circle, Definitions, Group, Line, Marker, Path, Polyline, Rectangle, Text,
 };
 
-use crate::Path as PlannedPath;
-use crate::VectorMap;
-use crate::core::{Point2D, Pose2D};
-use crate::integration::ScanStore;
-use crate::query::{ClearanceVisibilityGraph, NodeType};
+use vastu_map::Path as PlannedPath;
+use vastu_map::VectorMap;
+use vastu_map::core::{Point2D, Pose2D};
+use vastu_map::integration::ScanStore;
+use vastu_map::query::{ClearanceVisibilityGraph, NodeType};
 
 use super::harness::TrajectoryHistory;
 use super::metrics::TestMetrics;
@@ -94,84 +94,6 @@ impl Visualizer {
             (conf * 2.0 * 255.0) as u8
         };
         format!("#{:02X}{:02X}00", r, g)
-    }
-
-    /// Render the enhanced SLAM visualization with trajectory, drift, and metrics.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_full(
-        &self,
-        slam: &VectorMap,
-        map: &SimulationMap,
-        final_pose: Pose2D,
-        truth_pose: Pose2D,
-        scan_store: &ScanStore,
-        trajectory: &TrajectoryHistory,
-        metrics: &TestMetrics,
-    ) {
-        // Compute bounds from map
-        let map_width_m = map.width() as f32 * map.resolution();
-        let map_height_m = map.height() as f32 * map.resolution();
-
-        let width = (map_width_m * self.scale + 2.0 * self.margin) as i32;
-        let height = (map_height_m * self.scale + 2.0 * self.margin) as i32;
-
-        // Create document with arrow marker definition
-        let mut doc = Document::new()
-            .set("width", width)
-            .set("height", height)
-            .set("viewBox", (0, 0, width, height));
-
-        // Add marker definitions for arrows
-        let defs = self.create_marker_definitions();
-        doc = doc.add(defs);
-
-        // Layer 0: Background
-        doc = doc.add(
-            Rectangle::new()
-                .set("x", 0)
-                .set("y", 0)
-                .set("width", width)
-                .set("height", height)
-                .set("fill", "white"),
-        );
-
-        // Layer 1: Map walls (gray)
-        doc = doc.add(self.render_map_walls(map, height as f32));
-
-        // Layer 2: All scans from scan store (semi-transparent)
-        doc = doc.add(self.render_all_scans(scan_store, height as f32));
-
-        // Layer 3: Final lidar scan (full opacity) - use last scan from store
-        if let Some(last_scan) = scan_store.latest() {
-            let world_points = last_scan.world_points();
-            doc = doc.add(self.render_world_points(&world_points, height as f32));
-        }
-
-        // Layer 4: Detected walls (teal)
-        doc = doc.add(self.render_detected(slam, height as f32));
-
-        // Layer 5: Trajectories with confidence heatmap
-        doc = doc.add(self.render_trajectories(trajectory, height as f32));
-
-        // Layer 6: Drift vectors
-        doc = doc.add(self.render_drift_vectors(trajectory, height as f32));
-
-        // Layer 7: Final poses
-        doc = doc.add(self.render_poses(final_pose, truth_pose, height as f32));
-
-        // Layer 8: Enhanced legend
-        doc = doc.add(self.render_enhanced_legend(height as f32));
-
-        // Layer 9: Metrics overlay
-        doc = doc.add(self.render_metrics_overlay(metrics, width));
-
-        // Ensure output directory exists
-        if let Some(parent) = std::path::Path::new(&self.output_path).parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-
-        // Save
-        svg::save(&self.output_path, &doc).expect("Failed to save SVG");
     }
 
     /// Create SVG marker definitions for arrows.
@@ -890,75 +812,5 @@ impl Visualizer {
 
         // Save
         svg::save(&self.output_path, &doc).expect("Failed to save SVG");
-    }
-
-    /// Render standalone CBVG visualization.
-    ///
-    /// Creates a simple SVG showing just the CBVG, detected walls,
-    /// and optionally a planned path. Useful for path planning debugging.
-    #[allow(dead_code)]
-    pub fn render_graph_only(
-        &self,
-        slam: &VectorMap,
-        graph: &ClearanceVisibilityGraph,
-        path: Option<&PlannedPath>,
-        bounds: (f32, f32, f32, f32), // (min_x, min_y, max_x, max_y)
-    ) {
-        let (min_x, min_y, max_x, max_y) = bounds;
-        let map_width_m = max_x - min_x;
-        let map_height_m = max_y - min_y;
-
-        let width = (map_width_m * self.scale + 2.0 * self.margin) as i32;
-        let height = (map_height_m * self.scale + 2.0 * self.margin) as i32;
-
-        let mut doc = Document::new()
-            .set("width", width)
-            .set("height", height)
-            .set("viewBox", (0, 0, width, height));
-
-        // Background
-        doc = doc.add(
-            Rectangle::new()
-                .set("x", 0)
-                .set("y", 0)
-                .set("width", width)
-                .set("height", height)
-                .set("fill", "white"),
-        );
-
-        // Detected walls
-        doc = doc.add(self.render_detected(slam, height as f32));
-
-        // CBVG
-        doc = doc.add(self.render_cbvg(graph, height as f32, true));
-
-        // Planned path (if provided)
-        if let Some(p) = path {
-            doc = doc.add(self.render_planned_path(p, height as f32));
-        }
-
-        // Ensure output directory exists
-        if let Some(parent) = std::path::Path::new(&self.output_path).parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-
-        svg::save(&self.output_path, &doc).expect("Failed to save SVG");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_transform_point() {
-        let viz = Visualizer::new("test.svg");
-        let (x, y) = viz.transform_point(Point2D::new(0.0, 0.0), 0.0, 0.0, 600.0);
-
-        // At origin (0,0) with svg_height=600, margin=50, scale=100
-        // x = 0 * 100 + 50 = 50
-        // y = 600 - (0 * 100 + 50) = 550
-        assert!((x - 50.0).abs() < 0.001);
-        assert!((y - 550.0).abs() < 0.001);
     }
 }

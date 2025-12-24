@@ -123,10 +123,6 @@ pub mod odometry;
 pub mod query;
 pub mod vector_map;
 
-// Test harness module (feature-gated)
-#[cfg(feature = "integration-tests")]
-pub mod harness;
-
 // Re-export main types at crate root
 pub use motion_model::MotionModel;
 pub use vector_map::{ConfigError, VectorMap, VectorMapConfig, YamlConfigError};

@@ -7,7 +7,6 @@ license = "MIT"
 
 [features]
 default = []
-integration-tests = ["dep:sangam-io", "dep:svg", "dep:image"]
 
 [dependencies]
 rstar = "0.12"           # R-tree spatial index
@@ -16,19 +15,17 @@ rand = "0.9"             # RANSAC randomness
 serde = { version = "1.0", features = ["derive"] }  # Config serialization
 serde_yaml = "0.9"       # YAML config files
 
-# Integration test dependencies (optional)
-sangam-io = { path = "../sangam-io", features = ["mock"], optional = true }
-svg = { version = "0.18", optional = true }
-image = { version = "0.25", default-features = false, features = ["png", "pnm"], optional = true }
-
 [dev-dependencies]
 criterion = "0.8"        # Benchmarks
 env_logger = "0.11"      # Test logging
 approx = "0.5"           # Approximate comparisons (tests only)
+# Simulation dependencies (examples only)
+sangam-io = { path = "../sangam-io", features = ["mock"] }
+svg = "0.18"
+image = { version = "0.25", default-features = false, features = ["png", "pnm"] }
 
 [[example]]
 name = "exploration"
-required-features = ["integration-tests"]
 
 [profile.release]
 opt-level = 3

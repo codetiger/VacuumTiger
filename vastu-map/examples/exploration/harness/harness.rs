@@ -1,25 +1,7 @@
-//! Core test harness for integration tests and examples
+//! Core test harness for exploration example
 //!
 //! Provides synchronous simulation using sangam-io's mock device components
 //! directly (without spawning daemon threads).
-//!
-//! # Configuration
-//!
-//! SLAM algorithm parameters can be customized via YAML configuration:
-//!
-//! - Set `VASTU_MAP_CONFIG` environment variable to specify a custom config file
-//! - Falls back to `configs/default.yaml` in the project root
-//! - Falls back to `VectorMapConfig::default()` if no YAML file is found
-//!
-//! ```bash
-//! # Use custom config
-//! VASTU_MAP_CONFIG=my_config.yaml cargo run --example exploration
-//!
-//! # Use default config file
-//! cargo run --example exploration
-//! ```
-
-use std::path::Path;
 
 use sangam_io::devices::mock::config::{LidarConfig, RobotConfig};
 use sangam_io::devices::mock::lidar_sim::LidarSimulator;
@@ -27,17 +9,16 @@ use sangam_io::devices::mock::map_loader::SimulationMap;
 use sangam_io::devices::mock::noise::NoiseGenerator;
 use sangam_io::devices::mock::physics::PhysicsState;
 
-use crate::config::ExplorationConfig;
-use crate::core::Pose2D;
-use crate::core::math::normalize_angle;
-use crate::integration::{ScanStore, ScanStoreConfig};
-use crate::odometry::WheelOdometry;
-use crate::query::ClearanceVisibilityGraph;
-use crate::{Map, Path as PlannedPath, VectorMap, VectorMapConfig};
+use vastu_map::config::ExplorationConfig;
+use vastu_map::core::Pose2D;
+use vastu_map::core::math::normalize_angle;
+use vastu_map::integration::{ScanStore, ScanStoreConfig};
+use vastu_map::odometry::WheelOdometry;
+use vastu_map::query::ClearanceVisibilityGraph;
+use vastu_map::{Map, Path as PlannedPath, VectorMap, VectorMapConfig};
 
 use super::adapters::lidar_to_point_cloud;
 use super::metrics::{ConvergenceStats, TestMetrics, TimingStats};
-use super::path::PathSegment;
 use super::visualization::Visualizer;
 
 /// Test harness configuration.
@@ -73,56 +54,6 @@ pub struct HarnessConfig {
     pub fast_mode: bool,
 }
 
-/// Environment variable name for custom SLAM config file path.
-const SLAM_CONFIG_ENV_VAR: &str = "VASTU_MAP_CONFIG";
-
-/// Load VectorMapConfig from YAML file.
-///
-/// Priority:
-/// 1. `VASTU_MAP_CONFIG` environment variable (if set)
-/// 2. `configs/default.yaml` in project root
-/// 3. `VectorMapConfig::default()` as fallback
-fn load_slam_config() -> VectorMapConfig {
-    // Check environment variable first
-    if let Ok(config_path) = std::env::var(SLAM_CONFIG_ENV_VAR) {
-        match VectorMapConfig::from_yaml_file(&config_path) {
-            Ok(config) => {
-                log::info!("Loaded SLAM config from env var: {}", config_path);
-                return config;
-            }
-            Err(e) => {
-                log::warn!(
-                    "Failed to load SLAM config from {}: {}, using default",
-                    config_path,
-                    e
-                );
-            }
-        }
-    }
-
-    // Try default config file in project root
-    let default_config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("configs/default.yaml");
-    if default_config_path.exists() {
-        match VectorMapConfig::from_yaml_file(&default_config_path) {
-            Ok(config) => {
-                log::info!("Loaded SLAM config from: {}", default_config_path.display());
-                return config;
-            }
-            Err(e) => {
-                log::warn!(
-                    "Failed to load default SLAM config from {}: {}, using builtin defaults",
-                    default_config_path.display(),
-                    e
-                );
-            }
-        }
-    }
-
-    // Fall back to builtin defaults
-    log::info!("Using builtin VectorMapConfig::default()");
-    VectorMapConfig::default()
-}
-
 impl Default for HarnessConfig {
     fn default() -> Self {
         // Use lidar config with zero offsets for test accuracy
@@ -143,7 +74,7 @@ impl Default for HarnessConfig {
             start_theta: 0.0,
             robot: RobotConfig::default(),
             lidar,
-            slam: load_slam_config(),
+            slam: VectorMapConfig::default(),
             random_seed: 42, // Fixed seed for reproducibility
             min_quality: 50,
             min_range: 0.15,
@@ -153,68 +84,6 @@ impl Default for HarnessConfig {
             fast_mode: true,    // Skip physics substeps for faster tests
         }
     }
-}
-
-impl HarnessConfig {
-    /// Create config for the simple_room map.
-    pub fn simple_room() -> Self {
-        let map_file = concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps/simple_room.yaml");
-        Self {
-            map_file: map_file.to_string(),
-            start_x: 2.5,
-            start_y: 2.5,
-            ..Default::default()
-        }
-    }
-
-    /// Create config for the medium_room map (8x8m with obstacles).
-    pub fn medium_room() -> Self {
-        let map_file = concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps/medium_room.yaml");
-        Self {
-            map_file: map_file.to_string(),
-            start_x: 4.0,
-            start_y: 4.0,
-            slam: load_slam_config(),
-            ..Default::default()
-        }
-    }
-
-    /// Create config for the large_room map.
-    pub fn large_room() -> Self {
-        let map_file = concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps/large_room.yaml");
-        Self {
-            map_file: map_file.to_string(),
-            start_x: 5.0,
-            start_y: 5.0,
-            ..Default::default()
-        }
-    }
-
-    /// Create config for the corridor map.
-    pub fn corridor() -> Self {
-        let map_file = concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps/corridor.yaml");
-        Self {
-            map_file: map_file.to_string(),
-            start_x: 1.0,
-            start_y: 2.5,
-            ..Default::default()
-        }
-    }
-}
-
-/// Result of running a test scenario.
-#[derive(Debug)]
-pub struct TestResult {
-    /// Computed metrics
-    pub metrics: TestMetrics,
-    /// Final SLAM pose estimate
-    pub final_pose: Pose2D,
-    /// Ground truth pose from physics
-    pub ground_truth_pose: Pose2D,
-    /// Number of observations processed
-    pub observations: usize,
-    /// Total simulation time in seconds
-    pub sim_time: f32,
 }
 
 /// Per-observation record for trajectory visualization.
@@ -272,7 +141,7 @@ pub struct TestHarness {
     /// Ground truth pose from last scan (for computing odometry)
     last_physics_pose: Pose2D,
     /// Last lidar scan in robot frame (for visualization)
-    last_scan_robot_frame: Option<crate::core::PointCloud2D>,
+    last_scan_robot_frame: Option<vastu_map::core::PointCloud2D>,
     /// ICP convergence statistics across all observations
     convergence_stats: ConvergenceStats,
     /// Trajectory history for enhanced visualization
@@ -367,72 +236,6 @@ impl TestHarness {
         let exploration_config = config.unwrap_or_default();
         self.slam.enable_exploration_mode(exploration_config);
         self
-    }
-
-    /// Run simulation along a path.
-    pub fn run_path(&mut self, segments: &[PathSegment]) -> TestResult {
-        for segment in segments {
-            self.run_segment(segment);
-        }
-
-        self.finalize()
-    }
-
-    /// Run a single path segment.
-    fn run_segment(&mut self, segment: &PathSegment) {
-        if self.config.fast_mode {
-            // Fast mode: skip intermediate physics, run only at lidar rate (~22x speedup)
-            // Each step covers the time of one lidar interval
-            let lidar_dt = self.config.dt * self.config.lidar_interval as f32;
-            let lidar_steps = (segment.duration / lidar_dt).max(1.0) as usize;
-
-            for _ in 0..lidar_steps {
-                // Simulate encoder ticks from wheel velocities
-                self.simulate_encoder_ticks(lidar_dt, segment.linear_vel, segment.angular_vel);
-
-                // Single physics update covering the full lidar interval
-                self.physics.update(
-                    lidar_dt,
-                    segment.linear_vel,
-                    segment.angular_vel,
-                    &self.map,
-                    &self.config.robot,
-                );
-
-                self.sim_time += lidar_dt;
-                self.process_lidar_scan();
-            }
-        } else {
-            // Normal mode: full physics simulation at configured rate
-            let steps = (segment.duration / self.config.dt) as usize;
-
-            for _ in 0..steps {
-                // Simulate encoder ticks from wheel velocities
-                self.simulate_encoder_ticks(
-                    self.config.dt,
-                    segment.linear_vel,
-                    segment.angular_vel,
-                );
-
-                // Update physics
-                self.physics.update(
-                    self.config.dt,
-                    segment.linear_vel,
-                    segment.angular_vel,
-                    &self.map,
-                    &self.config.robot,
-                );
-
-                self.tick_count += 1;
-                self.sim_time += self.config.dt;
-
-                // Generate lidar scan at configured interval
-                if self.tick_count >= self.config.lidar_interval {
-                    self.tick_count = 0;
-                    self.process_lidar_scan();
-                }
-            }
-        }
     }
 
     /// Process a lidar scan and feed to SLAM.
@@ -570,52 +373,10 @@ impl TestHarness {
         self.right_encoder_ticks += right_delta_ticks;
     }
 
-    /// Finalize the test and compute metrics.
-    ///
-    /// This generates the visualization SVG if enabled.
-    pub fn finalize(&mut self) -> TestResult {
-        let final_pose = self.slam.current_pose();
-        let ground_truth_pose =
-            Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta());
-
-        // Compute metrics using the simulation map, including convergence stats
-        let metrics = TestMetrics::compute(
-            &self.slam,
-            &self.map,
-            final_pose,
-            ground_truth_pose,
-            self.convergence_stats.clone(),
-        );
-
-        // Generate enhanced visualization if enabled
-        if let Some(ref viz) = self.visualizer {
-            viz.render_full(
-                &self.slam,
-                &self.map,
-                final_pose,
-                ground_truth_pose,
-                &self.scan_store,
-                &self.trajectory,
-                &metrics,
-            );
-        }
-
-        // Print timing summary
-        self.timing_stats.print_summary();
-
-        TestResult {
-            metrics,
-            final_pose,
-            ground_truth_pose,
-            observations: self.observations,
-            sim_time: self.sim_time,
-        }
-    }
-
     /// Finalize the test with CBVG visualization.
     ///
-    /// Extended version of `finalize` that also renders the clearance-based
-    /// visibility graph and planned path in the SVG output.
+    /// Generates the SVG visualization with the clearance-based visibility
+    /// graph and planned path, then prints a timing summary.
     ///
     /// # Arguments
     /// * `graph` - Optional CBVG to visualize
@@ -624,7 +385,7 @@ impl TestHarness {
         &mut self,
         graph: Option<&ClearanceVisibilityGraph>,
         path: Option<&PlannedPath>,
-    ) -> TestResult {
+    ) {
         let final_pose = self.slam.current_pose();
         let ground_truth_pose =
             Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta());
@@ -655,14 +416,6 @@ impl TestHarness {
 
         // Print timing summary
         self.timing_stats.print_summary();
-
-        TestResult {
-            metrics,
-            final_pose,
-            ground_truth_pose,
-            observations: self.observations,
-            sim_time: self.sim_time,
-        }
     }
 
     /// Get current SLAM map reference.
@@ -675,16 +428,6 @@ impl TestHarness {
         &mut self.slam
     }
 
-    /// Get current physics state.
-    pub fn physics(&self) -> &PhysicsState {
-        &self.physics
-    }
-
-    /// Get current SLAM pose estimate.
-    pub fn slam_pose(&self) -> Pose2D {
-        self.last_slam_pose
-    }
-
     /// Get current physics (ground truth) pose.
     pub fn physics_pose(&self) -> Pose2D {
         Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta())
@@ -693,11 +436,6 @@ impl TestHarness {
     /// Get configuration.
     pub fn config(&self) -> &HarnessConfig {
         &self.config
-    }
-
-    /// Get simulation map (for collision checking).
-    pub fn simulation_map(&self) -> &SimulationMap {
-        &self.map
     }
 
     /// Run a single simulation step and return collision status.
@@ -721,10 +459,9 @@ impl TestHarness {
         // Simulate encoder ticks
         self.simulate_encoder_ticks(dt, linear_vel, angular_vel);
 
-        // Update physics and get collision status
-        let collided =
-            self.physics
-                .update(dt, linear_vel, angular_vel, &self.map, &self.config.robot);
+        // Update physics
+        self.physics
+            .update(dt, linear_vel, angular_vel, &self.map, &self.config.robot);
 
         self.sim_time += dt;
         self.tick_count += 1;
@@ -733,12 +470,9 @@ impl TestHarness {
         let (left_bumper, right_bumper) = self.check_bumpers();
 
         StepResult {
-            collided,
             left_bumper,
             right_bumper,
             physics_pose: Pose2D::new(self.physics.x(), self.physics.y(), self.physics.theta()),
-            slam_pose: self.last_slam_pose,
-            sim_time: self.sim_time,
         }
     }
 
@@ -786,47 +520,21 @@ impl TestHarness {
         self.process_lidar_scan();
     }
 
-    /// Check if it's time for a lidar scan (based on tick count).
-    pub fn should_scan(&self) -> bool {
-        self.tick_count >= self.config.lidar_interval
-    }
-
-    /// Get the lidar scan interval.
-    pub fn lidar_interval(&self) -> usize {
-        self.config.lidar_interval
-    }
-
     /// Get current simulation time.
     pub fn sim_time(&self) -> f32 {
         self.sim_time
-    }
-
-    /// Get number of observations processed.
-    pub fn observation_count(&self) -> usize {
-        self.observations
-    }
-
-    /// Get scan store for visualization.
-    pub fn scan_store(&self) -> &ScanStore {
-        &self.scan_store
     }
 }
 
 /// Result of a single simulation step.
 #[derive(Clone, Debug)]
 pub struct StepResult {
-    /// Whether a collision occurred during this step.
-    pub collided: bool,
     /// Whether the left bumper is triggered.
     pub left_bumper: bool,
     /// Whether the right bumper is triggered.
     pub right_bumper: bool,
     /// Current physics (ground truth) pose.
     pub physics_pose: Pose2D,
-    /// Current SLAM pose estimate.
-    pub slam_pose: Pose2D,
-    /// Current simulation time.
-    pub sim_time: f32,
 }
 
 impl StepResult {
