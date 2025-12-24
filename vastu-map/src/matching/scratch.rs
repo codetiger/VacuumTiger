@@ -17,7 +17,7 @@ use std::simd::f32x4;
 
 use crate::config::LidarNoiseModel;
 use crate::core::Point2D;
-use crate::features::LineCollection;
+use crate::features::{LineCollection, LineSpatialIndex};
 
 use super::correspondence::{Correspondence, CorrespondenceSet, CorrespondenceSoA};
 use super::nearest_neighbor::NearestNeighborConfig;
@@ -69,6 +69,13 @@ pub struct IcpScratchSpace {
 
     /// Buffer for subsampled point Y coordinates.
     pub(crate) subsampled_ys: Vec<f32>,
+
+    // =========================================================================
+    // Spatial index query buffer
+    // =========================================================================
+    /// Buffer for spatial index query candidates.
+    /// Reused across point queries to avoid allocations.
+    pub(crate) spatial_candidates: Vec<usize>,
 }
 
 impl IcpScratchSpace {
@@ -88,6 +95,7 @@ impl IcpScratchSpace {
             ranges: Vec::with_capacity(max_points),
             subsampled_xs: Vec::with_capacity(max_points),
             subsampled_ys: Vec::with_capacity(max_points),
+            spatial_candidates: Vec::with_capacity(max_lines / 4), // Typical: ~25% of lines per query
         }
     }
 
@@ -108,6 +116,7 @@ impl IcpScratchSpace {
         self.ranges.clear();
         self.subsampled_xs.clear();
         self.subsampled_ys.clear();
+        self.spatial_candidates.clear();
     }
 
     // =========================================================================
@@ -294,6 +303,112 @@ impl IcpScratchSpace {
             for line_idx in 0..n_lines {
                 let t = self.projections[line_idx];
                 let distance = self.distances[line_idx];
+
+                // Check projection bounds
+                if t < min_t || t > max_t {
+                    continue;
+                }
+
+                // Check distance threshold
+                if distance > config.max_distance {
+                    continue;
+                }
+
+                if config.unique_per_point {
+                    if distance < best_distance {
+                        best_distance = distance;
+                        best_corr =
+                            Some(Correspondence::new(point_idx, line_idx, point, distance, t));
+                    }
+                } else {
+                    self.correspondences
+                        .push(Correspondence::new(point_idx, line_idx, point, distance, t));
+                }
+            }
+
+            if config.unique_per_point
+                && let Some(corr) = best_corr
+            {
+                self.correspondences.push(corr);
+            }
+        }
+    }
+
+    /// Find correspondences using a spatial index for O(n×k) instead of O(n×m).
+    ///
+    /// This is the accelerated hot path for ICP iterations when the map has many lines.
+    /// Uses spatial hashing to only check nearby lines for each point.
+    ///
+    /// # Arguments
+    /// * `lines` - Line collection (for distance/projection calculations)
+    /// * `spatial_index` - Pre-built spatial index for the lines
+    /// * `config` - Matching configuration
+    ///
+    /// # Performance
+    /// For a map with 100 lines and 360 points:
+    /// - Brute force: 36,000 distance calculations
+    /// - With spatial index: ~3,600 (assuming ~10 candidates per point)
+    pub fn find_correspondences_indexed(
+        &mut self,
+        lines: &LineCollection,
+        spatial_index: &LineSpatialIndex,
+        config: &NearestNeighborConfig,
+    ) {
+        self.correspondences.clear();
+
+        if self.transformed_xs.is_empty() || lines.is_empty() {
+            return;
+        }
+
+        let min_t = -config.max_projection_extension;
+        let max_t = 1.0 + config.max_projection_extension;
+        let n_points = self.transformed_xs.len();
+
+        for point_idx in 0..n_points {
+            let point = Point2D::new(
+                self.transformed_xs[point_idx],
+                self.transformed_ys[point_idx],
+            );
+
+            // Query spatial index for candidate lines (O(k) instead of O(m))
+            spatial_index.query_radius_into(
+                point,
+                config.max_distance,
+                &mut self.spatial_candidates,
+            );
+
+            if self.spatial_candidates.is_empty() {
+                continue;
+            }
+
+            let mut best_distance = config.max_distance;
+            let mut best_corr: Option<Correspondence> = None;
+
+            // Only check candidate lines from spatial index
+            for &line_idx in &self.spatial_candidates {
+                // Compute distance and projection for this line
+                let sx = lines.start_xs[line_idx];
+                let sy = lines.start_ys[line_idx];
+                let ex = lines.end_xs[line_idx];
+                let ey = lines.end_ys[line_idx];
+                let inv_len = lines.inv_lengths()[line_idx];
+
+                let dx = ex - sx;
+                let dy = ey - sy;
+                let to_px = point.x - sx;
+                let to_py = point.y - sy;
+
+                // Perpendicular distance
+                let cross = to_px * dy - to_py * dx;
+                let distance = cross.abs() * inv_len;
+
+                // Projection parameter
+                let len_sq = dx * dx + dy * dy;
+                let t = if len_sq > f32::EPSILON {
+                    (to_px * dx + to_py * dy) / len_sq
+                } else {
+                    0.5
+                };
 
                 // Check projection bounds
                 if t < min_t || t > max_t {
@@ -734,5 +849,114 @@ mod tests {
         scratch.subsample_points(&points, 0);
 
         assert_eq!(scratch.num_subsampled(), 5);
+    }
+
+    // =========================================================================
+    // Spatial index tests
+    // =========================================================================
+
+    #[test]
+    fn test_find_correspondences_indexed_basic() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+        let lines = make_room_lines();
+        let spatial_index = lines.build_spatial_index_for_radius(0.5);
+
+        // Points near the walls
+        let points = vec![
+            Point2D::new(0.0, -1.95), // Near bottom wall
+            Point2D::new(1.95, 0.0),  // Near right wall
+            Point2D::new(0.0, 1.95),  // Near top wall
+            Point2D::new(-1.95, 0.0), // Near left wall
+        ];
+
+        // Identity transform
+        scratch.transform_points(&points, 0.0, 1.0, 0.0, 0.0);
+
+        let config = NearestNeighborConfig::default();
+        scratch.find_correspondences_indexed(&lines, &spatial_index, &config);
+
+        assert_eq!(scratch.num_correspondences(), 4);
+    }
+
+    #[test]
+    fn test_find_correspondences_indexed_matches_brute_force() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+        let lines = make_room_lines();
+        let spatial_index = lines.build_spatial_index_for_radius(0.5);
+
+        let points = vec![Point2D::new(0.0, -1.95), Point2D::new(1.95, 0.0)];
+
+        scratch.transform_points(&points, 0.0, 1.0, 0.0, 0.0);
+
+        let config = NearestNeighborConfig::default();
+
+        // Get results from brute force
+        scratch.find_correspondences(&lines, &config);
+        let brute_force_count = scratch.num_correspondences();
+        let brute_force_corrs = scratch.take_correspondences();
+
+        // Get results from indexed
+        scratch.transform_points(&points, 0.0, 1.0, 0.0, 0.0);
+        scratch.find_correspondences_indexed(&lines, &spatial_index, &config);
+        let indexed_count = scratch.num_correspondences();
+
+        // Should find the same number of correspondences
+        assert_eq!(brute_force_count, indexed_count);
+
+        // Verify the correspondences match
+        let indexed_corrs = scratch.correspondences();
+        for bf_corr in brute_force_corrs.iter() {
+            let found = indexed_corrs.iter().any(|ic| {
+                ic.point_idx == bf_corr.point_idx
+                    && ic.line_idx == bf_corr.line_idx
+                    && (ic.distance - bf_corr.distance).abs() < 1e-6
+            });
+            assert!(
+                found,
+                "Brute force correspondence not found in indexed results"
+            );
+        }
+    }
+
+    #[test]
+    fn test_find_correspondences_indexed_with_threshold() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+        let lines = make_room_lines();
+        let spatial_index = lines.build_spatial_index_for_radius(0.5);
+
+        // One point near wall, one far from walls
+        let points = vec![
+            Point2D::new(0.0, -1.95), // Near bottom wall (0.05m away)
+            Point2D::new(0.0, 0.0),   // Center (2.0m from all walls)
+        ];
+
+        scratch.transform_points(&points, 0.0, 1.0, 0.0, 0.0);
+
+        let config = NearestNeighborConfig::default().with_max_distance(0.5);
+        scratch.find_correspondences_indexed(&lines, &spatial_index, &config);
+
+        // Only the first point should match
+        assert_eq!(scratch.num_correspondences(), 1);
+    }
+
+    #[test]
+    fn test_find_correspondences_indexed_empty() {
+        let mut scratch = IcpScratchSpace::new(100, 10);
+        let lines = LineCollection::new();
+        let spatial_index = lines.build_spatial_index(0.5);
+        let config = NearestNeighborConfig::default();
+
+        // Empty points
+        scratch.transform_points(&[], 0.0, 1.0, 0.0, 0.0);
+        scratch.find_correspondences_indexed(&lines, &spatial_index, &config);
+        assert_eq!(scratch.num_correspondences(), 0);
+
+        // Non-empty points but empty lines
+        let lines = LineCollection::new();
+        let spatial_index = lines.build_spatial_index(0.5);
+        let points = vec![Point2D::new(0.0, 0.0)];
+        scratch.transform_points(&points, 0.0, 1.0, 0.0, 0.0);
+        scratch.find_correspondences_indexed(&lines, &spatial_index, &config);
+        assert_eq!(scratch.num_correspondences(), 0);
     }
 }

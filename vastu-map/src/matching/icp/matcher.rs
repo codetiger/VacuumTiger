@@ -1,7 +1,7 @@
 //! Point-to-Line ICP matcher implementation.
 
 use crate::core::{Point2D, Pose2D};
-use crate::features::{Line2D, LineCollection};
+use crate::features::{Line2D, LineCollection, LineSpatialIndex, should_use_spatial_index};
 
 use super::super::correspondence::{
     CorrespondenceSet, IDENTITY_COVARIANCE, MatchResult, PoseCovariance,
@@ -167,6 +167,17 @@ impl PointToLineIcp {
         // Convert lines to collection for batch operations
         let line_collection = LineCollection::from_lines(lines);
 
+        // Only use spatial index for large maps
+        let use_spatial = should_use_spatial_index(&line_collection);
+        let spatial_index = if use_spatial {
+            Some(
+                line_collection
+                    .build_spatial_index_for_radius(self.config.max_correspondence_distance),
+            )
+        } else {
+            None
+        };
+
         let mut pose = initial_pose;
         let mut prev_pose = pose;
         let mut final_correspondences = CorrespondenceSet::new();
@@ -183,7 +194,12 @@ impl PointToLineIcp {
 
         // Optional RANSAC initialization (after coarse search if used)
         if self.config.use_ransac_init {
-            let initial_corrs = self.find_correspondences_for_pose(points, &line_collection, &pose);
+            let initial_corrs = self.find_correspondences_for_pose(
+                points,
+                &line_collection,
+                spatial_index.as_ref(),
+                &pose,
+            );
 
             if initial_corrs.len() >= self.config.min_correspondences {
                 let ransac_config = RansacConfig::default()
@@ -204,8 +220,12 @@ impl PointToLineIcp {
             final_iteration = iteration + 1;
 
             // 1. Find correspondences at current pose
-            let correspondences =
-                self.find_correspondences_for_pose(points, &line_collection, &pose);
+            let correspondences = self.find_correspondences_for_pose(
+                points,
+                &line_collection,
+                spatial_index.as_ref(),
+                &pose,
+            );
 
             if correspondences.len() < self.config.min_correspondences {
                 // Not enough correspondences - return with low confidence
@@ -371,6 +391,17 @@ impl PointToLineIcp {
         line_collection: &LineCollection,
         initial_pose: Pose2D,
     ) -> MatchResult {
+        // Only use spatial index for large maps
+        let use_spatial = should_use_spatial_index(line_collection);
+        let spatial_index = if use_spatial {
+            Some(
+                line_collection
+                    .build_spatial_index_for_radius(self.config.max_correspondence_distance),
+            )
+        } else {
+            None
+        };
+
         let mut pose = initial_pose;
         let mut prev_pose = pose;
         let mut final_correspondences = CorrespondenceSet::new();
@@ -391,8 +422,12 @@ impl PointToLineIcp {
 
         // Optional RANSAC initialization
         if self.config.use_ransac_init {
-            let mut initial_corrs =
-                self.find_correspondences_for_pose(robot_frame_points, line_collection, &pose);
+            let mut initial_corrs = self.find_correspondences_for_pose(
+                robot_frame_points,
+                line_collection,
+                spatial_index.as_ref(),
+                &pose,
+            );
             // Apply weights based on robot-frame ranges
             initial_corrs.apply_weights(robot_frame_points, &self.config.noise_model);
 
@@ -416,8 +451,12 @@ impl PointToLineIcp {
 
             // 1. Find correspondences at current pose
             // Pass robot-frame points - find_correspondences_for_pose transforms them internally
-            let mut correspondences =
-                self.find_correspondences_for_pose(robot_frame_points, line_collection, &pose);
+            let mut correspondences = self.find_correspondences_for_pose(
+                robot_frame_points,
+                line_collection,
+                spatial_index.as_ref(),
+                &pose,
+            );
 
             // Apply weights based on robot-frame ranges
             correspondences.apply_weights(robot_frame_points, &self.config.noise_model);
@@ -491,8 +530,9 @@ impl PointToLineIcp {
 
     /// Match scan using pre-allocated scratch space (zero-allocation hot path).
     ///
-    /// This is the most efficient matching method, eliminating per-iteration
-    /// allocations by reusing buffers from the scratch space.
+    /// This method automatically uses spatial indexing for O(n×k) correspondence
+    /// search instead of O(n×m) brute force, providing significant speedup for
+    /// maps with many lines.
     ///
     /// # Arguments
     /// * `points` - Scan points in robot frame
@@ -527,6 +567,15 @@ impl PointToLineIcp {
             return MatchResult::new(initial_pose, CorrespondenceSet::new(), 0, false);
         }
 
+        // Only use spatial index for large maps (> 30 lines and > 8m extent)
+        // For small rooms, brute-force is faster due to lower overhead
+        let use_spatial = should_use_spatial_index(lines);
+        let spatial_index = if use_spatial {
+            Some(lines.build_spatial_index_for_radius(self.config.max_correspondence_distance))
+        } else {
+            None
+        };
+
         let mut pose = initial_pose;
         let mut prev_pose = pose;
         let mut final_correspondences = CorrespondenceSet::new();
@@ -541,15 +590,21 @@ impl PointToLineIcp {
             used_coarse_search = true;
         }
 
-        // Main ICP loop with scratch space
+        // Main ICP loop
         let mut final_iteration = 0;
         for iteration in 0..self.config.max_iterations {
             final_iteration = iteration + 1;
 
-            // 1. Transform points and find correspondences using scratch space
+            // 1. Transform points and find correspondences
             let (sin, cos) = pose.theta.sin_cos();
             scratch.transform_points(points, sin, cos, pose.x, pose.y);
-            scratch.find_correspondences(lines, &self.nn_config);
+
+            // Use spatial index for large maps, brute force for small maps
+            if let Some(ref index) = spatial_index {
+                scratch.find_correspondences_indexed(lines, index, &self.nn_config);
+            } else {
+                scratch.find_correspondences(lines, &self.nn_config);
+            }
 
             if scratch.num_correspondences() < self.config.min_correspondences {
                 // Not enough correspondences - return with low confidence
@@ -620,13 +675,144 @@ impl PointToLineIcp {
         )
     }
 
+    /// Match scan using spatial index for O(n×k) correspondence search.
+    ///
+    /// This is the fastest matching method for large maps, using spatial hashing
+    /// to reduce correspondence search from O(n×m) to O(n×k) where k << m.
+    ///
+    /// # Arguments
+    /// * `points` - Scan points in robot frame
+    /// * `lines` - Map lines as LineCollection (for SIMD operations)
+    /// * `spatial_index` - Pre-built spatial index for fast line lookup
+    /// * `initial_pose` - Initial pose estimate (typically from odometry)
+    /// * `scratch` - Pre-allocated scratch space for buffer reuse
+    ///
+    /// # Performance
+    /// For a map with 100 lines and 360 points:
+    /// - Standard ICP: ~36,000 distance calculations per iteration
+    /// - With spatial index: ~3,600 (assuming ~10 candidates per point)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut scratch = IcpScratchSpace::default_capacity();
+    /// let mut icp = PointToLineIcp::new();
+    ///
+    /// // Build spatial index once when map changes
+    /// let spatial_index = map_lines.build_spatial_index_for_radius(0.5);
+    ///
+    /// // Reuse across multiple scans
+    /// for (scan, odom_pose) in scans.iter().zip(odometry.iter()) {
+    ///     let result = icp.match_scan_indexed(
+    ///         &scan, &map_lines, &spatial_index, *odom_pose, &mut scratch
+    ///     );
+    /// }
+    /// ```
+    pub fn match_scan_indexed(
+        &self,
+        points: &[Point2D],
+        lines: &LineCollection,
+        spatial_index: &LineSpatialIndex,
+        initial_pose: Pose2D,
+        scratch: &mut IcpScratchSpace,
+    ) -> MatchResult {
+        if points.is_empty() || lines.is_empty() {
+            return MatchResult::new(initial_pose, CorrespondenceSet::new(), 0, false);
+        }
+
+        let mut pose = initial_pose;
+        let mut prev_pose = pose;
+        let mut final_correspondences = CorrespondenceSet::new();
+        let mut converged = false;
+        let used_coarse_search = false; // Coarse search not supported with spatial index yet
+        let mut final_covariance: PoseCovariance = IDENTITY_COVARIANCE;
+        let mut final_condition_number = 1.0f32;
+
+        // Main ICP loop with spatial-indexed correspondence search
+        let mut final_iteration = 0;
+        for iteration in 0..self.config.max_iterations {
+            final_iteration = iteration + 1;
+
+            // 1. Transform points and find correspondences using spatial index
+            let (sin, cos) = pose.theta.sin_cos();
+            scratch.transform_points(points, sin, cos, pose.x, pose.y);
+            scratch.find_correspondences_indexed(lines, spatial_index, &self.nn_config);
+
+            if scratch.num_correspondences() < self.config.min_correspondences {
+                return MatchResult::with_covariance(
+                    pose,
+                    scratch.take_correspondences(),
+                    final_iteration,
+                    false,
+                    final_covariance,
+                    final_condition_number,
+                    used_coarse_search,
+                );
+            }
+
+            // 2. Get correspondences, filter by distance, and apply IRLS weights
+            let correspondences = scratch.correspondences();
+            let mut filtered = self.filter_by_max_distance(correspondences);
+            self.apply_irls_weights(&mut filtered);
+
+            if filtered.len() < self.config.min_correspondences {
+                return MatchResult::with_covariance(
+                    pose,
+                    filtered,
+                    final_iteration,
+                    false,
+                    final_covariance,
+                    final_condition_number,
+                    used_coarse_search,
+                );
+            }
+
+            // 3. Optimize pose using fast Gauss-Newton with weighted correspondences
+            let gn_result =
+                optimize_pose_fast(&filtered, lines, Pose2D::identity(), &self.gn_config);
+            final_covariance = gn_result.covariance;
+            final_condition_number = gn_result.condition_number;
+
+            // 4. Update pose (compose with delta)
+            pose = pose.compose(gn_result.pose);
+
+            // 5. Check convergence
+            let dx = pose.x - prev_pose.x;
+            let dy = pose.y - prev_pose.y;
+            let delta_trans_sq = dx * dx + dy * dy;
+            let delta_rot = crate::core::math::angle_diff(pose.theta, prev_pose.theta).abs();
+
+            if delta_trans_sq < self.config.convergence_threshold_sq
+                && delta_rot < self.config.convergence_threshold
+            {
+                converged = true;
+                final_correspondences = filtered;
+                break;
+            }
+
+            prev_pose = pose;
+            final_correspondences = filtered;
+        }
+
+        MatchResult::with_covariance(
+            pose,
+            final_correspondences,
+            final_iteration,
+            converged,
+            final_covariance,
+            final_condition_number,
+            used_coarse_search,
+        )
+    }
+
     /// Find correspondences for points at a given pose using scratch space.
     ///
     /// Uses internal scratch space for zero-allocation transformation.
+    /// Uses spatial indexing if provided, otherwise falls back to brute force.
     fn find_correspondences_for_pose(
         &mut self,
         points: &[Point2D],
         line_collection: &LineCollection,
+        spatial_index: Option<&LineSpatialIndex>,
         pose: &Pose2D,
     ) -> CorrespondenceSet {
         // Transform points by pose into scratch space (zero-allocation)
@@ -634,9 +820,14 @@ impl PointToLineIcp {
         self.scratch
             .transform_points(points, sin, cos, pose.x, pose.y);
 
-        // Find correspondences using scratch (zero-allocation)
-        self.scratch
-            .find_correspondences(line_collection, &self.nn_config);
+        // Find correspondences - use spatial index if available, else brute force
+        if let Some(index) = spatial_index {
+            self.scratch
+                .find_correspondences_indexed(line_collection, index, &self.nn_config);
+        } else {
+            self.scratch
+                .find_correspondences(line_collection, &self.nn_config);
+        }
 
         // Return a clone of the correspondences (scratch needs to be reusable)
         self.scratch.correspondences().clone()
@@ -1067,5 +1258,67 @@ mod tests {
         // Pose should be near identity (we're at center looking at symmetric walls)
         assert!(result.pose.x.abs() < 0.5);
         assert!(result.pose.y.abs() < 0.5);
+    }
+
+    #[test]
+    fn test_icp_indexed_matches_standard() {
+        // Verify that indexed ICP produces same results as standard ICP
+        let lines = make_room_lines();
+        let points = make_scan_points_at_origin();
+
+        // Standard ICP
+        let line_collection = LineCollection::from_lines(&lines);
+        let mut scratch_std = IcpScratchSpace::default_capacity();
+        let icp = PointToLineIcp::new();
+        let result_std = icp.match_scan_with_scratch(
+            &points,
+            &line_collection,
+            Pose2D::identity(),
+            &mut scratch_std,
+        );
+
+        // Indexed ICP
+        let spatial_index = line_collection.build_spatial_index_for_radius(0.5);
+        let mut scratch_idx = IcpScratchSpace::default_capacity();
+        let result_idx = icp.match_scan_indexed(
+            &points,
+            &line_collection,
+            &spatial_index,
+            Pose2D::identity(),
+            &mut scratch_idx,
+        );
+
+        // Both should converge
+        assert!(result_std.converged, "Standard ICP should converge");
+        assert!(result_idx.converged, "Indexed ICP should converge");
+
+        // Poses should be very close
+        assert_relative_eq!(result_std.pose.x, result_idx.pose.x, epsilon = 0.05);
+        assert_relative_eq!(result_std.pose.y, result_idx.pose.y, epsilon = 0.05);
+        assert_relative_eq!(result_std.pose.theta, result_idx.pose.theta, epsilon = 0.05);
+    }
+
+    #[test]
+    fn test_icp_indexed_identity() {
+        let lines = make_room_lines();
+        let points = make_scan_points_at_origin();
+
+        let line_collection = LineCollection::from_lines(&lines);
+        let spatial_index = line_collection.build_spatial_index_for_radius(0.5);
+        let mut scratch = IcpScratchSpace::default_capacity();
+
+        let icp = PointToLineIcp::new();
+        let result = icp.match_scan_indexed(
+            &points,
+            &line_collection,
+            &spatial_index,
+            Pose2D::identity(),
+            &mut scratch,
+        );
+
+        assert!(result.converged);
+        assert_relative_eq!(result.pose.x, 0.0, epsilon = 0.1);
+        assert_relative_eq!(result.pose.y, 0.0, epsilon = 0.1);
+        assert_relative_eq!(result.pose.theta.abs(), 0.0, epsilon = 0.1);
     }
 }

@@ -2,6 +2,8 @@
 //!
 //! Contains gap detection, corner detection, segment merging, and adaptive threshold computation.
 
+use std::simd::{f32x4, num::SimdFloat};
+
 use crate::core::Point2D;
 use crate::features::Line2D;
 
@@ -136,6 +138,7 @@ pub(crate) fn split_by_gaps(points: &[Point2D], max_gap: f32) -> Vec<Vec<Point2D
 /// 3. Prefer points that are well away from boundaries (actual corners)
 ///
 /// Returns None if no valid split point exists.
+/// SIMD-optimized for batches of 4+ points.
 pub(crate) fn find_best_split_point(
     segment_points: &[Point2D],
     line: &Line2D,
@@ -148,11 +151,64 @@ pub(crate) fn find_best_split_point(
     let n = segment_points.len();
     let min_boundary_distance = n / 10; // At least 10% away from boundary
 
-    // Compute all deviations
-    let deviations: Vec<f32> = segment_points
-        .iter()
-        .map(|p| line.distance_to_point(*p))
-        .collect();
+    // Pre-compute line parameters for SIMD distance calculation
+    let dx = line.end.x - line.start.x;
+    let dy = line.end.y - line.start.y;
+    let length_sq = dx * dx + dy * dy;
+
+    if length_sq < f32::EPSILON {
+        // Degenerate line - use scalar fallback
+        return find_best_split_point_scalar(segment_points, line, threshold);
+    }
+
+    let inv_length = 1.0 / length_sq.sqrt();
+
+    // Compute all deviations using SIMD
+    let chunks = n / 4;
+    let mut deviations = Vec::with_capacity(n);
+
+    if chunks > 0 {
+        let dx4 = f32x4::splat(dx);
+        let dy4 = f32x4::splat(dy);
+        let sx4 = f32x4::splat(line.start.x);
+        let sy4 = f32x4::splat(line.start.y);
+        let inv_len4 = f32x4::splat(inv_length);
+
+        for i in 0..chunks {
+            let base = i * 4;
+
+            // Load 4 points
+            let px = f32x4::from_array([
+                segment_points[base].x,
+                segment_points[base + 1].x,
+                segment_points[base + 2].x,
+                segment_points[base + 3].x,
+            ]);
+            let py = f32x4::from_array([
+                segment_points[base].y,
+                segment_points[base + 1].y,
+                segment_points[base + 2].y,
+                segment_points[base + 3].y,
+            ]);
+
+            // Compute cross product and distance
+            let to_px = px - sx4;
+            let to_py = py - sy4;
+            let cross = dx4 * to_py - dy4 * to_px;
+            let dist = cross.abs() * inv_len4;
+
+            deviations.extend_from_slice(&dist.to_array());
+        }
+    }
+
+    // Handle remainder
+    for p in segment_points.iter().take(n).skip(chunks * 4) {
+        let to_px = p.x - line.start.x;
+        let to_py = p.y - line.start.y;
+        let cross = dx * to_py - dy * to_px;
+        let dist = cross.abs() * inv_length;
+        deviations.push(dist);
+    }
 
     // Find max deviation point, preferring points away from boundaries
     let mut best_idx = None;
@@ -174,6 +230,46 @@ pub(crate) fn find_best_split_point(
             threshold
         } else {
             // Near-boundary points need 5x threshold to be considered
+            threshold * 5.0
+        };
+
+        if dist > effective_threshold && dist > best_dist {
+            best_dist = dist;
+            best_idx = Some(i);
+        }
+    }
+
+    best_idx.map(|idx| (idx, best_dist))
+}
+
+/// Scalar fallback for degenerate lines.
+fn find_best_split_point_scalar(
+    segment_points: &[Point2D],
+    line: &Line2D,
+    threshold: f32,
+) -> Option<(usize, f32)> {
+    let n = segment_points.len();
+    let min_boundary_distance = n / 10;
+
+    let deviations: Vec<f32> = segment_points
+        .iter()
+        .map(|p| line.distance_to_point(*p))
+        .collect();
+
+    let mut best_idx = None;
+    let mut best_dist: f32 = 0.0;
+
+    for (i, &dist) in deviations.iter().enumerate() {
+        if i == 0 || i == n - 1 {
+            continue;
+        }
+
+        let dist_from_boundary = i.min(n - 1 - i);
+        let is_interior = dist_from_boundary >= min_boundary_distance.max(1);
+
+        let effective_threshold = if is_interior {
+            threshold
+        } else {
             threshold * 5.0
         };
 

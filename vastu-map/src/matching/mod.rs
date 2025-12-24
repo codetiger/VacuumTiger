@@ -73,7 +73,9 @@ pub use correspondence::{
     CornerCorrespondence, CornerCorrespondenceSet, Correspondence, CorrespondenceSet,
     CorrespondenceSoA, IDENTITY_COVARIANCE, LineDataRaw, MatchResult, PoseCovariance,
 };
-pub use gauss_newton::{GaussNewtonConfig, GaussNewtonResult, optimize_pose_fast};
+pub use gauss_newton::{
+    GaussNewtonConfig, GaussNewtonResult, optimize_pose_fast, optimize_pose_simd,
+};
 pub use nearest_neighbor::{
     CorrespondenceCandidate, NearestNeighborConfig, find_correspondences,
     validate_correspondence_candidate,

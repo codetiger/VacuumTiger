@@ -5,6 +5,7 @@
 //! - Counter-clockwise positive rotation
 
 use std::f32::consts::PI;
+use std::simd::{f32x4, num::SimdFloat};
 
 /// Two times PI (full circle in radians).
 pub const TWO_PI: f32 = 2.0 * PI;
@@ -99,6 +100,8 @@ pub struct Covariance2D {
 
 /// Compute the centroid of a set of points.
 ///
+/// SIMD-optimized for batches of 4+ points.
+///
 /// # Example
 /// ```
 /// use vastu_map::core::{Point2D, math::compute_centroid};
@@ -114,22 +117,55 @@ pub fn compute_centroid(points: &[Point2D]) -> Point2D {
         return Point2D::new(0.0, 0.0);
     }
 
-    let n = points.len() as f32;
+    let n = points.len();
+    let chunks = n / 4;
     let mut sum_x: f32 = 0.0;
     let mut sum_y: f32 = 0.0;
 
-    for p in points {
+    // SIMD path for 4+ points
+    if chunks > 0 {
+        let mut sum_x4 = f32x4::splat(0.0);
+        let mut sum_y4 = f32x4::splat(0.0);
+
+        for i in 0..chunks {
+            let base = i * 4;
+
+            // Load 4 points
+            let px = f32x4::from_array([
+                points[base].x,
+                points[base + 1].x,
+                points[base + 2].x,
+                points[base + 3].x,
+            ]);
+            let py = f32x4::from_array([
+                points[base].y,
+                points[base + 1].y,
+                points[base + 2].y,
+                points[base + 3].y,
+            ]);
+
+            sum_x4 += px;
+            sum_y4 += py;
+        }
+
+        sum_x = sum_x4.reduce_sum();
+        sum_y = sum_y4.reduce_sum();
+    }
+
+    // Handle remainder
+    for p in points.iter().take(n).skip(chunks * 4) {
         sum_x += p.x;
         sum_y += p.y;
     }
 
-    Point2D::new(sum_x / n, sum_y / n)
+    Point2D::new(sum_x / n as f32, sum_y / n as f32)
 }
 
 /// Compute the 2x2 covariance matrix elements for a set of points.
 ///
 /// The covariance matrix describes the spread and orientation of points
 /// around their centroid. Used for Total Least Squares line fitting and PCA.
+/// SIMD-optimized for batches of 4+ points.
 ///
 /// # Arguments
 /// * `points` - Point set
@@ -153,11 +189,54 @@ pub fn compute_centroid(points: &[Point2D]) -> Point2D {
 /// ```
 #[inline]
 pub fn compute_covariance(points: &[Point2D], centroid: Point2D) -> Covariance2D {
+    let n = points.len();
+    let chunks = n / 4;
     let mut cxx: f32 = 0.0;
     let mut cyy: f32 = 0.0;
     let mut cxy: f32 = 0.0;
 
-    for p in points {
+    // SIMD path for 4+ points
+    if chunks > 0 {
+        let cx4 = f32x4::splat(centroid.x);
+        let cy4 = f32x4::splat(centroid.y);
+        let mut cxx4 = f32x4::splat(0.0);
+        let mut cyy4 = f32x4::splat(0.0);
+        let mut cxy4 = f32x4::splat(0.0);
+
+        for i in 0..chunks {
+            let base = i * 4;
+
+            // Load 4 points
+            let px = f32x4::from_array([
+                points[base].x,
+                points[base + 1].x,
+                points[base + 2].x,
+                points[base + 3].x,
+            ]);
+            let py = f32x4::from_array([
+                points[base].y,
+                points[base + 1].y,
+                points[base + 2].y,
+                points[base + 3].y,
+            ]);
+
+            // Compute deltas
+            let dx = px - cx4;
+            let dy = py - cy4;
+
+            // Accumulate covariance components
+            cxx4 += dx * dx;
+            cyy4 += dy * dy;
+            cxy4 += dx * dy;
+        }
+
+        cxx = cxx4.reduce_sum();
+        cyy = cyy4.reduce_sum();
+        cxy = cxy4.reduce_sum();
+    }
+
+    // Handle remainder
+    for p in points.iter().take(n).skip(chunks * 4) {
         let dx = p.x - centroid.x;
         let dy = p.y - centroid.y;
         cxx += dx * dx;

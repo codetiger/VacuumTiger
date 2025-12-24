@@ -19,6 +19,7 @@
 use std::simd::{f32x4, num::SimdFloat};
 
 use super::line::Line2D;
+use super::spatial_index::LineSpatialIndex;
 use crate::core::{Point2D, Pose2D};
 
 /// Collection of line segments with SoA layout for SIMD operations.
@@ -720,6 +721,32 @@ impl LineCollection {
                 self.point_counts[i],
             )
         })
+    }
+
+    /// Build a spatial index for fast proximity queries.
+    ///
+    /// # Arguments
+    /// * `cell_size` - Grid cell size in meters (typically 0.5-1.0m)
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let lines = LineCollection::from_lines(&[...]);
+    /// let index = lines.build_spatial_index(0.5);
+    ///
+    /// // Query for lines near a point
+    /// let candidates = index.query_radius(Point2D::new(1.0, 2.0), 0.3);
+    /// ```
+    #[inline]
+    pub fn build_spatial_index(&self, cell_size: f32) -> LineSpatialIndex {
+        LineSpatialIndex::build(self, cell_size)
+    }
+
+    /// Build a spatial index optimized for a specific query radius.
+    ///
+    /// Uses cell_size = 2 × query_radius for optimal performance.
+    #[inline]
+    pub fn build_spatial_index_for_radius(&self, query_radius: f32) -> LineSpatialIndex {
+        LineSpatialIndex::build_for_radius(self, query_radius)
     }
 }
 

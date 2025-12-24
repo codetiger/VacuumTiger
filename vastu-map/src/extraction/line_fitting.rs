@@ -19,6 +19,8 @@
 //! let line = fit_line_from_sensor(&points, sensor_pos, None);
 //! ```
 
+use std::simd::{f32x4, num::SimdFloat};
+
 use crate::config::LidarNoiseModel;
 use crate::core::Point2D;
 use crate::core::math::{compute_centroid, compute_covariance, principal_direction};
@@ -444,37 +446,203 @@ pub fn fitting_error_weighted(points: &[Point2D], line: &Line2D, weights: &[f32]
 /// Compute the perpendicular fitting error (RMS distance to line).
 ///
 /// Returns the root-mean-square of perpendicular distances from points to the line.
+/// SIMD-optimized for batches of 4+ points.
 pub fn fitting_error(points: &[Point2D], line: &Line2D) -> f32 {
     if points.is_empty() {
         return 0.0;
     }
 
+    let n = points.len();
+
+    // Pre-compute line parameters for SIMD
+    let dx = line.end.x - line.start.x;
+    let dy = line.end.y - line.start.y;
+    let length_sq = dx * dx + dy * dy;
+
+    if length_sq < f32::EPSILON {
+        // Degenerate line - fallback to point distance
+        let mut sum_sq: f32 = 0.0;
+        for p in points {
+            let d = p.distance(line.start);
+            sum_sq += d * d;
+        }
+        return (sum_sq / n as f32).sqrt();
+    }
+
+    let inv_length = 1.0 / length_sq.sqrt();
+
+    // SIMD path for 4+ points
+    let chunks = n / 4;
     let mut sum_sq: f32 = 0.0;
-    for p in points {
-        let dist = line.distance_to_point(*p);
+
+    if chunks > 0 {
+        let dx4 = f32x4::splat(dx);
+        let dy4 = f32x4::splat(dy);
+        let sx4 = f32x4::splat(line.start.x);
+        let sy4 = f32x4::splat(line.start.y);
+        let inv_len4 = f32x4::splat(inv_length);
+        let mut sum_sq4 = f32x4::splat(0.0);
+
+        for i in 0..chunks {
+            let base = i * 4;
+
+            // Load 4 points
+            let px = f32x4::from_array([
+                points[base].x,
+                points[base + 1].x,
+                points[base + 2].x,
+                points[base + 3].x,
+            ]);
+            let py = f32x4::from_array([
+                points[base].y,
+                points[base + 1].y,
+                points[base + 2].y,
+                points[base + 3].y,
+            ]);
+
+            // Compute cross product: dx * (py - sy) - dy * (px - sx)
+            let to_px = px - sx4;
+            let to_py = py - sy4;
+            let cross = dx4 * to_py - dy4 * to_px;
+
+            // Distance = |cross| / length
+            let dist = cross.abs() * inv_len4;
+            sum_sq4 += dist * dist;
+        }
+
+        sum_sq = sum_sq4.reduce_sum();
+    }
+
+    // Handle remainder (scalar)
+    for p in points.iter().take(n).skip(chunks * 4) {
+        let to_px = p.x - line.start.x;
+        let to_py = p.y - line.start.y;
+        let cross = dx * to_py - dy * to_px;
+        let dist = cross.abs() * inv_length;
         sum_sq += dist * dist;
     }
 
-    (sum_sq / points.len() as f32).sqrt()
+    (sum_sq / n as f32).sqrt()
 }
 
 /// Find the point with maximum distance from a line.
 ///
 /// Returns (index, distance) of the farthest point.
 /// Returns None if points is empty.
+/// SIMD-optimized for batches of 4+ points.
 pub fn max_distance_point(points: &[Point2D], line: &Line2D) -> Option<(usize, f32)> {
     if points.is_empty() {
         return None;
     }
 
+    let n = points.len();
+
+    // Pre-compute line parameters
+    let dx = line.end.x - line.start.x;
+    let dy = line.end.y - line.start.y;
+    let length_sq = dx * dx + dy * dy;
+
+    if length_sq < f32::EPSILON {
+        // Degenerate line - find max point distance
+        let mut max_idx = 0;
+        let mut max_dist: f32 = 0.0;
+        for (i, p) in points.iter().enumerate() {
+            let dist = p.distance(line.start);
+            if dist > max_dist {
+                max_dist = dist;
+                max_idx = i;
+            }
+        }
+        return Some((max_idx, max_dist));
+    }
+
+    let inv_length = 1.0 / length_sq.sqrt();
+
+    // SIMD path - compute distances in batches, track max
+    let chunks = n / 4;
+    let mut distances = Vec::with_capacity(n);
+
+    if chunks > 0 {
+        let dx4 = f32x4::splat(dx);
+        let dy4 = f32x4::splat(dy);
+        let sx4 = f32x4::splat(line.start.x);
+        let sy4 = f32x4::splat(line.start.y);
+        let inv_len4 = f32x4::splat(inv_length);
+
+        for i in 0..chunks {
+            let base = i * 4;
+
+            // Load 4 points
+            let px = f32x4::from_array([
+                points[base].x,
+                points[base + 1].x,
+                points[base + 2].x,
+                points[base + 3].x,
+            ]);
+            let py = f32x4::from_array([
+                points[base].y,
+                points[base + 1].y,
+                points[base + 2].y,
+                points[base + 3].y,
+            ]);
+
+            // Compute cross product and distance
+            let to_px = px - sx4;
+            let to_py = py - sy4;
+            let cross = dx4 * to_py - dy4 * to_px;
+            let dist = cross.abs() * inv_len4;
+
+            distances.extend_from_slice(&dist.to_array());
+        }
+    }
+
+    // Handle remainder
+    for p in points.iter().take(n).skip(chunks * 4) {
+        let to_px = p.x - line.start.x;
+        let to_py = p.y - line.start.y;
+        let cross = dx * to_py - dy * to_px;
+        let dist = cross.abs() * inv_length;
+        distances.push(dist);
+    }
+
+    // Find max using SIMD reduction if we have enough distances
     let mut max_idx = 0;
     let mut max_dist: f32 = 0.0;
 
-    for (i, p) in points.iter().enumerate() {
-        let dist = line.distance_to_point(*p);
-        if dist > max_dist {
-            max_dist = dist;
-            max_idx = i;
+    let dist_chunks = distances.len() / 4;
+    if dist_chunks > 0 {
+        let mut max4 = f32x4::splat(0.0);
+
+        for i in 0..dist_chunks {
+            let base = i * 4;
+            let d4 = f32x4::from_slice(&distances[base..]);
+            max4 = max4.simd_max(d4);
+        }
+
+        // Reduce to find overall max, then scan for index
+        max_dist = max4.reduce_max();
+
+        // Handle remainder
+        for &d in distances.iter().skip(dist_chunks * 4) {
+            if d > max_dist {
+                max_dist = d;
+            }
+        }
+
+        // Find the index (linear scan - could be optimized but typically dominated by SIMD part)
+        for (i, &d) in distances.iter().enumerate() {
+            if d == max_dist {
+                max_idx = i;
+                break;
+            }
+        }
+    } else {
+        // Small input - scalar
+        for (i, &d) in distances.iter().enumerate() {
+            if d > max_dist {
+                max_dist = d;
+                max_idx = i;
+            }
         }
     }
 

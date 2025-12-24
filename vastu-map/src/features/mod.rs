@@ -58,9 +58,13 @@ pub mod descriptors;
 pub mod feature_set;
 pub mod line;
 pub mod line_collection;
+pub mod spatial_index;
 
 pub use corner::{Corner2D, CornerCollection};
 pub use descriptors::{CornerDescriptor, ScanDescriptor};
 pub use feature_set::FeatureSet;
 pub use line::Line2D;
 pub use line_collection::LineCollection;
+pub use spatial_index::{
+    LineSpatialIndex, MIN_CELL_SIZE, MIN_LINES_FOR_INDEX, should_use_spatial_index,
+};
