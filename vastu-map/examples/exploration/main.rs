@@ -18,6 +18,8 @@
 mod harness;
 
 use harness::{HarnessConfig, TestHarness};
+use rand::seq::IndexedRandom;
+use sangam_io::devices::mock::map_loader::SimulationMap;
 use vastu_map::Map;
 use vastu_map::Path as PlannedPath;
 use vastu_map::config::ExplorationConfig as MapExplorationConfig;
@@ -31,6 +33,114 @@ use vastu_map::query::cbvg::ClearanceVisibilityGraph;
 
 /// Maximum simulation time in seconds.
 const MAX_TIME: f32 = 200.0; // 3.3 minutes
+
+/// Directory containing available maps.
+const MAPS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps");
+
+/// Select a random map file from the maps directory.
+///
+/// # Returns
+/// The full path to a randomly selected .yaml map file.
+///
+/// # Panics
+/// If no map files are found in the directory.
+fn select_random_map() -> String {
+    let maps_path = std::path::Path::new(MAPS_DIR);
+
+    // Collect all .yaml files in the maps directory
+    let map_files: Vec<_> = std::fs::read_dir(maps_path)
+        .expect("Failed to read maps directory")
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "yaml") {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if map_files.is_empty() {
+        panic!("No map files found in {}", MAPS_DIR);
+    }
+
+    // Pick a random map
+    let mut rng = rand::rng();
+    let selected = map_files.choose(&mut rng).unwrap();
+    let map_name = selected.file_stem().unwrap().to_string_lossy();
+
+    println!("Selected random map: {}", map_name);
+    println!("  (from {} available maps)", map_files.len());
+
+    selected.to_string_lossy().into_owned()
+}
+
+/// Find a random reachable (free) position in the map with sufficient clearance.
+///
+/// # Arguments
+/// * `map_file` - Path to the map YAML file
+/// * `robot_radius` - Robot radius in meters for clearance checking
+///
+/// # Returns
+/// A tuple (x, y) of world coordinates for a valid start position.
+///
+/// # Panics
+/// If no valid position can be found after sampling.
+fn find_random_start_position(map_file: &str, robot_radius: f32) -> (f32, f32) {
+    let map = SimulationMap::load(map_file).expect("Failed to load map for position sampling");
+
+    // Collect all free pixels with sufficient clearance
+    let mut valid_positions = Vec::new();
+
+    // Calculate clearance in pixels (add some margin)
+    let clearance_pixels = ((robot_radius * 1.5) / map.resolution()).ceil() as i32;
+
+    for py in 0..map.height() {
+        for px in 0..map.width() {
+            let (x, y) = map.pixel_to_world(px, py);
+
+            // Check if this position is free
+            if map.is_occupied(x, y) {
+                continue;
+            }
+
+            // Check clearance around the robot
+            let mut has_clearance = true;
+            'clearance: for dy in -clearance_pixels..=clearance_pixels {
+                for dx in -clearance_pixels..=clearance_pixels {
+                    let check_x = x + dx as f32 * map.resolution();
+                    let check_y = y + dy as f32 * map.resolution();
+                    if map.is_occupied(check_x, check_y) {
+                        has_clearance = false;
+                        break 'clearance;
+                    }
+                }
+            }
+
+            if has_clearance {
+                valid_positions.push((x, y));
+            }
+        }
+    }
+
+    if valid_positions.is_empty() {
+        panic!("No valid start positions found in map with sufficient clearance");
+    }
+
+    // Pick a random position
+    let mut rng = rand::rng();
+    let (x, y) = *valid_positions.choose(&mut rng).unwrap();
+
+    println!("Selected random start position: ({:.2}, {:.2})", x, y);
+    println!(
+        "  (from {} valid positions with {:.2}m clearance)",
+        valid_positions.len(),
+        robot_radius * 1.5
+    );
+
+    (x, y)
+}
 
 /// Result of exploration.
 #[derive(Debug)]
@@ -63,11 +173,21 @@ fn main() {
     // Ensure results directory exists
     std::fs::create_dir_all("results").ok();
 
-    // Setup harness with map file and starting position
+    // Select a random map from available maps
+    let map_file = select_random_map();
+
+    // Get default robot radius for clearance checking
+    let default_config = HarnessConfig::default();
+    let robot_radius = default_config.robot.robot_radius;
+
+    // Find a random reachable start position
+    let (start_x, start_y) = find_random_start_position(&map_file, robot_radius);
+
+    // Setup harness with map file and random starting position
     let harness_config = HarnessConfig {
-        map_file: concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps/medium_room.yaml").to_string(),
-        start_x: 4.0,
-        start_y: 4.0,
+        map_file,
+        start_x,
+        start_y,
         ..Default::default()
     };
 

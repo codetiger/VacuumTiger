@@ -144,6 +144,21 @@ impl SimulationMap {
         self.resolution
     }
 
+    /// Get map origin (world coordinates of bottom-left pixel)
+    pub fn origin(&self) -> (f32, f32) {
+        self.origin
+    }
+
+    /// Convert pixel coordinates to world coordinates
+    ///
+    /// Returns (x, y) in meters. The center of the pixel is returned.
+    pub fn pixel_to_world(&self, px: u32, py: u32) -> (f32, f32) {
+        let x = self.origin.0 + (px as f32 + 0.5) * self.resolution;
+        // Y is inverted: bottom of image = origin, top of image = +Y
+        let y = self.origin.1 + (self.pixels.height() as f32 - 1.0 - py as f32 + 0.5) * self.resolution;
+        (x, y)
+    }
+
     /// Convert world coordinates to pixel coordinates
     fn world_to_pixel(&self, x: f32, y: f32) -> Option<(u32, u32)> {
         let px = ((x - self.origin.0) / self.resolution) as i32;
