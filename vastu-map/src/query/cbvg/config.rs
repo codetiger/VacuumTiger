@@ -52,20 +52,41 @@ pub struct CBVGConfig {
     /// Points are sampled along walls for Voronoi computation.
     /// Default: 0.1
     pub wall_sample_step: f32,
+
+    /// Minimum clique size for merging during optimization.
+    /// Cliques (mutually visible node groups) smaller than this are kept separate.
+    /// Set to 3 to merge triangles and larger clusters.
+    /// Default: 3
+    pub min_clique_size_for_merge: usize,
+
+    /// Number of lidar scans between clique optimization runs.
+    /// Higher values reduce CPU but may leave redundant nodes longer.
+    /// Set to 1 to optimize after every scan.
+    /// Default: 1
+    pub optimize_interval: usize,
+
+    /// Maximum lidar range (meters).
+    /// When a scan point is at or near this distance, it indicates no wall was hit
+    /// (open space). Nodes are still added along the ray up to this distance.
+    /// Default: 8.0
+    pub max_lidar_range: f32,
 }
 
 impl Default for CBVGConfig {
     fn default() -> Self {
         Self {
-            min_clearance: 0.3,
+            min_clearance: 0.25, // Reduced since robot radius is accounted separately
             min_clearance_narrow: 0.18,
             voronoi_sample_step: 0.1,
-            max_edge_length: 0.8,
-            coverage_node_interval: 0.35,
-            node_merge_distance: 0.15,
-            max_nodes: 500,
+            max_edge_length: 0.8,        // Reduced for tighter connectivity
+            coverage_node_interval: 0.4, // Reasonable node spacing
+            node_merge_distance: 0.4,    // Minimum distance between nodes
+            max_nodes: 5000,             // Support large multi-room layouts
             edge_clearance_step: 0.05,
             wall_sample_step: 0.1,
+            min_clique_size_for_merge: 3,
+            optimize_interval: 1,
+            max_lidar_range: 8.0,
         }
     }
 }
@@ -130,6 +151,24 @@ impl CBVGConfig {
         self
     }
 
+    /// Builder-style setter for minimum clique size for merging.
+    pub fn with_min_clique_size_for_merge(mut self, size: usize) -> Self {
+        self.min_clique_size_for_merge = size;
+        self
+    }
+
+    /// Builder-style setter for optimization interval.
+    pub fn with_optimize_interval(mut self, interval: usize) -> Self {
+        self.optimize_interval = interval;
+        self
+    }
+
+    /// Builder-style setter for maximum lidar range.
+    pub fn with_max_lidar_range(mut self, range: f32) -> Self {
+        self.max_lidar_range = range;
+        self
+    }
+
     /// Get the effective clearance for a given measured clearance.
     ///
     /// Returns `min_clearance` for open areas, or `min_clearance_narrow`
@@ -151,15 +190,18 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = CBVGConfig::default();
-        assert_eq!(config.min_clearance, 0.3);
+        assert_eq!(config.min_clearance, 0.25);
         assert_eq!(config.min_clearance_narrow, 0.18);
         assert_eq!(config.voronoi_sample_step, 0.1);
         assert_eq!(config.max_edge_length, 0.8);
-        assert_eq!(config.coverage_node_interval, 0.35);
-        assert_eq!(config.node_merge_distance, 0.15);
-        assert_eq!(config.max_nodes, 500);
+        assert_eq!(config.coverage_node_interval, 0.4);
+        assert_eq!(config.node_merge_distance, 0.4);
+        assert_eq!(config.max_nodes, 5000);
         assert_eq!(config.edge_clearance_step, 0.05);
         assert_eq!(config.wall_sample_step, 0.1);
+        assert_eq!(config.min_clique_size_for_merge, 3);
+        assert_eq!(config.optimize_interval, 1);
+        assert_eq!(config.max_lidar_range, 8.0);
     }
 
     #[test]
@@ -177,7 +219,7 @@ mod tests {
         let config = CBVGConfig::default();
 
         // Open area - use full clearance
-        assert_eq!(config.effective_clearance(0.5), 0.3);
+        assert_eq!(config.effective_clearance(0.5), 0.25);
 
         // Narrow passage - use reduced clearance
         assert_eq!(config.effective_clearance(0.2), 0.18);

@@ -13,6 +13,8 @@
 //!
 //! This approach eliminates ping-pong behavior and improves coverage efficiency.
 
+use std::collections::{HashMap, VecDeque};
+
 use crate::core::{Point2D, Pose2D};
 use crate::{Frontier, Map, Path};
 
@@ -39,6 +41,8 @@ pub enum ExplorationState {
         waypoint_idx: usize,
         /// Target frontier point.
         target_frontier: Point2D,
+        /// CBVG goal node index used for this path (for collision tracking).
+        goal_node_idx: Option<usize>,
     },
 
     /// Recovering from collision (backing off).
@@ -49,6 +53,12 @@ pub enum ExplorationState {
         backoff_heading: f32,
         /// Position when backoff started.
         start_position: Point2D,
+        /// The frontier we were trying to reach (for alternative path planning).
+        target_frontier: Point2D,
+        /// The CBVG goal node that led to collision (to exclude in retry).
+        failed_goal_node: Option<usize>,
+        /// Number of recovery collision attempts.
+        recovery_attempts: u32,
     },
 
     /// Exploration complete - no frontiers remain.
@@ -179,11 +189,14 @@ pub struct ExplorationController {
     /// Configuration.
     config: ExplorationConfig,
 
-    /// Number of consecutive failed path planning attempts.
+    /// Number of consecutive failed path planning attempts for current frontier.
     failed_planning_attempts: usize,
 
     /// Maximum failed attempts before giving up on a frontier.
     max_failed_attempts: usize,
+
+    /// The frontier viewpoint we're currently attempting (to track per-frontier failures).
+    current_attempt_frontier: Option<Point2D>,
 
     /// Frontiers that have been marked as unreachable.
     unreachable_frontiers: Vec<Point2D>,
@@ -203,6 +216,19 @@ pub struct ExplorationController {
     /// Robot position when unreachable frontiers were last cleared.
     /// Used to re-evaluate unreachable frontiers after robot moves significantly.
     position_at_last_unreachable_clear: Option<Point2D>,
+
+    /// CBVG nodes that led to collision for each frontier viewpoint.
+    /// Key is grid-quantized frontier position, value is list of failed node indices.
+    /// Used to find alternative approach angles after collision.
+    collision_nodes: HashMap<(i32, i32), Vec<usize>>,
+
+    /// Recent frontier targets for oscillation detection.
+    /// Stores (grid_x, grid_y) of last N selected frontiers.
+    recent_targets: VecDeque<(i32, i32)>,
+
+    /// Frontiers temporarily suppressed due to oscillation detection.
+    /// Key is grid position, value is suppression count (decrements each cycle).
+    suppressed_frontiers: HashMap<(i32, i32), u32>,
 }
 
 impl ExplorationController {
@@ -218,12 +244,16 @@ impl ExplorationController {
             config,
             failed_planning_attempts: 0,
             max_failed_attempts: 3,
+            current_attempt_frontier: None,
             unreachable_frontiers: Vec::new(),
             frontier_match_distance: 0.5,
             planner,
             history,
             last_update_time: None,
             position_at_last_unreachable_clear: None,
+            collision_nodes: HashMap::new(),
+            recent_targets: VecDeque::with_capacity(8),
+            suppressed_frontiers: HashMap::new(),
         }
     }
 
@@ -232,10 +262,13 @@ impl ExplorationController {
         self.state = ExplorationState::SelectingFrontier;
         self.failed_planning_attempts = 0;
         self.unreachable_frontiers.clear();
+        self.collision_nodes.clear();
         self.planner.reset();
         self.history.clear();
         self.last_update_time = Some(std::time::Instant::now());
         self.position_at_last_unreachable_clear = None;
+        self.recent_targets.clear();
+        self.suppressed_frontiers.clear();
     }
 
     /// Reset to idle state.
@@ -243,10 +276,13 @@ impl ExplorationController {
         self.state = ExplorationState::Idle;
         self.failed_planning_attempts = 0;
         self.unreachable_frontiers.clear();
+        self.collision_nodes.clear();
         self.planner.reset();
         self.history.clear();
         self.last_update_time = None;
         self.position_at_last_unreachable_clear = None;
+        self.recent_targets.clear();
+        self.suppressed_frontiers.clear();
     }
 
     /// Get current state.
@@ -302,17 +338,31 @@ impl ExplorationController {
                 path,
                 waypoint_idx,
                 target_frontier,
-            } => self.follow_path(map, current_pose, path, waypoint_idx, target_frontier),
+                goal_node_idx,
+            } => self.follow_path(
+                map,
+                current_pose,
+                path,
+                waypoint_idx,
+                target_frontier,
+                goal_node_idx,
+            ),
 
             ExplorationState::RecoveringFromCollision {
                 backoff_remaining,
                 backoff_heading,
                 start_position,
+                target_frontier,
+                failed_goal_node,
+                recovery_attempts,
             } => self.execute_backoff(
                 current_pose,
                 backoff_remaining,
                 backoff_heading,
                 start_position,
+                target_frontier,
+                failed_goal_node,
+                recovery_attempts,
             ),
 
             ExplorationState::Complete => ExplorationStep::idle(self.state.clone()),
@@ -322,6 +372,15 @@ impl ExplorationController {
     }
 
     /// Handle a collision event.
+    ///
+    /// When collision occurs during path following:
+    /// 1. Record the failed CBVG goal node (if any)
+    /// 2. Enter recovery state with the target frontier preserved
+    /// 3. After backoff completes, path planning will try alternative nodes
+    ///
+    /// When collision occurs during recovery:
+    /// 1. Increment recovery attempts counter
+    /// 2. If too many attempts, mark frontier as unreachable
     fn handle_collision(&mut self, event: CollisionEvent, current_pose: Pose2D) -> ExplorationStep {
         log::info!(
             "Collision detected: {:?} at ({:.2}, {:.2})",
@@ -333,11 +392,107 @@ impl ExplorationController {
         // Create virtual wall at collision point
         let virtual_wall = event.to_virtual_wall(self.config.virtual_wall_length);
 
-        // Transition to recovery state
+        // Handle collision during recovery - increment attempts and possibly give up
+        if let ExplorationState::RecoveringFromCollision {
+            target_frontier,
+            failed_goal_node,
+            recovery_attempts,
+            backoff_heading,
+            ..
+        } = &self.state
+        {
+            let attempts = *recovery_attempts + 1;
+            let target = *target_frontier;
+            let failed_node = *failed_goal_node;
+
+            log::warn!(
+                "Recovery collision at ({:.2}, {:.2}) - attempt {} of 3",
+                event.point.x,
+                event.point.y,
+                attempts
+            );
+
+            if attempts >= 3 {
+                // Too many recovery collisions - mark frontier as unreachable
+                log::warn!(
+                    "Marking frontier at ({:.2}, {:.2}) as unreachable after {} recovery collisions",
+                    target.x,
+                    target.y,
+                    attempts
+                );
+
+                // Track position for unreachable frontier reset logic
+                if self.unreachable_frontiers.is_empty() {
+                    self.position_at_last_unreachable_clear = Some(current_pose.position());
+                }
+                self.unreachable_frontiers.push(target);
+
+                // Go back to selecting a different frontier
+                self.state = ExplorationState::SelectingFrontier;
+                let mut step = ExplorationStep::idle(self.state.clone());
+                step.virtual_wall = Some(virtual_wall);
+                return step;
+            }
+
+            // Continue recovery with incremented counter
+            // Keep original start_position so backoff distance calculation is correct
+            let original_start =
+                if let ExplorationState::RecoveringFromCollision { start_position, .. } =
+                    &self.state
+                {
+                    *start_position
+                } else {
+                    current_pose.position()
+                };
+
+            self.state = ExplorationState::RecoveringFromCollision {
+                backoff_remaining: self.config.backoff_distance,
+                backoff_heading: *backoff_heading,
+                start_position: original_start, // Keep original start for correct distance calculation
+                target_frontier: target,
+                failed_goal_node: failed_node,
+                recovery_attempts: attempts,
+            };
+
+            let mut step =
+                ExplorationStep::with_velocity(VelocityCommand::stop(), self.state.clone());
+            step.virtual_wall = Some(virtual_wall);
+            return step;
+        }
+
+        // Collision during FollowingPath - extract values then record the failed node
+        let (target_frontier, failed_goal_node) = if let ExplorationState::FollowingPath {
+            target_frontier,
+            goal_node_idx,
+            ..
+        } = &self.state
+        {
+            (*target_frontier, *goal_node_idx)
+        } else {
+            // Collision in some other state (shouldn't happen, but handle gracefully)
+            (current_pose.position(), None)
+        };
+
+        // Record this node as failed for this frontier (after extracting values to avoid borrow conflict)
+        if let Some(node_idx) = failed_goal_node {
+            self.add_collision_node_for_frontier(target_frontier, node_idx);
+        }
+
+        log::info!(
+            "Collision while heading to frontier ({:.2}, {:.2}), failed node: {:?}",
+            target_frontier.x,
+            target_frontier.y,
+            failed_goal_node
+        );
+
+        // Transition to recovery state - preserve target frontier for alternative path planning
         self.state = ExplorationState::RecoveringFromCollision {
             backoff_remaining: self.config.backoff_distance,
             backoff_heading: event.backoff_heading(),
             start_position: current_pose.position(),
+            target_frontier,
+            failed_goal_node,
+            recovery_attempts: 0,
         };
 
         // Return stop command with virtual wall
@@ -364,6 +519,9 @@ impl ExplorationController {
             .unwrap_or(0.1);
         self.last_update_time = Some(std::time::Instant::now());
 
+        // Decay suppression counters from oscillation detection
+        self.decay_suppressed_frontiers();
+
         // Update history with current position
         self.history.mark_visited(robot_pos);
 
@@ -383,19 +541,22 @@ impl ExplorationController {
 
             if should_clear {
                 log::debug!(
-                    "Clearing {} unreachable frontiers after robot moved {:.1}m",
+                    "Clearing {} unreachable frontiers and {} collision node entries after robot moved {:.1}m",
                     self.unreachable_frontiers.len(),
+                    self.collision_nodes.len(),
                     UNREACHABLE_RESET_DISTANCE
                 );
                 self.unreachable_frontiers.clear();
+                self.collision_nodes.clear(); // Also reset collision history
                 self.position_at_last_unreachable_clear = Some(robot_pos);
             }
         }
 
-        // Filter out unreachable frontiers (using viewpoint for distance checks)
+        // Filter out unreachable and suppressed frontiers (using viewpoint for distance checks)
         let reachable_frontiers: Vec<Frontier> = all_frontiers
             .iter()
             .filter(|f| !self.is_frontier_unreachable(f.viewpoint))
+            .filter(|f| !self.is_frontier_suppressed(f.viewpoint))
             .cloned()
             .collect();
 
@@ -423,12 +584,50 @@ impl ExplorationController {
             .update(&reachable_frontiers, robot_pos, &self.history, dt);
 
         // Try to find a frontier with a valid path
+        // Safety limit to prevent infinite loops - max iterations = 2 * number of frontiers + regions
+        const MAX_LOOP_ITERATIONS: usize = 100;
+        let mut loop_iterations = 0;
+
         loop {
+            loop_iterations += 1;
+            if loop_iterations > MAX_LOOP_ITERATIONS {
+                log::error!(
+                    "Exploration stuck: exceeded {} iterations in select_frontier loop",
+                    MAX_LOOP_ITERATIONS
+                );
+                self.state = ExplorationState::Failed {
+                    reason: format!(
+                        "frontier selection loop exceeded {} iterations",
+                        MAX_LOOP_ITERATIONS
+                    ),
+                };
+                return ExplorationStep::idle(self.state.clone());
+            }
+
             // Check if we've exhausted all regions
             if self.planner.plan().is_complete() {
-                // Force replan to pick up any new frontiers
+                // Re-filter frontiers to exclude those marked unreachable during this loop
+                let still_reachable: Vec<Frontier> = reachable_frontiers
+                    .iter()
+                    .filter(|f| !self.is_frontier_unreachable(f.viewpoint))
+                    .cloned()
+                    .collect();
+
+                if still_reachable.is_empty() {
+                    // All frontiers are now unreachable
+                    log::warn!(
+                        "Exploration stuck: all {} frontiers are unreachable",
+                        reachable_frontiers.len()
+                    );
+                    self.state = ExplorationState::Failed {
+                        reason: format!("{} frontiers unreachable", reachable_frontiers.len()),
+                    };
+                    return ExplorationStep::idle(self.state.clone());
+                }
+
+                // Force replan with updated reachable frontiers
                 self.planner
-                    .force_replan(&reachable_frontiers, robot_pos, &self.history);
+                    .force_replan(&still_reachable, robot_pos, &self.history);
 
                 if self.planner.plan().is_complete() || self.planner.plan().is_empty() {
                     // Still no regions - exploration complete
@@ -454,13 +653,14 @@ impl ExplorationController {
 
             // Find nearest CBVG node to the frontier - guaranteed reachable
             // CBVG nodes are in visible areas with proper wall clearance
-            let target = match selected_frontier {
+            let (target, frontier_viewpoint) = match selected_frontier {
                 Some(f) => {
                     // Try to find nearest CBVG node (within 2m of frontier viewpoint)
-                    match map.nearest_cbvg_node(f.viewpoint, 2.0) {
+                    let target_pos = match map.nearest_cbvg_node(f.viewpoint, 2.0) {
                         Some(node_pos) => node_pos,
                         None => f.viewpoint, // Fallback to viewpoint if no node nearby
-                    }
+                    };
+                    (target_pos, f.viewpoint)
                 }
                 None => {
                     // Current region exhausted, advance to next
@@ -483,28 +683,79 @@ impl ExplorationController {
                 );
                 // Mark as visited so we don't keep selecting it
                 self.history.mark_visited(target);
-                self.planner.plan_mut().advance_region();
+
+                // Remove this frontier from the current region so it won't be selected again
+                if let Some(region) = self.planner.plan_mut().current_region_mut() {
+                    region
+                        .frontiers
+                        .retain(|f| f.viewpoint.distance(frontier_viewpoint) > 0.1);
+                }
+
+                // If region is now empty, advance to next region
+                if self
+                    .planner
+                    .plan()
+                    .current_region()
+                    .is_none_or(|r| r.is_empty())
+                {
+                    self.planner.plan_mut().advance_region();
+                }
                 continue;
             }
 
+            // Get excluded nodes for this frontier (nodes that led to collision before)
+            let excluded_nodes = self.get_collision_nodes_for_frontier(frontier_viewpoint);
+
             log::debug!(
-                "Selected frontier viewpoint at ({:.2}, {:.2}) from region {}, distance: {:.2}m",
+                "Selected frontier viewpoint at ({:.2}, {:.2}) from region {}, distance: {:.2}m, excluded nodes: {:?}",
                 target.x,
                 target.y,
                 region.id,
-                distance_to_target
+                distance_to_target,
+                excluded_nodes
             );
 
-            // Plan path directly to viewpoint (no offset needed - viewpoint is already safe)
-            match map.get_path(robot_pos, target) {
-                Some(path) => {
+            // Plan path directly to viewpoint, excluding nodes that led to collision
+            match map.get_path_excluding_nodes(robot_pos, target, &excluded_nodes) {
+                Some((path, goal_node_idx)) => {
                     log::debug!(
-                        "Path planned: {} waypoints, {:.2}m total",
+                        "Path planned: {} waypoints, {:.2}m total, via node {}",
                         path.points.len(),
-                        path.length
+                        path.length,
+                        goal_node_idx
                     );
 
+                    // Check for oscillation before committing to this frontier
+                    // If oscillation is detected, suppress the "other" frontier and continue with this one
+                    if let Some(suppress_key) =
+                        self.record_frontier_and_check_oscillation(frontier_viewpoint)
+                    {
+                        log::info!(
+                            "Oscillation detected - suppressing other frontier at grid {:?}, continuing with ({:.2}, {:.2})",
+                            suppress_key,
+                            frontier_viewpoint.x,
+                            frontier_viewpoint.y
+                        );
+                        // Suppress the other frontier for 10 cycles
+                        self.suppressed_frontiers.insert(suppress_key, 10);
+
+                        // Also remove the suppressed frontier from planner's current region
+                        // so it won't be selected again in subsequent loop iterations
+                        if let Some(region) = self.planner.plan_mut().current_region_mut() {
+                            let grid_cell_size = 0.5; // Same as frontier_grid_key
+                            region.frontiers.retain(|f| {
+                                let key = (
+                                    (f.viewpoint.x / grid_cell_size) as i32,
+                                    (f.viewpoint.y / grid_cell_size) as i32,
+                                );
+                                key != suppress_key
+                            });
+                        }
+                        // Continue with the current frontier (don't skip it)
+                    }
+
                     self.failed_planning_attempts = 0;
+                    self.current_attempt_frontier = None;
 
                     // Immediately start following the path
                     let result = self.path_follower.follow(
@@ -517,7 +768,9 @@ impl ExplorationController {
                     self.state = ExplorationState::FollowingPath {
                         path: path.clone(),
                         waypoint_idx: result.waypoint_idx,
-                        target_frontier: target, // Viewpoint is already a safe target
+                        // Use frontier_viewpoint (not target/CBVG node) so collision tracking matches
+                        target_frontier: frontier_viewpoint,
+                        goal_node_idx: Some(goal_node_idx), // Track which node we're using
                     };
 
                     let mut step =
@@ -534,7 +787,19 @@ impl ExplorationController {
                         target.y
                     );
 
-                    self.failed_planning_attempts += 1;
+                    // Track per-frontier failures - reset counter if we switched frontiers
+                    let is_same_frontier = self
+                        .current_attempt_frontier
+                        .map(|prev| prev.distance(frontier_viewpoint) < 0.1)
+                        .unwrap_or(false);
+
+                    if is_same_frontier {
+                        self.failed_planning_attempts += 1;
+                    } else {
+                        // New frontier - reset counter
+                        self.current_attempt_frontier = Some(frontier_viewpoint);
+                        self.failed_planning_attempts = 1;
+                    }
 
                     if self.failed_planning_attempts >= self.max_failed_attempts {
                         // Track position when we first mark any frontier as unreachable
@@ -543,19 +808,20 @@ impl ExplorationController {
                             self.position_at_last_unreachable_clear = Some(robot_pos);
                         }
 
-                        // Mark this frontier as unreachable
-                        self.unreachable_frontiers.push(target);
+                        // Mark this frontier as unreachable (use viewpoint, not CBVG node)
+                        self.unreachable_frontiers.push(frontier_viewpoint);
                         self.failed_planning_attempts = 0;
+                        self.current_attempt_frontier = None;
                         log::warn!(
                             "Frontier marked as unreachable after {} failed attempts",
                             self.max_failed_attempts
                         );
 
-                        // Remove from current region and try again
+                        // Remove from current region and try again (use viewpoint for matching)
                         if let Some(region) = self.planner.plan_mut().current_region_mut() {
                             region
                                 .frontiers
-                                .retain(|f| f.viewpoint.distance(target) > 0.1);
+                                .retain(|f| f.viewpoint.distance(frontier_viewpoint) > 0.1);
                         }
                         continue;
                     }
@@ -575,6 +841,7 @@ impl ExplorationController {
         path: Path,
         waypoint_idx: usize,
         target_frontier: Point2D,
+        goal_node_idx: Option<usize>,
     ) -> ExplorationStep {
         let result = self.path_follower.follow(
             current_pose,
@@ -590,6 +857,8 @@ impl ExplorationController {
                 target_frontier.x,
                 target_frontier.y
             );
+            // Clear collision nodes for this frontier since we reached it successfully
+            self.clear_collision_nodes_for_frontier(target_frontier);
             self.state = ExplorationState::SelectingFrontier;
 
             return ExplorationStep::idle(self.state.clone());
@@ -604,6 +873,7 @@ impl ExplorationController {
             path,
             waypoint_idx: result.waypoint_idx,
             target_frontier,
+            goal_node_idx,
         };
 
         let mut step = ExplorationStep::with_velocity(result.velocity, self.state.clone());
@@ -619,6 +889,9 @@ impl ExplorationController {
         backoff_remaining: f32,
         backoff_heading: f32,
         start_position: Point2D,
+        target_frontier: Point2D,
+        failed_goal_node: Option<usize>,
+        recovery_attempts: u32,
     ) -> ExplorationStep {
         // Calculate how far we've backed up
         let backed_up = current_pose.position().distance(start_position);
@@ -626,7 +899,12 @@ impl ExplorationController {
 
         if remaining <= 0.0 {
             // Backoff complete - go back to selecting frontier
-            log::debug!("Backoff complete, selecting new frontier");
+            // The collision node has already been recorded in handle_collision
+            log::debug!(
+                "Backoff complete, selecting new frontier (failed node: {:?}, attempts: {})",
+                failed_goal_node,
+                recovery_attempts
+            );
             self.state = ExplorationState::SelectingFrontier;
             return ExplorationStep::idle(self.state.clone());
         }
@@ -636,6 +914,9 @@ impl ExplorationController {
             backoff_remaining: remaining,
             backoff_heading,
             start_position,
+            target_frontier,
+            failed_goal_node,
+            recovery_attempts,
         };
 
         // Command slow reverse motion
@@ -664,6 +945,141 @@ impl ExplorationController {
     /// Get the current configuration.
     pub fn config(&self) -> &ExplorationConfig {
         &self.config
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Oscillation Detection (prevents ping-pong between nearby frontiers)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Record a frontier selection and check for oscillation or repeated visits.
+    /// Returns the frontier to suppress if a problematic pattern is detected.
+    fn record_frontier_and_check_oscillation(&mut self, frontier: Point2D) -> Option<(i32, i32)> {
+        let key = self.frontier_grid_key(frontier);
+
+        // Add to recent targets (keep last 8)
+        self.recent_targets.push_back(key);
+        if self.recent_targets.len() > 8 {
+            self.recent_targets.pop_front();
+        }
+
+        let targets: Vec<_> = self.recent_targets.iter().collect();
+        let len = targets.len();
+
+        // Check 1: A-B-A-B pattern (oscillation between two frontiers)
+        if len >= 4 {
+            let a = targets[len - 4];
+            let b = targets[len - 3];
+            let c = targets[len - 2];
+            let d = targets[len - 1]; // This is the current selection (key)
+
+            // Pattern: A, B, A, B (same A and B repeating)
+            if a == c && b == d && a != b {
+                log::warn!(
+                    "Oscillation detected between frontiers at grid {:?} and {:?}",
+                    a,
+                    b
+                );
+
+                // Copy the key to suppress before clearing
+                let suppress_key = *c;
+                self.recent_targets.clear();
+                return Some(suppress_key);
+            }
+        }
+
+        // Check 2: Same frontier visited 3+ times in last 6 selections (stuck on one frontier)
+        if len >= 6 {
+            let current = targets[len - 1];
+            let count = targets[len - 6..].iter().filter(|&&t| t == current).count();
+
+            if count >= 3 {
+                log::warn!(
+                    "Repeated visits detected: frontier at grid {:?} visited {} times in last 6",
+                    current,
+                    count
+                );
+
+                // Suppress this frontier since we keep returning to it
+                let suppress_key = *current;
+                self.recent_targets.clear();
+                return Some(suppress_key);
+            }
+        }
+
+        // Check 3: Three frontiers in rotation (A-B-C-A-B-C pattern)
+        if len >= 6 {
+            let a = targets[len - 6];
+            let b = targets[len - 5];
+            let c = targets[len - 4];
+            let d = targets[len - 3];
+            let e = targets[len - 2];
+            let f = targets[len - 1];
+
+            // Pattern: A, B, C, A, B, C
+            if a == d && b == e && c == f && a != b && b != c && a != c {
+                log::warn!("Three-way rotation detected: {:?}, {:?}, {:?}", a, b, c);
+
+                // Suppress the oldest frontier in the pattern
+                let suppress_key = *a;
+                self.recent_targets.clear();
+                return Some(suppress_key);
+            }
+        }
+
+        None
+    }
+
+    /// Check if a frontier is currently suppressed due to oscillation.
+    fn is_frontier_suppressed(&self, frontier: Point2D) -> bool {
+        let key = self.frontier_grid_key(frontier);
+        self.suppressed_frontiers.get(&key).copied().unwrap_or(0) > 0
+    }
+
+    /// Decrement suppression counters (call once per frontier selection cycle).
+    fn decay_suppressed_frontiers(&mut self) {
+        self.suppressed_frontiers.retain(|_, count| {
+            *count = count.saturating_sub(1);
+            *count > 0
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Collision Node Tracking (for alternative approach angles)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Convert a frontier point to a grid key for collision tracking.
+    /// Uses 0.5m grid cells to group nearby frontiers.
+    fn frontier_grid_key(&self, p: Point2D) -> (i32, i32) {
+        ((p.x / 0.5) as i32, (p.y / 0.5) as i32)
+    }
+
+    /// Record a failed CBVG goal node for a frontier.
+    /// This node led to a collision when trying to reach the frontier.
+    fn add_collision_node_for_frontier(&mut self, frontier: Point2D, node_idx: usize) {
+        let key = self.frontier_grid_key(frontier);
+        let nodes = self.collision_nodes.entry(key).or_default();
+        if !nodes.contains(&node_idx) {
+            nodes.push(node_idx);
+            log::debug!(
+                "Recorded failed node {} for frontier at ({:.2}, {:.2})",
+                node_idx,
+                frontier.x,
+                frontier.y
+            );
+        }
+    }
+
+    /// Get failed CBVG goal nodes for a frontier.
+    /// Returns nodes that should be excluded when planning paths to this frontier.
+    fn get_collision_nodes_for_frontier(&self, frontier: Point2D) -> Vec<usize> {
+        let key = self.frontier_grid_key(frontier);
+        self.collision_nodes.get(&key).cloned().unwrap_or_default()
+    }
+
+    /// Clear collision nodes for a frontier (called when frontier is successfully reached).
+    fn clear_collision_nodes_for_frontier(&mut self, frontier: Point2D) {
+        let key = self.frontier_grid_key(frontier);
+        self.collision_nodes.remove(&key);
     }
 }
 
@@ -729,6 +1145,22 @@ mod tests {
                 points: vec![from, to],
                 length: from.distance(to),
             })
+        }
+
+        fn get_path_excluding_nodes(
+            &self,
+            from: Point2D,
+            to: Point2D,
+            _excluded_goal_nodes: &[usize],
+        ) -> Option<(Path, usize)> {
+            // Simple direct path, return node index 0
+            Some((
+                Path {
+                    points: vec![from, to],
+                    length: from.distance(to),
+                },
+                0,
+            ))
         }
 
         fn nearest_cbvg_node(&self, target: Point2D, _max_distance: f32) -> Option<Point2D> {

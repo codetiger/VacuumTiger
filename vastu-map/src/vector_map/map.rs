@@ -14,7 +14,7 @@ use crate::integration::{
 use crate::loop_closure::{LoopClosure, LoopClosureDetector};
 use crate::matching::PointToLineIcp;
 use crate::query::cbvg::{ClearanceVisibilityGraph, VisibilityRegion};
-use crate::query::{detect_frontiers, is_straight_path_clear, query_occupancy, raycast};
+use crate::query::{is_straight_path_clear, query_occupancy, raycast};
 use crate::{Frontier, Map, ObserveResult, Occupancy, Path, TimingBreakdown};
 
 use super::config::VectorMapConfig;
@@ -269,17 +269,10 @@ impl VectorMap {
 
     /// Build and return a CBVG for visualization.
     ///
-    /// Uses visibility-based node generation if visibility data is available.
+    /// Returns a clone of the internal CBVG which is incrementally updated
+    /// with each lidar scan via `add_nodes_from_scan`.
     pub fn build_cbvg(&self) -> ClearanceVisibilityGraph {
-        let mut cbvg = ClearanceVisibilityGraph::new(self.config.cbvg.clone());
-
-        if !self.visibility.is_empty() {
-            cbvg.build_from_visibility(&self.visibility, self.line_store.lines());
-        } else {
-            cbvg.build(self.line_store.lines(), self.line_store.bounds());
-        }
-
-        cbvg
+        self.cbvg.clone()
     }
 
     /// Find the nearest CBVG node to a target point.
@@ -485,7 +478,15 @@ impl VectorMap {
             .collect();
         self.visibility
             .update_from_scan(final_pose, &world_scan_points);
-        self.cbvg_dirty = true;
+        // Incrementally add nodes from this scan
+        self.cbvg
+            .add_nodes_from_scan(final_pose, &world_scan_points, self.line_store.lines());
+        // Clean up any existing nodes that are now too close to scan points
+        self.cbvg
+            .cleanup_nodes_near_scan_points(&world_scan_points, self.line_store.lines());
+        // Clean up any edges that pass too close to scan points
+        self.cbvg.cleanup_edges_near_scan_points(&world_scan_points);
+        self.cbvg_dirty = false;
 
         // ─── Scan Storage (Exploration Mode) ───
         if let Some(ref mut store) = self.scan_store {
@@ -579,7 +580,15 @@ impl VectorMap {
             .collect();
         self.visibility
             .update_from_scan(odometry, &world_scan_points);
-        self.cbvg_dirty = true;
+        // Incrementally add nodes from this scan
+        self.cbvg
+            .add_nodes_from_scan(odometry, &world_scan_points, self.line_store.lines());
+        // Clean up any existing nodes that are now too close to scan points
+        self.cbvg
+            .cleanup_nodes_near_scan_points(&world_scan_points, self.line_store.lines());
+        // Clean up any edges that pass too close to scan points
+        self.cbvg.cleanup_edges_near_scan_points(&world_scan_points);
+        self.cbvg_dirty = false;
 
         // ─── Scan Storage (Exploration Mode) ───
         if let Some(ref mut store) = self.scan_store {
@@ -896,32 +905,35 @@ impl Map for VectorMap {
     }
 
     fn frontiers(&self) -> Vec<Frontier> {
-        // Use current robot pose for distance-based filtering
-        detect_frontiers(
+        // Use CBVG-based frontier detection
+        // A node is a frontier if it has a large uncovered angular gap
+        // (no neighbors or walls in that direction)
+        let (frontiers, _indices) = self.cbvg.detect_frontiers(
             self.line_store.lines(),
-            self.current_pose.position(),
-            &self.config.frontier,
-        )
+            self.config.frontier.min_frontier_angle,
+            self.config.frontier.max_wall_distance,
+        );
+        frontiers
     }
 
     fn get_path(&self, from: Point2D, to: Point2D) -> Option<Path> {
-        // Use CBVG for path planning with visibility-aware node generation
-        // This ensures nodes are only placed in lidar-scanned areas
-        let mut cbvg = ClearanceVisibilityGraph::new(self.config.cbvg.clone());
+        // Use the internal CBVG which is incrementally updated with each scan
+        self.cbvg.find_path(from, to, self.line_store.lines())
+    }
 
-        // Use visibility-based build if we have visibility data
-        if !self.visibility.is_empty() {
-            cbvg.build_from_visibility(&self.visibility, self.line_store.lines());
-        } else {
-            // Fallback to wall-based build for legacy/testing
-            cbvg.build(self.line_store.lines(), self.line_store.bounds());
-        }
-
-        cbvg.find_path(from, to, self.line_store.lines())
+    fn get_path_excluding_nodes(
+        &self,
+        from: Point2D,
+        to: Point2D,
+        excluded_goal_nodes: &[usize],
+    ) -> Option<(Path, usize)> {
+        // Use CBVG with node exclusions for alternative approach angles
+        self.cbvg
+            .find_path_excluding_nodes(from, to, self.line_store.lines(), excluded_goal_nodes)
     }
 
     fn nearest_cbvg_node(&self, target: Point2D, max_distance: f32) -> Option<Point2D> {
-        self.nearest_cbvg_node(target, max_distance)
+        self.cbvg.nearest_node(target, max_distance)
     }
 
     fn is_path_clear(&self, from: Point2D, to: Point2D) -> bool {
@@ -1086,18 +1098,57 @@ mod tests {
         assert!(frontiers.is_empty());
     }
 
+    /// Create a point cloud for a partial room (3 walls, top missing).
+    /// Simulates a lidar scan from origin seeing walls at x=-2, x=2, y=-2.
+    fn make_partial_room_scan() -> PointCloud2D {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+
+        // Left wall (x = -2)
+        for i in -10..=10 {
+            let y = i as f32 * 0.2;
+            xs.push(-2.0);
+            ys.push(y);
+        }
+        // Right wall (x = 2)
+        for i in -10..=10 {
+            let y = i as f32 * 0.2;
+            xs.push(2.0);
+            ys.push(y);
+        }
+        // Bottom wall (y = -2)
+        for i in -10..=10 {
+            let x = i as f32 * 0.2;
+            xs.push(x);
+            ys.push(-2.0);
+        }
+        // Top wall is MISSING - this is where frontier should be detected
+
+        PointCloud2D { xs, ys }
+    }
+
     #[test]
     fn test_frontiers_partial_room() {
         let mut map = VectorMap::default();
 
-        map.add_lines(&[
-            Line2D::new(Point2D::new(-2.0, -2.0), Point2D::new(2.0, -2.0)),
-            Line2D::new(Point2D::new(2.0, -2.0), Point2D::new(2.0, 2.0)),
-            Line2D::new(Point2D::new(-2.0, 2.0), Point2D::new(-2.0, -2.0)),
-        ]);
+        // Use observe() to properly build lines AND CBVG nodes
+        let scan = make_partial_room_scan();
+        map.observe(&scan, Pose2D::identity());
 
+        // With 3 walls visible and top open, we should have frontiers
         let frontiers = map.frontiers();
-        assert!(!frontiers.is_empty());
+
+        // CBVG nodes should exist after observation
+        assert!(
+            !map.cbvg.nodes().is_empty(),
+            "CBVG should have nodes after observation"
+        );
+
+        // Frontiers should be detected in the open direction (toward +y)
+        assert!(
+            !frontiers.is_empty(),
+            "Partial room with open top should have frontiers"
+        );
     }
 
     #[test]

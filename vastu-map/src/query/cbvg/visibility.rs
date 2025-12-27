@@ -25,6 +25,10 @@ pub struct VisibilityRegion {
     /// Indexed as grid[y_cell][x_cell].
     grid: Vec<Vec<bool>>,
 
+    /// 2D grid of processed cells: true = already processed for node generation.
+    /// Used to track which visible cells have been returned by get_newly_visible_cells().
+    processed: Vec<Vec<bool>>,
+
     /// Resolution of the visibility grid (meters per cell).
     resolution: f32,
 
@@ -47,6 +51,7 @@ impl VisibilityRegion {
     pub fn new(resolution: f32) -> Self {
         Self {
             grid: Vec::new(),
+            processed: Vec::new(),
             resolution,
             origin: Point2D::zero(),
             width: 0,
@@ -97,7 +102,9 @@ impl VisibilityRegion {
 
     /// Update visibility from a lidar scan.
     ///
-    /// Marks all cells along rays from robot to scan points as visible.
+    /// Marks all cells in the scanned area as visible by filling triangular
+    /// sectors between adjacent lidar rays. This ensures the entire interior
+    /// of the scanned region is marked visible, not just the rays themselves.
     ///
     /// # Arguments
     /// * `robot_pose` - Current robot pose (position and heading)
@@ -112,9 +119,38 @@ impl VisibilityRegion {
         // First, ensure grid covers all scan points plus robot position
         self.ensure_coverage(robot_pos, scan_points);
 
-        // Mark rays from robot to each scan point
-        for &scan_point in scan_points {
-            self.mark_ray_visible(robot_pos, scan_point);
+        // Sort scan points by angle from robot for proper sector filling
+        let mut sorted_points: Vec<Point2D> = scan_points.to_vec();
+        sorted_points.sort_by(|a, b| {
+            let angle_a = (a.y - robot_pos.y).atan2(a.x - robot_pos.x);
+            let angle_b = (b.y - robot_pos.y).atan2(b.x - robot_pos.x);
+            angle_a
+                .partial_cmp(&angle_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Fill triangular sectors between adjacent scan points
+        // This marks the entire interior as visible, not just the rays
+        for i in 0..sorted_points.len() {
+            let p1 = sorted_points[i];
+            let p2 = sorted_points[(i + 1) % sorted_points.len()];
+
+            // Check if the angle between rays is small enough to fill
+            // (avoid filling across large gaps like behind the robot)
+            let angle1 = (p1.y - robot_pos.y).atan2(p1.x - robot_pos.x);
+            let angle2 = (p2.y - robot_pos.y).atan2(p2.x - robot_pos.x);
+            let mut angle_diff = (angle2 - angle1).abs();
+            if angle_diff > std::f32::consts::PI {
+                angle_diff = 2.0 * std::f32::consts::PI - angle_diff;
+            }
+
+            // Only fill sectors with small angular gaps (< 15 degrees)
+            if angle_diff < 0.26 {
+                self.fill_triangle(robot_pos, p1, p2);
+            } else {
+                // For larger gaps, just mark the rays
+                self.mark_ray_visible(robot_pos, p1);
+            }
         }
     }
 
@@ -180,8 +216,9 @@ impl VisibilityRegion {
         self.width = ((bounds.width() / self.resolution).ceil() as usize).max(1);
         self.height = ((bounds.height() / self.resolution).ceil() as usize).max(1);
 
-        // Create grid filled with false (not visible)
+        // Create grids filled with false (not visible, not processed)
         self.grid = vec![vec![false; self.width]; self.height];
+        self.processed = vec![vec![false; self.width]; self.height];
     }
 
     /// Expand the grid to cover new bounds while preserving existing data.
@@ -198,20 +235,28 @@ impl VisibilityRegion {
         let new_width = ((expanded.width() / self.resolution).ceil() as usize).max(1);
         let new_height = ((expanded.height() / self.resolution).ceil() as usize).max(1);
 
-        // Create new grid
+        // Create new grids
         let mut new_grid = vec![vec![false; new_width]; new_height];
+        let mut new_processed = vec![vec![false; new_width]; new_height];
 
         // Copy existing data
         let offset_x = ((self.origin.x - new_origin.x) / self.resolution).round() as isize;
         let offset_y = ((self.origin.y - new_origin.y) / self.resolution).round() as isize;
 
-        for (old_y, row) in self.grid.iter().enumerate() {
+        for old_y in 0..self.height {
             let new_y = old_y as isize + offset_y;
             if new_y >= 0 && (new_y as usize) < new_height {
-                for (old_x, &visible) in row.iter().enumerate() {
+                for old_x in 0..self.width {
                     let new_x = old_x as isize + offset_x;
-                    if new_x >= 0 && (new_x as usize) < new_width && visible {
-                        new_grid[new_y as usize][new_x as usize] = true;
+                    if new_x >= 0 && (new_x as usize) < new_width {
+                        let nx = new_x as usize;
+                        let ny = new_y as usize;
+                        if self.grid[old_y][old_x] {
+                            new_grid[ny][nx] = true;
+                        }
+                        if self.processed[old_y][old_x] {
+                            new_processed[ny][nx] = true;
+                        }
                     }
                 }
             }
@@ -222,6 +267,7 @@ impl VisibilityRegion {
         self.width = new_width;
         self.height = new_height;
         self.grid = new_grid;
+        self.processed = new_processed;
     }
 
     /// Mark all cells along a ray from start to end as visible.
@@ -266,6 +312,54 @@ impl VisibilityRegion {
         }
     }
 
+    /// Fill a triangular region as visible.
+    ///
+    /// Uses a scanline algorithm to fill the triangle formed by three points.
+    fn fill_triangle(&mut self, p0: Point2D, p1: Point2D, p2: Point2D) {
+        // Convert to grid coordinates
+        let (x0, y0) = self.world_to_grid(p0);
+        let (x1, y1) = self.world_to_grid(p1);
+        let (x2, y2) = self.world_to_grid(p2);
+
+        // Find bounding box
+        let min_y = y0.min(y1).min(y2).max(0);
+        let max_y = y0.max(y1).max(y2).min(self.height as i32 - 1);
+        let min_x = x0.min(x1).min(x2).max(0);
+        let max_x = x0.max(x1).max(x2).min(self.width as i32 - 1);
+
+        // Convert to f32 for edge calculations
+        let (x0, y0) = (x0 as f32, y0 as f32);
+        let (x1, y1) = (x1 as f32, y1 as f32);
+        let (x2, y2) = (x2 as f32, y2 as f32);
+
+        // Use barycentric coordinates to check if points are inside triangle
+        let area = 0.5 * (-y1 * x2 + y0 * (-x1 + x2) + x0 * (y1 - y2) + x1 * y2);
+        if area.abs() < 0.001 {
+            // Degenerate triangle, just mark the edges
+            self.mark_ray_visible(p0, p1);
+            self.mark_ray_visible(p0, p2);
+            return;
+        }
+
+        let sign = if area < 0.0 { -1.0 } else { 1.0 };
+
+        // Scanline fill
+        for py in min_y..=max_y {
+            for px in min_x..=max_x {
+                let px_f = px as f32;
+                let py_f = py as f32;
+
+                // Calculate barycentric coordinates
+                let s = sign * (y0 * x2 - x0 * y2 + (y2 - y0) * px_f + (x0 - x2) * py_f);
+                let t = sign * (x0 * y1 - y0 * x1 + (y0 - y1) * px_f + (x1 - x0) * py_f);
+
+                if s >= 0.0 && t >= 0.0 && (s + t) <= 2.0 * area.abs() * sign {
+                    self.mark_cell_visible(px, py);
+                }
+            }
+        }
+    }
+
     /// Convert world coordinates to grid cell indices.
     fn world_to_grid(&self, point: Point2D) -> (i32, i32) {
         let x = ((point.x - self.origin.x) / self.resolution).floor() as i32;
@@ -302,6 +396,40 @@ impl VisibilityRegion {
             return 0.0;
         }
         self.visible_cell_count() as f32 / self.total_cell_count() as f32
+    }
+
+    /// Get newly visible cells that haven't been processed yet.
+    ///
+    /// Returns the center points of cells that are visible but not yet processed,
+    /// and marks them as processed. This is used for incremental node generation
+    /// in the CBVG graph.
+    ///
+    /// # Returns
+    /// Vector of cell center points in world coordinates.
+    pub fn get_newly_visible_cells(&mut self) -> Vec<Point2D> {
+        let mut new_cells = Vec::new();
+
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.grid[y][x] && !self.processed[y][x] {
+                    new_cells.push(self.grid_to_world_center(x, y));
+                    self.processed[y][x] = true;
+                }
+            }
+        }
+
+        new_cells
+    }
+
+    /// Reset the processed state for all cells.
+    ///
+    /// This allows regenerating nodes in all visible areas.
+    pub fn reset_processed(&mut self) {
+        for row in &mut self.processed {
+            for cell in row {
+                *cell = false;
+            }
+        }
     }
 
     /// Iterator over all visible cell center points.

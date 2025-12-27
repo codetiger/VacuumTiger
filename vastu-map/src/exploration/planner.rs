@@ -469,12 +469,15 @@ impl ExplorationPlanner {
 }
 
 /// Normalize an angle to [-PI, PI].
+/// Uses modular arithmetic to avoid potential infinite loops with extreme values.
 fn normalize_angle(angle: f32) -> f32 {
-    let mut result = angle;
-    while result > PI {
-        result -= 2.0 * PI;
+    if !angle.is_finite() {
+        return 0.0;
     }
-    while result < -PI {
+    let mut result = angle % (2.0 * PI);
+    if result > PI {
+        result -= 2.0 * PI;
+    } else if result < -PI {
         result += 2.0 * PI;
     }
     result

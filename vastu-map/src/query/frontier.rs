@@ -467,6 +467,19 @@ pub struct FrontierConfig {
     /// Larger distances are treated as separate areas, not a gap.
     /// Default: 3.0m
     pub max_gap_width: f32,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CBVG-based frontier detection parameters
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Minimum uncovered angle for a CBVG node to be a frontier (radians).
+    /// Nodes with a gap of at least this size (no neighbors or walls) are frontiers.
+    /// Default: 1.75 rad (100 degrees)
+    pub min_frontier_angle: f32,
+
+    /// Maximum distance to check for walls when detecting frontiers (meters).
+    /// Walls closer than this block the direction from being a frontier.
+    /// Default: 0.5m
+    pub max_wall_distance: f32,
 }
 
 impl Default for FrontierConfig {
@@ -481,6 +494,9 @@ impl Default for FrontierConfig {
             viewpoint_step: 0.1,
             min_gap_width: 0.4,  // robot diameter (0.3m) + margin
             max_gap_width: 10.0, // allow gaps across rooms
+            // CBVG-based parameters
+            min_frontier_angle: 1.75, // 100 degrees in radians
+            max_wall_distance: 0.5,
         }
     }
 }

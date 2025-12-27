@@ -69,7 +69,9 @@ impl PolarScan {
         let mut cloud = PointCloud2D::with_capacity(self.points.len());
 
         for &(angle, dist, quality) in &self.points {
-            if quality >= min_quality && dist >= min_range && dist <= max_range {
+            // Use 1.5% tolerance to include max-range readings (no wall hit)
+            // These are needed for CBVG to create nodes in open-space directions
+            if quality >= min_quality && dist >= min_range && dist <= max_range * 1.015 {
                 let (sin, cos) = angle.sin_cos();
                 cloud.xs.push(dist * cos);
                 cloud.ys.push(dist * sin);
@@ -112,7 +114,9 @@ impl PolarScan {
         target.ys.reserve(self.points.len());
 
         for &(angle, dist, quality) in &self.points {
-            if quality >= min_quality && dist >= min_range && dist <= max_range {
+            // Use 1.5% tolerance to include max-range readings (no wall hit)
+            // These are needed for CBVG to create nodes in open-space directions
+            if quality >= min_quality && dist >= min_range && dist <= max_range * 1.015 {
                 let (sin, cos) = angle.sin_cos();
                 target.xs.push(dist * cos);
                 target.ys.push(dist * sin);

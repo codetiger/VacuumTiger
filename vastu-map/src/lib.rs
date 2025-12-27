@@ -388,6 +388,27 @@ pub trait Map: Send + Sync {
     /// Path if one exists, None otherwise.
     fn get_path(&self, from: Point2D, to: Point2D) -> Option<Path>;
 
+    /// Plan path between two points, excluding specific CBVG goal nodes.
+    ///
+    /// This is used for finding alternative approach angles after a collision.
+    /// When navigation to a frontier causes a collision, the goal node that
+    /// led to the collision can be excluded, forcing the planner to find a
+    /// different approach.
+    ///
+    /// # Arguments
+    /// * `from` - Start position
+    /// * `to` - Goal position
+    /// * `excluded_goal_nodes` - CBVG node indices to exclude when selecting the goal node
+    ///
+    /// # Returns
+    /// Tuple of (Path, goal_node_index) if path exists, None otherwise.
+    fn get_path_excluding_nodes(
+        &self,
+        from: Point2D,
+        to: Point2D,
+        excluded_goal_nodes: &[usize],
+    ) -> Option<(Path, usize)>;
+
     /// Find the nearest CBVG node to a target point.
     ///
     /// This is useful for exploration to find reachable navigation targets

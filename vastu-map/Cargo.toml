@@ -30,6 +30,6 @@ name = "exploration"
 [profile.release]
 opt-level = 3
 lto = true
-codegen-units = 1        # Better optimization, slower compile
-panic = "abort"          # Smaller binary, no unwinding overhead
-strip = true             # Strip debug symbols for smaller binary
+# codegen-units = 1        # Better optimization, slower compile
+# panic = "abort"          # Smaller binary, no unwinding overhead
+# strip = true             # Strip debug symbols for smaller binary

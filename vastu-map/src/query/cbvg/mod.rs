@@ -78,6 +78,6 @@ pub use graph::ClearanceVisibilityGraph;
 pub use node::{CBVGNode, NodeType};
 pub use visibility::VisibilityRegion;
 pub use voronoi::{
-    VoronoiEdge, compute_voronoi_edges, generate_medial_axis_nodes, generate_nodes_from_visibility,
-    generate_nodes_hybrid, sample_medial_axis_nodes, sample_wall_points,
+    VoronoiEdge, compute_voronoi_edges, generate_grid_nodes, sample_medial_axis_nodes,
+    sample_wall_points,
 };

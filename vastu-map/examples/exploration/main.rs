@@ -10,6 +10,10 @@
 //! # Running
 //!
 //! ```bash
+//! # With a specific map file:
+//! cargo run --example exploration --release -- path/to/map.yaml
+//!
+//! # With random map selection:
 //! cargo run --example exploration --release
 //! ```
 //!
@@ -31,8 +35,8 @@ use vastu_map::exploration::{
 use vastu_map::integration::CoplanarMergeConfig;
 use vastu_map::query::cbvg::ClearanceVisibilityGraph;
 
-/// Maximum simulation time in seconds.
-const MAX_TIME: f32 = 200.0; // 3.3 minutes
+/// Maximum simulation time in seconds (no limit).
+const MAX_TIME: f32 = f32::MAX;
 
 /// Directory containing available maps.
 const MAPS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/data/maps");
@@ -173,8 +177,21 @@ fn main() {
     // Ensure results directory exists
     std::fs::create_dir_all("results").ok();
 
-    // Select a random map from available maps
-    let map_file = select_random_map();
+    // Check for command-line argument for map file
+    let args: Vec<String> = std::env::args().collect();
+    let map_file = if args.len() > 1 {
+        let provided_map = &args[1];
+        // Check if file exists
+        if !std::path::Path::new(provided_map).exists() {
+            eprintln!("Error: Map file not found: {}", provided_map);
+            std::process::exit(1);
+        }
+        println!("Using provided map: {}", provided_map);
+        provided_map.clone()
+    } else {
+        // Select a random map from available maps
+        select_random_map()
+    };
 
     // Get default robot radius for clearance checking
     let default_config = HarnessConfig::default();
@@ -261,7 +278,7 @@ fn run_exploration_loop(harness: &mut TestHarness, config: ExplorationConfig) ->
     let mut last_target: Option<Point2D> = None;
     let mut last_cycle_print = 0;
     let mut pending_collision: Option<CollisionEvent> = None;
-    const MAX_STEPS: usize = 20000;
+    const MAX_STEPS: usize = usize::MAX;
     const LIDAR_INTERVAL: usize = 5; // Process lidar every N steps
 
     while step_count < MAX_STEPS && harness.sim_time() < MAX_TIME {
@@ -387,7 +404,42 @@ fn run_exploration_loop(harness: &mut TestHarness, config: ExplorationConfig) ->
             ExplorationState::RecoveringFromCollision { .. } => {
                 // Execute backoff velocity (or stop if none)
                 let vel = step.velocity.unwrap_or(VelocityCommand::new(0.0, 0.0));
-                harness.step(vel.linear, vel.angular);
+                let step_result = harness.step(vel.linear, vel.angular);
+
+                // Check for collision during recovery (defensive - should be rare)
+                if step_result.any_bumper() {
+                    collisions += 1;
+
+                    let collision_type = match (step_result.left_bumper, step_result.right_bumper) {
+                        (true, true) => CollisionType::BumperBoth,
+                        (true, false) => CollisionType::BumperLeft,
+                        (false, true) => CollisionType::BumperRight,
+                        _ => CollisionType::BumperBoth,
+                    };
+
+                    let theta = step_result.physics_pose.theta;
+                    let radius = harness.config().robot.robot_radius;
+                    let point = Point2D::new(
+                        step_result.physics_pose.x + (radius + 0.02) * theta.cos(),
+                        step_result.physics_pose.y + (radius + 0.02) * theta.sin(),
+                    );
+
+                    // Create collision event for controller
+                    pending_collision = Some(CollisionEvent::new(collision_type, point, theta));
+
+                    // Also add virtual wall directly to map
+                    let wall = pending_collision
+                        .as_ref()
+                        .unwrap()
+                        .to_virtual_wall(config.virtual_wall_length);
+                    harness.slam_mut().add_line(wall.line);
+                    virtual_walls += 1;
+
+                    println!(
+                        "    Recovery collision at ({:.2}, {:.2}) - added virtual wall",
+                        point.x, point.y
+                    );
+                }
             }
         }
     }

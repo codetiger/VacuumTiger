@@ -158,6 +158,12 @@ frontier:
   # Maximum gap width to consider as a single gap (m)
   # Allow gaps across rooms (up to 10m)
   max_gap_width: 10.0
+  # CBVG-based frontier detection parameters
+  # Minimum uncovered angle for a node to be a frontier (radians)
+  # 1.75 rad = 100 degrees
+  min_frontier_angle: 1.75
+  # Maximum distance to check for walls when detecting frontiers (m)
+  max_wall_distance: 0.5
 
 # ============================================================================
 # Occupancy Queries
@@ -180,7 +186,8 @@ cbvg:
   # Sample resolution along Voronoi edges (m)
   voronoi_sample_step: 0.1
   # Maximum edge length between nodes (m)
-  max_edge_length: 0.8
+  # Increased from 0.8 to 1.5 for better graph connectivity during exploration
+  max_edge_length: 1.5
   # Interval for placing coverage nodes in open areas (m)
   # Ensures nodes exist even in areas without medial axis
   coverage_node_interval: 0.35
@@ -192,6 +199,16 @@ cbvg:
   edge_clearance_step: 0.05
   # Wall sampling step for Voronoi approximation (m)
   wall_sample_step: 0.1
+  # Minimum clique size for merging during optimization
+  # Cliques (mutually visible node groups) smaller than this are kept separate
+  min_clique_size_for_merge: 3
+  # Number of lidar scans between clique optimization runs
+  # Set to 1 to optimize after every scan for best graph quality
+  optimize_interval: 1
+  # Maximum range for CBVG node creation (m)
+  # Nodes are only placed up to this distance from robot
+  # (wall detection still uses full lidar range)
+  max_lidar_range: 1.0
 
 # ============================================================================
 # Loop Closure Detection

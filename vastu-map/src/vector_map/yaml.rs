@@ -257,6 +257,8 @@ frontier:
   viewpoint_step: 0.1
   min_gap_width: 0.4
   max_gap_width: 10.0
+  min_frontier_angle: 1.75
+  max_wall_distance: 0.5
 occupancy:
   obstacle_distance: 0.1
   known_distance: 2.0
@@ -376,6 +378,8 @@ frontier:
   viewpoint_step: 0.1
   min_gap_width: 0.4
   max_gap_width: 10.0
+  min_frontier_angle: 1.75
+  max_wall_distance: 0.5
 occupancy:
   obstacle_distance: 0.1
   known_distance: 2.0
