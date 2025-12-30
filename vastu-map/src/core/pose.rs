@@ -1,343 +1,232 @@
-//! 2D pose type for robot position and orientation.
-//!
-//! Coordinate frame follows ROS REP-103:
-//! - X-forward, Y-left, Z-up (right-handed)
-//! - Counter-clockwise positive rotation
+//! Robot pose representation.
 
-use super::math::normalize_angle;
-use super::point::Point2D;
+use super::point::WorldPoint;
+use serde::{Deserialize, Serialize};
 
-/// A 2D pose representing position and orientation.
+/// Robot pose in world coordinates (x, y, theta)
 ///
-/// Uses the ROS REP-103 coordinate convention:
-/// - Position: (x, y) in meters
-/// - Theta: heading angle in radians, counter-clockwise from X-axis
-///
-/// # Composition
-///
-/// Poses can be composed using `*` operator (chain transformations):
-/// ```
-/// use vastu_map::core::{Pose2D, Point2D};
-///
-/// let pose_a = Pose2D::new(1.0, 0.0, std::f32::consts::FRAC_PI_2);
-/// let pose_b = Pose2D::new(1.0, 0.0, 0.0);
-/// let combined = pose_a * pose_b;  // Apply pose_b in pose_a's frame
-/// ```
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// Coordinate system: ROS REP-103
+/// - X: Forward (positive ahead of robot)
+/// - Y: Left (positive to robot's left)
+/// - Theta: Rotation angle in radians, CCW positive from +X axis
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Pose2D {
-    /// X position in meters.
+    /// X position in meters
     pub x: f32,
-    /// Y position in meters.
+    /// Y position in meters
     pub y: f32,
-    /// Heading angle in radians [-π, π), CCW positive from X-axis.
+    /// Orientation in radians (CCW positive from +X)
     pub theta: f32,
 }
 
 impl Pose2D {
-    /// Create a new pose.
-    ///
-    /// # Arguments
-    /// * `x` - X position in meters
-    /// * `y` - Y position in meters
-    /// * `theta` - Heading angle in radians (will be normalized to [-π, π))
+    /// Create a new pose
     #[inline]
     pub fn new(x: f32, y: f32, theta: f32) -> Self {
-        Self {
-            x,
-            y,
-            theta: normalize_angle(theta),
-        }
+        Self { x, y, theta }
     }
 
-    /// Create an identity pose (origin, facing forward).
+    /// Create a pose from position only (theta = 0)
     #[inline]
-    pub const fn identity() -> Self {
+    pub fn from_position(x: f32, y: f32) -> Self {
+        Self { x, y, theta: 0.0 }
+    }
+
+    /// Create a pose from a WorldPoint (theta = 0)
+    #[inline]
+    pub fn from_point(point: WorldPoint) -> Self {
         Self {
-            x: 0.0,
-            y: 0.0,
+            x: point.x,
+            y: point.y,
             theta: 0.0,
         }
     }
 
-    /// Create a pose from position and angle.
+    /// Get the position as a WorldPoint
     #[inline]
-    pub fn from_position_angle(position: Point2D, theta: f32) -> Self {
-        Self::new(position.x, position.y, theta)
+    pub fn position(&self) -> WorldPoint {
+        WorldPoint::new(self.x, self.y)
     }
 
-    /// Get the position as a Point2D.
+    /// Get the forward direction as a unit vector
     #[inline]
-    pub fn position(self) -> Point2D {
-        Point2D::new(self.x, self.y)
+    pub fn forward(&self) -> WorldPoint {
+        WorldPoint::new(self.theta.cos(), self.theta.sin())
     }
 
-    /// Get the forward direction (unit vector).
+    /// Get the left direction as a unit vector
     #[inline]
-    pub fn forward(self) -> Point2D {
-        Point2D::new(self.theta.cos(), self.theta.sin())
+    pub fn left(&self) -> WorldPoint {
+        WorldPoint::new(-self.theta.sin(), self.theta.cos())
     }
 
-    /// Get the left direction (unit vector, perpendicular to forward).
-    #[inline]
-    pub fn left(self) -> Point2D {
-        Point2D::new(-self.theta.sin(), self.theta.cos())
-    }
-
-    /// Transform a point from this pose's local frame to world frame.
+    /// Transform a point from robot frame to world frame
     ///
-    /// # Example
-    /// ```
-    /// use vastu_map::core::{Pose2D, Point2D};
-    /// use std::f32::consts::FRAC_PI_2;
-    ///
-    /// let pose = Pose2D::new(1.0, 0.0, FRAC_PI_2);  // At (1,0), facing left
-    /// let local = Point2D::new(1.0, 0.0);  // 1m forward in local frame
-    /// let world = pose.transform_point(local);
-    /// // Should be at (1, 1) in world frame
-    /// ```
+    /// Robot frame: X forward, Y left
+    /// World frame: absolute coordinates
     #[inline]
-    pub fn transform_point(self, point: Point2D) -> Point2D {
-        let (sin, cos) = self.theta.sin_cos();
-        Point2D {
-            x: self.x + point.x * cos - point.y * sin,
-            y: self.y + point.x * sin + point.y * cos,
-        }
+    pub fn transform_point(&self, robot_point: WorldPoint) -> WorldPoint {
+        let cos_t = self.theta.cos();
+        let sin_t = self.theta.sin();
+
+        WorldPoint::new(
+            self.x + robot_point.x * cos_t - robot_point.y * sin_t,
+            self.y + robot_point.x * sin_t + robot_point.y * cos_t,
+        )
     }
 
-    /// Transform a point from world frame to this pose's local frame.
+    /// Transform a point from world frame to robot frame
     #[inline]
-    pub fn inverse_transform_point(self, point: Point2D) -> Point2D {
-        let (sin, cos) = self.theta.sin_cos();
-        let dx = point.x - self.x;
-        let dy = point.y - self.y;
-        Point2D {
-            x: dx * cos + dy * sin,
-            y: -dx * sin + dy * cos,
-        }
+    pub fn inverse_transform_point(&self, world_point: WorldPoint) -> WorldPoint {
+        let cos_t = self.theta.cos();
+        let sin_t = self.theta.sin();
+
+        let dx = world_point.x - self.x;
+        let dy = world_point.y - self.y;
+
+        WorldPoint::new(dx * cos_t + dy * sin_t, -dx * sin_t + dy * cos_t)
     }
 
-    /// Compose this pose with another (chain transformations).
-    ///
-    /// Returns a new pose representing: apply `other` in `self`'s frame.
-    /// This is equivalent to matrix multiplication: self * other.
+    /// Compose two poses: self * other
+    /// Applies other's transform in self's frame
     #[inline]
-    pub fn compose(self, other: Pose2D) -> Self {
-        let pos = self.transform_point(other.position());
-        Self::new(pos.x, pos.y, self.theta + other.theta)
+    pub fn compose(&self, other: &Pose2D) -> Pose2D {
+        let transformed = self.transform_point(other.position());
+        Pose2D::new(
+            transformed.x,
+            transformed.y,
+            normalize_angle(self.theta + other.theta),
+        )
     }
 
-    /// Compute the inverse of this pose.
-    ///
-    /// The inverse pose, when composed with the original, yields identity:
-    /// `pose.compose(pose.inverse()) ≈ Pose2D::identity()`
+    /// Inverse of this pose
     #[inline]
-    pub fn inverse(self) -> Self {
-        let (sin, cos) = self.theta.sin_cos();
-        Self::new(
-            -self.x * cos - self.y * sin,
-            self.x * sin - self.y * cos,
+    pub fn inverse(&self) -> Pose2D {
+        let cos_t = self.theta.cos();
+        let sin_t = self.theta.sin();
+
+        Pose2D::new(
+            -self.x * cos_t - self.y * sin_t,
+            self.x * sin_t - self.y * cos_t,
             -self.theta,
         )
     }
 
-    /// Compute the relative pose from `self` to `other`.
-    ///
-    /// Returns the pose that, when composed with `self`, yields `other`:
-    /// `self.compose(self.relative_to(other)) ≈ other`
+    /// Distance to another pose (position only)
     #[inline]
-    pub fn relative_to(self, other: Pose2D) -> Self {
-        self.inverse().compose(other)
+    pub fn distance(&self, other: &Pose2D) -> f32 {
+        self.position().distance(&other.position())
     }
 
-    /// Linear interpolation between poses.
-    ///
-    /// Note: This interpolates theta linearly, which may not be ideal
-    /// for large angular differences. For smooth rotation interpolation,
-    /// consider using spherical interpolation.
+    /// Angular difference to another pose (in radians, normalized to [-pi, pi])
     #[inline]
-    pub fn lerp(self, other: Pose2D, t: f32) -> Self {
-        use super::math::angle_diff;
-        Self::new(
-            self.x + (other.x - self.x) * t,
-            self.y + (other.y - self.y) * t,
-            self.theta + angle_diff(self.theta, other.theta) * t,
-        )
+    pub fn angle_diff(&self, other: &Pose2D) -> f32 {
+        normalize_angle(other.theta - self.theta)
     }
 
-    /// Check if this pose is approximately equal to another.
+    /// Normalize the theta to [-pi, pi]
     #[inline]
-    pub fn approx_eq(self, other: Pose2D, pos_epsilon: f32, angle_epsilon: f32) -> bool {
-        use super::math::angles_approx_equal;
-        (self.x - other.x).abs() <= pos_epsilon
-            && (self.y - other.y).abs() <= pos_epsilon
-            && angles_approx_equal(self.theta, other.theta, angle_epsilon)
+    pub fn normalize(&self) -> Pose2D {
+        Pose2D::new(self.x, self.y, normalize_angle(self.theta))
     }
 }
 
-impl std::ops::Mul for Pose2D {
-    type Output = Self;
-
-    /// Compose two poses (same as `compose`).
-    #[inline]
-    fn mul(self, rhs: Self) -> Self {
-        self.compose(rhs)
+impl PartialEq for Pose2D {
+    fn eq(&self, other: &Self) -> bool {
+        (self.x - other.x).abs() < 1e-6
+            && (self.y - other.y).abs() < 1e-6
+            && (normalize_angle(self.theta - other.theta)).abs() < 1e-6
     }
+}
+
+/// Normalize an angle to [-pi, pi]
+#[inline]
+pub fn normalize_angle(angle: f32) -> f32 {
+    let mut a = angle;
+    while a > std::f32::consts::PI {
+        a -= 2.0 * std::f32::consts::PI;
+    }
+    while a < -std::f32::consts::PI {
+        a += 2.0 * std::f32::consts::PI;
+    }
+    a
+}
+
+/// Interpolate between two poses
+#[inline]
+pub fn interpolate_pose(a: &Pose2D, b: &Pose2D, t: f32) -> Pose2D {
+    let t = t.clamp(0.0, 1.0);
+
+    // Linear interpolation for position
+    let x = a.x + t * (b.x - a.x);
+    let y = a.y + t * (b.y - a.y);
+
+    // Angular interpolation (shortest path)
+    let diff = normalize_angle(b.theta - a.theta);
+    let theta = normalize_angle(a.theta + t * diff);
+
+    Pose2D::new(x, y, theta)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use approx::assert_relative_eq;
     use std::f32::consts::{FRAC_PI_2, PI};
 
     #[test]
-    fn test_new_normalizes_angle() {
-        // At ±π boundary, floating-point may give +π or -π; both are valid
-        let pose = Pose2D::new(0.0, 0.0, 3.0 * PI);
-        assert!(pose.theta.abs() - PI < 1e-5);
-
-        let pose = Pose2D::new(0.0, 0.0, -3.0 * PI);
-        assert!(pose.theta.abs() - PI < 1e-5);
-    }
-
-    #[test]
-    fn test_identity() {
-        let pose = Pose2D::identity();
-        assert_eq!(pose.x, 0.0);
-        assert_eq!(pose.y, 0.0);
-        assert_eq!(pose.theta, 0.0);
-    }
-
-    #[test]
-    fn test_position() {
-        let pose = Pose2D::new(1.0, 2.0, 0.5);
-        let pos = pose.position();
-        assert_eq!(pos.x, 1.0);
-        assert_eq!(pos.y, 2.0);
-    }
-
-    #[test]
-    fn test_forward_and_left() {
-        let pose = Pose2D::new(0.0, 0.0, 0.0);
-        let fwd = pose.forward();
-        assert_relative_eq!(fwd.x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(fwd.y, 0.0, epsilon = 1e-6);
-
-        let left = pose.left();
-        assert_relative_eq!(left.x, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(left.y, 1.0, epsilon = 1e-6);
-
-        // At 90 degrees
-        let pose90 = Pose2D::new(0.0, 0.0, FRAC_PI_2);
-        let fwd90 = pose90.forward();
-        assert_relative_eq!(fwd90.x, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(fwd90.y, 1.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_transform_point() {
-        // At origin, no rotation
-        let pose = Pose2D::identity();
-        let local = Point2D::new(1.0, 0.0);
-        let world = pose.transform_point(local);
-        assert_relative_eq!(world.x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(world.y, 0.0, epsilon = 1e-6);
-
-        // At (1, 0), rotated 90 degrees
+    fn test_pose_transform() {
+        // Robot at (1, 0) facing +Y (90 degrees)
         let pose = Pose2D::new(1.0, 0.0, FRAC_PI_2);
-        let local = Point2D::new(1.0, 0.0);
-        let world = pose.transform_point(local);
-        assert_relative_eq!(world.x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(world.y, 1.0, epsilon = 1e-6);
+
+        // Point 1m ahead in robot frame should be at (1, 1) in world
+        let robot_point = WorldPoint::new(1.0, 0.0);
+        let world_point = pose.transform_point(robot_point);
+
+        assert!((world_point.x - 1.0).abs() < 1e-5);
+        assert!((world_point.y - 1.0).abs() < 1e-5);
     }
 
     #[test]
-    fn test_inverse_transform_point() {
+    fn test_pose_inverse_transform() {
         let pose = Pose2D::new(1.0, 2.0, FRAC_PI_2);
-        let world = Point2D::new(3.0, 4.0);
+        let world_point = WorldPoint::new(1.0, 3.0);
 
-        let local = pose.inverse_transform_point(world);
-        let back = pose.transform_point(local);
+        let robot_point = pose.inverse_transform_point(world_point);
+        let back_to_world = pose.transform_point(robot_point);
 
-        assert_relative_eq!(back.x, world.x, epsilon = 1e-6);
-        assert_relative_eq!(back.y, world.y, epsilon = 1e-6);
+        assert!((back_to_world.x - world_point.x).abs() < 1e-5);
+        assert!((back_to_world.y - world_point.y).abs() < 1e-5);
     }
 
     #[test]
-    fn test_compose() {
-        // Translate then rotate
-        let translate = Pose2D::new(1.0, 0.0, 0.0);
-        let rotate = Pose2D::new(0.0, 0.0, FRAC_PI_2);
-        let combined = translate.compose(rotate);
-
-        assert_relative_eq!(combined.x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(combined.y, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(combined.theta, FRAC_PI_2, epsilon = 1e-6);
-
-        // Rotate then translate (in rotated frame)
-        let combined2 = rotate.compose(translate);
-        assert_relative_eq!(combined2.x, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(combined2.y, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(combined2.theta, FRAC_PI_2, epsilon = 1e-6);
+    fn test_normalize_angle() {
+        assert!((normalize_angle(0.0) - 0.0).abs() < 1e-6);
+        assert!((normalize_angle(2.0 * PI) - 0.0).abs() < 1e-6);
+        assert!((normalize_angle(-2.0 * PI) - 0.0).abs() < 1e-6);
+        assert!((normalize_angle(3.0 * PI) - PI).abs() < 1e-5);
     }
 
     #[test]
-    fn test_inverse() {
-        let pose = Pose2D::new(1.0, 2.0, 0.5);
-        let inv = pose.inverse();
-        let identity = pose.compose(inv);
-
-        assert_relative_eq!(identity.x, 0.0, epsilon = 1e-5);
-        assert_relative_eq!(identity.y, 0.0, epsilon = 1e-5);
-        assert_relative_eq!(identity.theta, 0.0, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn test_relative_to() {
-        let pose_a = Pose2D::new(1.0, 0.0, 0.0);
-        let pose_b = Pose2D::new(2.0, 1.0, FRAC_PI_2);
-
-        let relative = pose_a.relative_to(pose_b);
-        let reconstructed = pose_a.compose(relative);
-
-        assert_relative_eq!(reconstructed.x, pose_b.x, epsilon = 1e-5);
-        assert_relative_eq!(reconstructed.y, pose_b.y, epsilon = 1e-5);
-        assert_relative_eq!(reconstructed.theta, pose_b.theta, epsilon = 1e-5);
-    }
-
-    #[test]
-    fn test_lerp() {
-        // Use non-boundary angle to avoid π ambiguity
-        let a = Pose2D::new(0.0, 0.0, 0.0);
-        let b = Pose2D::new(2.0, 4.0, FRAC_PI_2);
-
-        let mid = a.lerp(b, 0.5);
-        assert_relative_eq!(mid.x, 1.0, epsilon = 1e-6);
-        assert_relative_eq!(mid.y, 2.0, epsilon = 1e-6);
-        assert_relative_eq!(mid.theta, FRAC_PI_2 / 2.0, epsilon = 1e-6); // π/4
-
-        // Test full interpolation
-        assert_relative_eq!(a.lerp(b, 0.0).theta, 0.0, epsilon = 1e-6);
-        assert_relative_eq!(a.lerp(b, 1.0).theta, FRAC_PI_2, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_mul_operator() {
+    fn test_pose_compose() {
         let a = Pose2D::new(1.0, 0.0, FRAC_PI_2);
         let b = Pose2D::new(1.0, 0.0, 0.0);
 
-        let composed = a.compose(b);
-        let multiplied = a * b;
+        let c = a.compose(&b);
 
-        assert_eq!(composed, multiplied);
+        // Moving 1m forward from (1,0) facing +Y should put us at (1,1)
+        assert!((c.x - 1.0).abs() < 1e-5);
+        assert!((c.y - 1.0).abs() < 1e-5);
+        assert!((c.theta - FRAC_PI_2).abs() < 1e-5);
     }
 
     #[test]
-    fn test_approx_eq() {
-        let a = Pose2D::new(1.0, 2.0, 0.5);
-        let b = Pose2D::new(1.001, 2.001, 0.501);
+    fn test_interpolate_pose() {
+        let a = Pose2D::new(0.0, 0.0, 0.0);
+        let b = Pose2D::new(2.0, 2.0, PI);
 
-        assert!(a.approx_eq(b, 0.01, 0.01));
-        assert!(!a.approx_eq(b, 0.0001, 0.0001));
+        let mid = interpolate_pose(&a, &b, 0.5);
+        assert!((mid.x - 1.0).abs() < 1e-5);
+        assert!((mid.y - 1.0).abs() < 1e-5);
+        assert!((mid.theta - FRAC_PI_2).abs() < 1e-5);
     }
 }

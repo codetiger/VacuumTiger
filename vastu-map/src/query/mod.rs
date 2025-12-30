@@ -1,50 +1,47 @@
-//! Map query operations for VectorMap.
+//! Map query operations.
 //!
-//! Provides spatial queries against the map:
-//! - **Raycast**: Find distance to obstacles in a direction
-//! - **Occupancy**: Query whether a point is free, occupied, or unknown
-//! - **Frontier**: Detect unexplored boundaries for exploration
-//! - **CBVG**: Clearance-based visibility graph for safe path planning
+//! This module provides query operations on the occupancy grid:
 //!
-//! # Example
+//! - **Frontier detection**: Find boundaries between known and unknown areas
+//! - **Traversability**: Check if positions and paths are safe for the robot
+//!
+//! ## Frontier Detection
+//!
+//! Frontiers are floor cells adjacent to unknown cells. They represent the
+//! boundary of explored space and are used as targets for exploration.
 //!
 //! ```rust,ignore
-//! use vastu_map::query::{raycast, query_occupancy, detect_frontiers};
-//! use vastu_map::query::{ClearanceVisibilityGraph, CBVGConfig};
-//! use vastu_map::core::Point2D;
+//! use vastu_map::query::{FrontierDetector, Frontier};
 //!
-//! // Raycast to find wall distance
-//! let origin = Point2D::new(0.0, 0.0);
-//! let direction = Point2D::new(1.0, 0.0);
-//! let distance = raycast(origin, direction, 10.0, &map_lines);
+//! let detector = FrontierDetector::new();
+//! let frontiers = detector.detect_frontiers(map.storage());
 //!
-//! // Check if a point is free
-//! let occupancy = query_occupancy(Point2D::new(1.0, 1.0), &map_lines, None, &config);
+//! for frontier in frontiers {
+//!     println!("Frontier at {:?} with {} cells",
+//!         frontier.centroid_world, frontier.size);
+//! }
+//! ```
 //!
-//! // Find exploration frontiers
-//! let frontiers = detect_frontiers(&map_lines, &frontier_config);
+//! ## Traversability
 //!
-//! // Plan a path using CBVG
-//! let config = CBVGConfig::default();
-//! let mut graph = ClearanceVisibilityGraph::new(config);
-//! graph.build(&lines, None);
-//! let path = graph.find_path(start, goal, &lines);
+//! Check if positions and paths are safe for robot navigation.
+//!
+//! ```rust,ignore
+//! use vastu_map::query::{TraversabilityChecker, RobotFootprint};
+//!
+//! let footprint = RobotFootprint::new(0.17, 0.05);
+//! let checker = TraversabilityChecker::new(map.storage(), footprint);
+//!
+//! if checker.is_position_safe(target_position) {
+//!     // Safe to navigate to
+//! }
 //! ```
 
-pub mod cbvg;
 pub mod frontier;
-pub mod occupancy;
-pub mod path_planning;
-pub mod raycast;
+pub mod traversability;
 
-// Re-export main types and functions
-pub use frontier::{
-    FrontierConfig, FrontierDetector, cluster_centroid, cluster_frontiers, detect_frontiers,
-    get_best_frontier, rank_frontiers,
+pub use frontier::{Frontier, FrontierCell, FrontierDetector, count_frontier_cells, has_frontiers};
+
+pub use traversability::{
+    PathCheckResult, RobotFootprint, TraversabilityChecker, is_safe, is_traversable,
 };
-pub use occupancy::{OccupancyConfig, is_path_clear, is_region_clear, query_occupancy};
-pub use path_planning::is_straight_path_clear;
-pub use raycast::{RaycastResult, raycast, raycast_detailed};
-
-// Re-export CBVG types
-pub use cbvg::{CBVGConfig, CBVGNode, ClearanceVisibilityGraph, NodeType};

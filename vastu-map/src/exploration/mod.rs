@@ -1,79 +1,52 @@
-//! Autonomous exploration module.
+//! Autonomous exploration controller.
 //!
-//! Provides frontier-based exploration with collision recovery for
-//! complete map coverage. This module is designed to be used by
-//! DhruvaSLAM for real robot exploration.
+//! This module provides a state machine for frontier-based exploration:
 //!
-//! # Primary Goals
+//! - **Frontier detection**: Find unexplored boundaries
+//! - **Path planning**: Navigate to frontiers
+//! - **Recovery**: Handle obstacles and stuck conditions
 //!
-//! 1. **Complete map coverage** - Explore every reachable area until no frontiers remain
-//! 2. **Avoid obstacles** - Navigate safely using path planning with robot radius clearance
-//!
-//! # Architecture
-//!
-//! The exploration module is sensor-agnostic. It provides planning and control logic,
-//! while the caller (DhruvaSLAM) handles:
-//! - Sensor reading (bumpers, cliffs, lidar)
-//! - SLAM map updates
-//! - Velocity command execution
-//!
-//! # Example
+//! ## Usage
 //!
 //! ```rust,ignore
-//! use vastu_map::exploration::{
-//!     ExplorationController, ExplorationConfig,
-//!     CollisionEvent, CollisionType,
-//! };
-//! use vastu_map::{VectorMap, Pose2D};
+//! use vastu_map::exploration::{ExplorationController, ExplorationConfig};
 //!
-//! // Create controller
 //! let config = ExplorationConfig::default();
 //! let mut controller = ExplorationController::new(config);
+//!
 //! controller.start();
 //!
-//! // Main loop
 //! loop {
-//!     // Get current state from SLAM
-//!     let map = get_slam_map();
-//!     let pose = get_current_pose();
-//!
-//!     // Check sensors
-//!     let collision = check_bumpers_and_cliffs();
-//!
-//!     // Update exploration
-//!     let step = controller.update(&map, pose, collision);
-//!
-//!     // Handle virtual wall (for mirror/glass obstacles)
-//!     if let Some(wall) = step.virtual_wall {
-//!         map.add_line(wall.line);
-//!     }
-//!
-//!     // Execute velocity command
-//!     if let Some(vel) = step.velocity {
-//!         send_velocity(vel.linear, vel.angular);
-//!     }
-//!
-//!     // Check completion
-//!     if controller.is_complete() {
-//!         println!("Exploration complete!");
-//!         break;
+//!     let cmd = controller.update(robot_pose, map.storage());
+//!     match cmd {
+//!         ExplorationCommand::MoveTo { target, max_speed } => {
+//!             // Send motion command to robot
+//!         }
+//!         ExplorationCommand::ExplorationComplete => {
+//!             break;
+//!         }
+//!         _ => {}
 //!     }
 //! }
 //! ```
+//!
+//! ## State Machine
+//!
+//! The controller cycles through these states:
+//!
+//! 1. **Idle** - Waiting to start
+//! 2. **SearchingFrontiers** - Looking for unexplored areas
+//! 3. **Planning** - Computing path to selected frontier
+//! 4. **Navigating** - Following path to frontier
+//! 5. **Scanning** - At frontier, allowing sensors to update map
+//! 6. **Recovering** - Handling obstacles or stuck conditions
+//! 7. **Complete** - All frontiers explored
+//! 8. **Failed** - Too many errors
 
-mod collision;
-mod config;
-mod controller;
-pub mod history;
-mod path_follower;
-pub mod planner;
-pub mod region;
+pub mod config;
+pub mod controller;
+pub mod state;
 
-// Re-export public types
-pub use collision::{CollisionEvent, CollisionType, VirtualWall};
 pub use config::ExplorationConfig;
-pub use controller::{ExplorationController, ExplorationState, ExplorationStep};
-pub use history::ExplorationHistory;
-pub use path_follower::{FollowResult, PathFollower, VelocityCommand};
-pub use planner::{ExplorationPlan, ExplorationPlanner, PlannerConfig};
-pub use region::{ExplorationRegion, RegionConfig, RegionDetector};
+pub use controller::{ExplorationController, ExplorationProgress};
+pub use state::{ExplorationCommand, ExplorationEvent, ExplorationState, RecoveryAction};

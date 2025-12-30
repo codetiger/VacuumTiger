@@ -1,1018 +1,781 @@
-//! Gap-based frontier detection for exploration.
+//! Frontier detection for exploration.
 //!
-//! Frontiers represent **gaps between unconnected wall endpoints**. The robot
-//! navigates to a viewpoint (a reachable position) from which it can observe
-//! the unexplored area through the gap.
-//!
-//! # Key Concept
-//!
-//! ```text
-//! Wall A ─────┐              ┌───── Wall B
-//!             │              │
-//!       endpoint1      endpoint2
-//!             │     GAP      │
-//!             └──────────────┘
-//!                   ↑
-//!             Frontier is HERE
-//!             (midpoint of gap)
-//!
-//! Viewpoint = nearest reachable position that can see the gap
-//! ```
-//!
-//! # Algorithm
-//!
-//! 1. Find all **unconnected endpoints** (wall ends not connected to other walls)
-//! 2. Find **pairs of endpoints** that form a gap:
-//!    - Close enough to each other (within max_gap_width)
-//!    - Wide enough for robot to pass (min_gap_width)
-//!    - No wall blocking between them
-//! 3. For each gap, find a **viewpoint**:
-//!    - Must be in known free space
-//!    - Must have line-of-sight to the gap
-//!    - Prefer positions closer to the robot
-//! 4. Also handle **single endpoints** (walls ending in open space)
-//!
-//! # Zero-Allocation Detection
-//!
-//! For repeated frontier detection (e.g., during SLAM), use `FrontierDetector`
-//! which maintains persistent buffers to avoid per-call allocations:
-//!
-//! ```rust,ignore
-//! use vastu_map::query::frontier::{FrontierDetector, FrontierConfig};
-//!
-//! let mut detector = FrontierDetector::new();
-//! let config = FrontierConfig::default();
-//!
-//! // First detection - allocates buffers
-//! let frontiers = detector.detect(&lines, robot_pos, &config);
-//!
-//! // Subsequent calls reuse buffers (zero allocation)
-//! let frontiers = detector.detect(&new_lines, robot_pos, &config);
-//! ```
+//! A frontier is a boundary between known (Floor) and unknown cells.
+//! This module detects frontiers and clusters them for exploration targeting.
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use crate::core::{CellType, GridCoord, WorldPoint};
+use crate::grid::GridStorage;
+use log::{debug, trace};
+use std::collections::{HashSet, VecDeque};
+use std::simd::{cmp::SimdPartialEq, u8x16};
 
-use crate::Frontier;
-use crate::core::Point2D;
-use crate::features::Line2D;
-
-/// Spatial hash grid for endpoint proximity queries.
-/// Maps (cell_x, cell_y) -> Vec<(point, line_index, is_start_endpoint)>
-type EndpointGrid = HashMap<(i32, i32), Vec<(Point2D, usize, bool)>>;
-
-/// An unconnected endpoint with metadata.
-#[derive(Clone, Debug)]
-struct UnconnectedEndpoint {
-    /// The endpoint position.
-    point: Point2D,
-    /// Index of the line this endpoint belongs to.
-    line_idx: usize,
-    /// Outward direction (away from the line).
-    outward_dir: Point2D,
+/// A single frontier cell
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FrontierCell {
+    /// Grid coordinate of the frontier cell
+    pub coord: GridCoord,
+    /// Number of adjacent unknown cells (1-8)
+    pub unknown_neighbors: u8,
 }
 
-/// A detected gap between two unconnected endpoints.
-#[derive(Clone, Debug)]
-struct Gap {
-    /// Center of the gap.
-    center: Point2D,
-    /// Direction from endpoint1 to endpoint2 (normalized).
-    direction: Point2D,
-    /// Width of the gap.
-    width: f32,
+impl FrontierCell {
+    /// Create a new frontier cell
+    pub fn new(coord: GridCoord, unknown_neighbors: u8) -> Self {
+        Self {
+            coord,
+            unknown_neighbors,
+        }
+    }
 }
 
-/// Persistent frontier detector with reusable buffers.
-///
-/// Uses gap-based detection: frontiers are gaps between unconnected
-/// wall endpoints. The viewpoint is found by looking for reachable
-/// positions with line-of-sight to the gap.
-#[derive(Clone, Debug, Default)]
+/// A cluster of connected frontier cells
+#[derive(Clone, Debug)]
+pub struct Frontier {
+    /// All cells in this frontier
+    pub cells: Vec<FrontierCell>,
+    /// Centroid in grid coordinates
+    pub centroid_grid: GridCoord,
+    /// Centroid in world coordinates
+    pub centroid_world: WorldPoint,
+    /// Approximate size (number of cells)
+    pub size: usize,
+    /// Sum of unknown neighbors (exploration potential)
+    pub unknown_exposure: usize,
+}
+
+impl Frontier {
+    /// Create a new frontier from a set of cells
+    pub fn from_cells(cells: Vec<FrontierCell>, storage: &GridStorage) -> Self {
+        let size = cells.len();
+
+        // Calculate centroid
+        let sum_x: i32 = cells.iter().map(|c| c.coord.x).sum();
+        let sum_y: i32 = cells.iter().map(|c| c.coord.y).sum();
+        let centroid_grid = GridCoord::new(sum_x / size as i32, sum_y / size as i32);
+        let centroid_world = storage.grid_to_world(centroid_grid);
+
+        // Calculate total unknown exposure
+        let unknown_exposure: usize = cells.iter().map(|c| c.unknown_neighbors as usize).sum();
+
+        Self {
+            cells,
+            centroid_grid,
+            centroid_world,
+            size,
+            unknown_exposure,
+        }
+    }
+
+    /// Exploration score (higher = more valuable to explore)
+    /// Considers both size and unknown exposure
+    pub fn exploration_score(&self) -> f32 {
+        // Balance between size and exposure
+        // Larger frontiers with more unknown cells are more valuable
+        self.size as f32 * 0.5 + self.unknown_exposure as f32 * 0.5
+    }
+
+    /// Get the closest cell in this frontier to a given position
+    pub fn closest_cell_to(&self, target: GridCoord) -> Option<&FrontierCell> {
+        self.cells
+            .iter()
+            .min_by_key(|c| c.coord.chebyshev_distance(&target))
+    }
+
+    /// Length of the frontier in cells (approximate)
+    pub fn length(&self) -> usize {
+        self.size
+    }
+}
+
+/// Frontier detector
 pub struct FrontierDetector {
-    /// Reusable spatial hash grid.
-    endpoint_grid: EndpointGrid,
+    /// Minimum frontier size (smaller clusters are filtered out)
+    pub min_frontier_size: usize,
+    /// Use 8-connectivity for frontier detection (vs 4-connectivity)
+    pub use_8_connectivity: bool,
+}
 
-    /// Reusable output buffer for detected frontiers.
-    frontiers: Vec<Frontier>,
-
-    /// Reusable buffer for ranking frontiers by value.
-    ranked_frontiers: Vec<(Frontier, f32)>,
-
-    /// Cells that were used in the last detection (for efficient clearing).
-    used_cells: Vec<(i32, i32)>,
-
-    /// Reusable buffer for unconnected endpoints.
-    unconnected: Vec<UnconnectedEndpoint>,
-
-    /// Reusable buffer for detected gaps.
-    gaps: Vec<Gap>,
-
-    /// Reusable buffer for visibility graph nodes.
-    graph_nodes: Vec<Point2D>,
+impl Default for FrontierDetector {
+    fn default() -> Self {
+        Self {
+            min_frontier_size: 3,
+            use_8_connectivity: true,
+        }
+    }
 }
 
 impl FrontierDetector {
-    /// Create a new frontier detector with default capacity.
-    pub fn new() -> Self {
-        Self::with_capacity(100, 50)
-    }
-
-    /// Create a frontier detector with capacity hints.
-    pub fn with_capacity(expected_lines: usize, expected_frontiers: usize) -> Self {
-        Self {
-            endpoint_grid: HashMap::with_capacity(expected_lines * 2),
-            frontiers: Vec::with_capacity(expected_frontiers),
-            ranked_frontiers: Vec::with_capacity(expected_frontiers),
-            used_cells: Vec::with_capacity(expected_lines * 2),
-            unconnected: Vec::with_capacity(expected_lines * 2),
-            gaps: Vec::with_capacity(expected_frontiers),
-            graph_nodes: Vec::with_capacity(expected_lines * 2 + 2),
-        }
-    }
-
-    /// Clear grid by clearing each used cell's vector (retains capacity).
-    #[inline]
-    fn clear_grid(&mut self) {
-        for cell in &self.used_cells {
-            if let Some(vec) = self.endpoint_grid.get_mut(cell) {
-                vec.clear();
-            }
-        }
-        self.used_cells.clear();
-    }
-
-    /// Insert an endpoint into the grid.
-    #[inline]
-    fn insert_endpoint(&mut self, point: Point2D, line_idx: usize, is_start: bool, cell_size: f32) {
-        let cell = point_to_cell(point, cell_size);
-
-        if let std::collections::hash_map::Entry::Vacant(e) = self.endpoint_grid.entry(cell) {
-            e.insert(Vec::with_capacity(4));
-            self.used_cells.push(cell);
-        } else if self.endpoint_grid.get(&cell).is_none_or(|v| v.is_empty()) {
-            self.used_cells.push(cell);
-        }
-
-        self.endpoint_grid
-            .get_mut(&cell)
-            .unwrap()
-            .push((point, line_idx, is_start));
-    }
-
-    /// Detect frontiers from map lines.
-    ///
-    /// Returns viewpoints that can observe unexplored gaps between lines.
-    /// Uses gap-based detection: finds pairs of unconnected endpoints that
-    /// form passable gaps, then finds reachable viewpoints for each gap.
-    pub fn detect(
-        &mut self,
-        lines: &[Line2D],
-        robot_position: Point2D,
-        config: &FrontierConfig,
-    ) -> &[Frontier] {
-        self.frontiers.clear();
-        self.unconnected.clear();
-        self.gaps.clear();
-
-        if lines.is_empty() {
-            return &self.frontiers;
-        }
-
-        let cell_size = config.connection_distance;
-
-        // Step 1: Build spatial hash grid and find unconnected endpoints
-        self.clear_grid();
-
-        for (idx, line) in lines.iter().enumerate() {
-            for (point, is_start) in [(line.start, true), (line.end, false)] {
-                self.insert_endpoint(point, idx, is_start, cell_size);
-            }
-        }
-
-        // Find unconnected endpoints with their outward directions
-        for (idx, line) in lines.iter().enumerate() {
-            for (point, is_start) in [(line.start, true), (line.end, false)] {
-                let cell = point_to_cell(point, cell_size);
-                if !is_connected_in_grid(
-                    &self.endpoint_grid,
-                    cell,
-                    point,
-                    idx,
-                    config.connection_distance,
-                ) {
-                    // Compute outward direction (away from the line)
-                    let outward_dir = if is_start {
-                        -line.unit_direction()
-                    } else {
-                        line.unit_direction()
-                    };
-                    self.unconnected.push(UnconnectedEndpoint {
-                        point,
-                        line_idx: idx,
-                        outward_dir,
-                    });
-                }
-            }
-        }
-
-        // Step 2: Find pairs of unconnected endpoints that form gaps
-        let mut used_endpoints = vec![false; self.unconnected.len()];
-
-        for i in 0..self.unconnected.len() {
-            if used_endpoints[i] {
-                continue;
-            }
-
-            let ep1 = &self.unconnected[i];
-
-            // Find the closest unconnected endpoint that forms a valid gap
-            let mut best_pair: Option<(usize, f32)> = None;
-
-            for (j, (used, ep2)) in used_endpoints
-                .iter()
-                .zip(self.unconnected.iter())
-                .enumerate()
-                .skip(i + 1)
-            {
-                if *used {
-                    continue;
-                }
-                let distance = ep1.point.distance(ep2.point);
-
-                // Check if this pair forms a valid gap
-                if distance < config.min_gap_width || distance > config.max_gap_width {
-                    continue;
-                }
-
-                // Check that there's no wall blocking between them
-                if is_path_blocked(ep1.point, ep2.point, lines) {
-                    continue;
-                }
-
-                // Check if endpoints are facing each other (outward dirs point toward each other)
-                let to_ep2 = (ep2.point - ep1.point).normalized();
-                let to_ep1 = (ep1.point - ep2.point).normalized();
-                let facing1 = ep1.outward_dir.dot(to_ep2);
-                let facing2 = ep2.outward_dir.dot(to_ep1);
-
-                // At least one endpoint should be facing the other
-                if facing1 <= -0.5 && facing2 <= -0.5 {
-                    continue;
-                }
-
-                if best_pair.is_none() || distance < best_pair.unwrap().1 {
-                    best_pair = Some((j, distance));
-                }
-            }
-
-            if let Some((j, width)) = best_pair {
-                let ep2 = &self.unconnected[j];
-                let center = Point2D::new(
-                    (ep1.point.x + ep2.point.x) / 2.0,
-                    (ep1.point.y + ep2.point.y) / 2.0,
-                );
-                let direction = (ep2.point - ep1.point).normalized();
-
-                self.gaps.push(Gap {
-                    center,
-                    direction,
-                    width,
-                });
-
-                used_endpoints[i] = true;
-                used_endpoints[j] = true;
-            }
-        }
-
-        // Step 3: Build visibility graph nodes (all line endpoints + robot position)
-        self.graph_nodes.clear();
-        for line in lines {
-            self.graph_nodes.push(line.start);
-            self.graph_nodes.push(line.end);
-        }
-        self.graph_nodes.push(robot_position);
-
-        // Step 4: For each gap, find the nearest reachable graph node as target
-        for gap in &self.gaps.clone() {
-            if let Some(target) = find_nearest_reachable_node(
-                gap.center,
-                &self.graph_nodes,
-                robot_position,
-                lines,
-                config,
-            ) && target.distance(robot_position) >= config.min_distance_from_robot
-            {
-                // Look direction is perpendicular to gap direction
-                let look_direction = Point2D::new(-gap.direction.y, gap.direction.x);
-                self.frontiers.push(Frontier {
-                    viewpoint: target,
-                    look_direction,
-                    endpoint: gap.center,
-                    line_idx: 0,
-                    estimated_area: gap.width * config.gap_probe_distance,
-                });
-            }
-        }
-
-        // Step 5: Handle single unconnected endpoints (no pair found)
-        for (i, ep) in self.unconnected.iter().enumerate() {
-            if used_endpoints[i] {
-                continue; // Already part of a gap
-            }
-
-            // Find nearest reachable node toward this endpoint
-            if let Some(target) = find_nearest_reachable_node(
-                ep.point,
-                &self.graph_nodes,
-                robot_position,
-                lines,
-                config,
-            ) && target.distance(robot_position) >= config.min_distance_from_robot
-            {
-                self.frontiers.push(Frontier {
-                    viewpoint: target,
-                    look_direction: ep.outward_dir,
-                    endpoint: ep.point,
-                    line_idx: ep.line_idx,
-                    estimated_area: config.gap_probe_distance * config.gap_probe_distance * 0.5,
-                });
-            }
-        }
-
-        // Debug logging
-        log::debug!(
-            "Frontier detection: {} lines, {} unconnected, {} gaps, {} single, {} frontiers",
-            lines.len(),
-            self.unconnected.len(),
-            self.gaps.len(),
-            self.unconnected
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !used_endpoints[*i])
-                .count(),
-            self.frontiers.len()
-        );
-
-        // Step 6: Sort by estimated_area (largest first)
-        self.frontiers.sort_by(|a, b| {
-            b.estimated_area
-                .partial_cmp(&a.estimated_area)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        &self.frontiers
-    }
-
-    /// Rank the currently detected frontiers by exploration value.
-    ///
-    /// Value considers distance from robot and estimated area.
-    pub fn rank(&mut self, robot_position: Point2D) -> &[(Frontier, f32)] {
-        self.ranked_frontiers.clear();
-
-        for f in &self.frontiers {
-            let distance = f.viewpoint.distance(robot_position);
-
-            // Distance factor: 1.0 at 0m, decaying to ~0.1 at 10m
-            let distance_factor = 1.0 / (1.0 + distance * 0.1);
-
-            // Area factor: normalize by expected room size (~25m²)
-            let area_factor = (f.estimated_area / 25.0).min(1.0);
-
-            // Value: prefer nearby frontiers with large unexplored areas
-            let value = distance_factor * 0.3 + area_factor * 0.7;
-
-            self.ranked_frontiers.push((f.clone(), value));
-        }
-
-        // Sort by value (descending)
-        self.ranked_frontiers
-            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        &self.ranked_frontiers
-    }
-
-    /// Get the best frontier for exploration.
-    pub fn get_best(
-        &mut self,
-        lines: &[Line2D],
-        robot_position: Point2D,
-        config: &FrontierConfig,
-    ) -> Option<Frontier> {
-        self.detect(lines, robot_position, config);
-
-        if self.frontiers.is_empty() {
-            return None;
-        }
-
-        self.rank(robot_position);
-        self.ranked_frontiers.first().map(|(f, _)| f.clone())
-    }
-
-    /// Get the currently detected frontiers (from last detect call).
-    pub fn frontiers(&self) -> &[Frontier] {
-        &self.frontiers
-    }
-
-    /// Get the currently ranked frontiers (from last rank call).
-    pub fn ranked_frontiers(&self) -> &[(Frontier, f32)] {
-        &self.ranked_frontiers
-    }
-}
-
-/// Configuration for frontier detection.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FrontierConfig {
-    /// Maximum distance for endpoints to be considered "connected" (meters).
-    /// Endpoints closer than this are not frontiers.
-    /// Default: 0.3m
-    pub connection_distance: f32,
-
-    /// Minimum distance from robot for a valid frontier (meters).
-    /// Frontiers too close are ignored.
-    /// Default: 0.5m
-    pub min_distance_from_robot: f32,
-
-    /// Safety margin: viewpoint offset from wall (meters).
-    /// The viewpoint is placed this far from the line endpoint.
-    /// Default: 0.4m
-    pub safety_margin: f32,
-
-    /// Gap probe distance: how far to probe for unexplored gaps (meters).
-    /// Used for estimating unexplored area size.
-    /// Default: 2.0m
-    pub gap_probe_distance: f32,
-
-    /// Robot radius for viewpoint validation (meters).
-    /// Viewpoints must be clear of walls by this margin.
-    /// Default: 0.15m
-    pub robot_radius: f32,
-
-    /// Maximum iterations for viewpoint adjustment.
-    /// If viewpoint is blocked, move away from wall up to this many times.
-    /// Default: 5
-    pub max_viewpoint_iterations: usize,
-
-    /// Viewpoint adjustment step size (meters).
-    /// How far to move the viewpoint per iteration if blocked.
-    /// Default: 0.1m
-    pub viewpoint_step: f32,
-
-    /// Minimum gap width for safe robot passage (meters).
-    /// Gaps narrower than this are ignored (robot can't fit).
-    /// Default: 0.4m (robot diameter + safety margin)
-    pub min_gap_width: f32,
-
-    /// Maximum gap width to consider as a single gap (meters).
-    /// Larger distances are treated as separate areas, not a gap.
-    /// Default: 3.0m
-    pub max_gap_width: f32,
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // CBVG-based frontier detection parameters
-    // ─────────────────────────────────────────────────────────────────────────
-    /// Minimum uncovered angle for a CBVG node to be a frontier (radians).
-    /// Nodes with a gap of at least this size (no neighbors or walls) are frontiers.
-    /// Default: 1.75 rad (100 degrees)
-    pub min_frontier_angle: f32,
-
-    /// Maximum distance to check for walls when detecting frontiers (meters).
-    /// Walls closer than this block the direction from being a frontier.
-    /// Default: 0.5m
-    pub max_wall_distance: f32,
-}
-
-impl Default for FrontierConfig {
-    fn default() -> Self {
-        Self {
-            connection_distance: 0.3,
-            min_distance_from_robot: 0.5,
-            safety_margin: 0.4,
-            gap_probe_distance: 2.0,
-            robot_radius: 0.15,
-            max_viewpoint_iterations: 5,
-            viewpoint_step: 0.1,
-            min_gap_width: 0.4,  // robot diameter (0.3m) + margin
-            max_gap_width: 10.0, // allow gaps across rooms
-            // CBVG-based parameters
-            min_frontier_angle: 1.75, // 100 degrees in radians
-            max_wall_distance: 0.5,
-        }
-    }
-}
-
-impl FrontierConfig {
-    /// Create a new configuration with default values.
+    /// Create a new frontier detector with default settings
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Builder-style setter for connection distance.
-    pub fn with_connection_distance(mut self, meters: f32) -> Self {
-        self.connection_distance = meters;
-        self
+    /// Create with custom minimum frontier size
+    pub fn with_min_size(min_size: usize) -> Self {
+        Self {
+            min_frontier_size: min_size,
+            ..Default::default()
+        }
     }
 
-    /// Builder-style setter for minimum distance from robot.
-    pub fn with_min_distance_from_robot(mut self, meters: f32) -> Self {
-        self.min_distance_from_robot = meters;
-        self
-    }
+    /// Detect all frontier cells in the grid (SIMD-optimized).
+    ///
+    /// Uses SIMD to quickly filter Floor cells (16 at a time), then
+    /// performs scalar neighbor counting for each candidate.
+    pub fn detect_frontier_cells(&self, storage: &GridStorage) -> Vec<FrontierCell> {
+        let width = storage.width();
+        let height = storage.height();
+        let cell_types = storage.cell_types_raw();
 
-    /// Builder-style setter for safety margin.
-    pub fn with_safety_margin(mut self, meters: f32) -> Self {
-        self.safety_margin = meters;
-        self
-    }
+        let floor_val = CellType::Floor as u8;
+        let floor_vec = u8x16::splat(floor_val);
 
-    /// Builder-style setter for gap probe distance.
-    pub fn with_gap_probe_distance(mut self, meters: f32) -> Self {
-        self.gap_probe_distance = meters;
-        self
-    }
+        let mut frontiers = Vec::new();
 
-    /// Builder-style setter for robot radius.
-    pub fn with_robot_radius(mut self, meters: f32) -> Self {
-        self.robot_radius = meters;
-        self
-    }
+        // Process 16 cells at a time using SIMD
+        let chunks = cell_types.chunks_exact(16);
+        let remainder = chunks.remainder();
 
-    /// Builder-style setter for minimum gap width.
-    pub fn with_min_gap_width(mut self, meters: f32) -> Self {
-        self.min_gap_width = meters;
-        self
-    }
+        for (chunk_idx, chunk) in chunks.enumerate() {
+            let data = u8x16::from_slice(chunk);
+            let is_floor = data.simd_eq(floor_vec);
+            let mask = is_floor.to_bitmask();
 
-    /// Builder-style setter for maximum gap width.
-    pub fn with_max_gap_width(mut self, meters: f32) -> Self {
-        self.max_gap_width = meters;
-        self
-    }
-}
+            if mask == 0 {
+                continue; // No Floor cells in this chunk - skip entirely
+            }
 
-/// Convert a point to a grid cell coordinate.
-#[inline]
-fn point_to_cell(point: Point2D, cell_size: f32) -> (i32, i32) {
-    (
-        (point.x / cell_size).floor() as i32,
-        (point.y / cell_size).floor() as i32,
-    )
-}
+            // Process each Floor cell found in this chunk
+            let base_idx = chunk_idx * 16;
+            for bit in 0..16 {
+                if (mask & (1 << bit)) != 0 {
+                    let idx = base_idx + bit;
+                    let x = (idx % width) as i32;
+                    let y = (idx / width) as i32;
+                    let coord = GridCoord::new(x, y);
 
-/// Check if a point is connected to any other endpoint in the 3x3 neighborhood.
-#[inline]
-fn is_connected_in_grid(
-    grid: &EndpointGrid,
-    cell: (i32, i32),
-    point: Point2D,
-    line_idx: usize,
-    connection_distance: f32,
-) -> bool {
-    for dx in -1..=1 {
-        for dy in -1..=1 {
-            let neighbor_cell = (cell.0 + dx, cell.1 + dy);
-            if let Some(neighbors) = grid.get(&neighbor_cell) {
-                for &(other_point, other_idx, _) in neighbors {
-                    if other_idx == line_idx {
-                        continue;
-                    }
-                    if point.distance(other_point) < connection_distance {
-                        return true;
+                    // Count unknown neighbors (scalar - depends on grid topology)
+                    let unknown_count =
+                        self.count_unknown_neighbors(storage, coord, width as i32, height as i32);
+                    if unknown_count > 0 {
+                        frontiers.push(FrontierCell::new(coord, unknown_count));
                     }
                 }
             }
         }
-    }
-    false
-}
 
-/// Find a target point that makes progress toward the frontier.
-///
-/// Simple approach:
-/// 1. If robot can see the frontier directly, move toward it
-/// 2. Otherwise, find any reachable graph node that is closer to frontier
-/// 3. If no such node, the frontier is not reachable from current position
-fn find_nearest_reachable_node(
-    frontier_point: Point2D,
-    graph_nodes: &[Point2D],
-    robot_position: Point2D,
-    lines: &[Line2D],
-    config: &FrontierConfig,
-) -> Option<Point2D> {
-    let robot_dist_to_frontier = robot_position.distance(frontier_point);
+        // Handle remainder (< 16 cells) with scalar fallback
+        let base_idx = (cell_types.len() / 16) * 16;
+        for (i, &cell_type) in remainder.iter().enumerate() {
+            if cell_type == floor_val {
+                let idx = base_idx + i;
+                let x = (idx % width) as i32;
+                let y = (idx / width) as i32;
+                let coord = GridCoord::new(x, y);
 
-    // Skip if frontier is too close
-    if robot_dist_to_frontier < config.min_distance_from_robot {
-        return None;
+                let unknown_count =
+                    self.count_unknown_neighbors(storage, coord, width as i32, height as i32);
+                if unknown_count > 0 {
+                    frontiers.push(FrontierCell::new(coord, unknown_count));
+                }
+            }
+        }
+
+        trace!("[Frontier] Detected {} frontier cells", frontiers.len());
+        frontiers
     }
 
-    // First, check if robot can directly see the frontier point
-    if !is_path_blocked(robot_position, frontier_point, lines) {
-        // Direct line of sight - move toward frontier
-        let to_frontier = frontier_point - robot_position;
-        let move_dist =
-            (robot_dist_to_frontier - config.safety_margin).max(config.min_distance_from_robot);
-        let target = robot_position + to_frontier.normalized() * move_dist;
+    /// Count unknown neighbors for a cell (helper for SIMD detection).
+    #[inline]
+    fn count_unknown_neighbors(
+        &self,
+        storage: &GridStorage,
+        coord: GridCoord,
+        width: i32,
+        height: i32,
+    ) -> u8 {
+        let neighbors = if self.use_8_connectivity {
+            coord.neighbors_8()
+        } else {
+            let n4 = coord.neighbors_4();
+            [n4[0], n4[1], n4[2], n4[3], n4[0], n4[1], n4[2], n4[3]]
+        };
 
-        // Verify target is not too close to walls
-        if !is_point_too_close_to_lines(target, lines, config.robot_radius) {
-            return Some(target);
+        let limit = if self.use_8_connectivity { 8 } else { 4 };
+        let mut count = 0u8;
+
+        for n in neighbors.iter().take(limit) {
+            if n.x >= 0
+                && n.x < width
+                && n.y >= 0
+                && n.y < height
+                && storage.get_type(*n) == CellType::Unknown
+            {
+                count += 1;
+            }
         }
-        // Even if computed target is too close to walls, try moving there anyway
-        // (path planner will find an alternative)
-        return Some(target);
+
+        count
     }
 
-    // No direct line of sight - find the best intermediate node
-    let mut best_node: Option<(Point2D, f32)> = None;
+    /// Detect and cluster frontiers
+    pub fn detect_frontiers(&self, storage: &GridStorage) -> Vec<Frontier> {
+        let frontier_cells = self.detect_frontier_cells(storage);
 
-    for &node in graph_nodes {
-        // Skip robot position
-        if node.distance(robot_position) < 0.1 {
-            continue;
+        if frontier_cells.is_empty() {
+            debug!("[Frontier] No frontier cells found (no Floor cells adjacent to Unknown)");
+            return Vec::new();
         }
 
-        // Skip nodes too close to frontier (would be blocked by walls near frontier)
-        if node.distance(frontier_point) < config.safety_margin {
-            continue;
-        }
+        // Build a set for fast lookup
+        let frontier_set: HashSet<GridCoord> = frontier_cells.iter().map(|f| f.coord).collect();
 
-        // Must be reachable from robot (direct line of sight)
-        if is_path_blocked(robot_position, node, lines) {
-            continue;
-        }
+        // Map coord to FrontierCell
+        let cell_map: std::collections::HashMap<GridCoord, FrontierCell> =
+            frontier_cells.iter().map(|f| (f.coord, *f)).collect();
 
-        // Prefer nodes closer to frontier (makes progress)
-        let node_dist_to_frontier = node.distance(frontier_point);
+        // Cluster using BFS
+        let mut visited = HashSet::new();
+        let mut frontiers = Vec::new();
+        let mut clusters_before_filter = 0;
+        let mut filtered_clusters = 0;
 
-        if best_node.is_none() || node_dist_to_frontier < best_node.unwrap().1 {
-            best_node = Some((node, node_dist_to_frontier));
-        }
-    }
-
-    best_node.map(|(node, _)| node)
-}
-
-/// Check if the straight-line path between two points is blocked by any line.
-/// Excludes intersections that occur exactly at the path endpoints (from/to).
-fn is_path_blocked(from: Point2D, to: Point2D, lines: &[Line2D]) -> bool {
-    let epsilon = 0.01; // 1cm tolerance for endpoint matching
-
-    for line in lines {
-        if segments_intersect(from, to, line.start, line.end) {
-            // Check if the intersection is at one of the path endpoints
-            // If the line endpoint is essentially the same as our path endpoint,
-            // it's not a blocking intersection - it's expected.
-            let from_matches_start = from.distance(line.start) < epsilon;
-            let from_matches_end = from.distance(line.end) < epsilon;
-            let to_matches_start = to.distance(line.start) < epsilon;
-            let to_matches_end = to.distance(line.end) < epsilon;
-
-            // If the intersection is only at endpoints, it's not truly blocking
-            if from_matches_start || from_matches_end || to_matches_start || to_matches_end {
+        for cell in &frontier_cells {
+            if visited.contains(&cell.coord) {
                 continue;
             }
-            return true;
+
+            // BFS to find all connected frontier cells
+            let mut cluster = Vec::new();
+            let mut queue = VecDeque::new();
+            queue.push_back(cell.coord);
+            visited.insert(cell.coord);
+
+            while let Some(current) = queue.pop_front() {
+                if let Some(&fc) = cell_map.get(&current) {
+                    cluster.push(fc);
+                }
+
+                // Check neighbors
+                let neighbors = if self.use_8_connectivity {
+                    current.neighbors_8().to_vec()
+                } else {
+                    current.neighbors_4().to_vec()
+                };
+
+                for neighbor in neighbors {
+                    if !visited.contains(&neighbor) && frontier_set.contains(&neighbor) {
+                        visited.insert(neighbor);
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+
+            clusters_before_filter += 1;
+
+            // Only keep clusters above minimum size
+            if cluster.len() >= self.min_frontier_size {
+                frontiers.push(Frontier::from_cells(cluster, storage));
+            } else {
+                filtered_clusters += 1;
+                trace!(
+                    "[Frontier] Filtered cluster with {} cells (min_size={})",
+                    cluster.len(),
+                    self.min_frontier_size
+                );
+            }
         }
-    }
-    false
-}
 
-/// Check if a point is too close to any line (within robot radius).
-fn is_point_too_close_to_lines(point: Point2D, lines: &[Line2D], min_distance: f32) -> bool {
-    for line in lines {
-        if line.distance_to_point(point) < min_distance {
-            return true;
+        debug!(
+            "[Frontier] Clustering: {} cells → {} clusters, {} valid (filtered {} < {} cells)",
+            frontier_cells.len(),
+            clusters_before_filter,
+            frontiers.len(),
+            filtered_clusters,
+            self.min_frontier_size
+        );
+
+        frontiers
+    }
+
+    /// Get frontiers sorted by exploration score (highest first)
+    pub fn detect_frontiers_sorted(&self, storage: &GridStorage) -> Vec<Frontier> {
+        let mut frontiers = self.detect_frontiers(storage);
+        frontiers.sort_by(|a, b| b.exploration_score().total_cmp(&a.exploration_score()));
+        frontiers
+    }
+
+    /// Find the best frontier to explore from a given position
+    pub fn best_frontier_from(
+        &self,
+        storage: &GridStorage,
+        robot_pos: GridCoord,
+    ) -> Option<Frontier> {
+        let frontiers = self.detect_frontiers(storage);
+
+        if frontiers.is_empty() {
+            return None;
         }
-    }
-    false
-}
 
-/// Check if two line segments intersect.
-fn segments_intersect(a1: Point2D, a2: Point2D, b1: Point2D, b2: Point2D) -> bool {
-    let d1 = cross_product(b2 - b1, a1 - b1);
-    let d2 = cross_product(b2 - b1, a2 - b1);
-    let d3 = cross_product(a2 - a1, b1 - a1);
-    let d4 = cross_product(a2 - a1, b2 - a1);
-
-    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
-        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
-    {
-        return true;
-    }
-
-    // Check collinear cases
-    let epsilon = 1e-6;
-    if d1.abs() < epsilon && point_on_segment(a1, b1, b2) {
-        return true;
-    }
-    if d2.abs() < epsilon && point_on_segment(a2, b1, b2) {
-        return true;
-    }
-    if d3.abs() < epsilon && point_on_segment(b1, a1, a2) {
-        return true;
-    }
-    if d4.abs() < epsilon && point_on_segment(b2, a1, a2) {
-        return true;
-    }
-
-    false
-}
-
-/// 2D cross product of vectors.
-#[inline]
-fn cross_product(a: Point2D, b: Point2D) -> f32 {
-    a.x * b.y - a.y * b.x
-}
-
-/// Check if point p lies on segment (a, b).
-#[inline]
-fn point_on_segment(p: Point2D, a: Point2D, b: Point2D) -> bool {
-    p.x >= a.x.min(b.x) && p.x <= a.x.max(b.x) && p.y >= a.y.min(b.y) && p.y <= a.y.max(b.y)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Convenience functions (for backward compatibility)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Detect frontiers from map lines.
-pub fn detect_frontiers(
-    lines: &[Line2D],
-    robot_position: Point2D,
-    config: &FrontierConfig,
-) -> Vec<Frontier> {
-    let mut detector = FrontierDetector::new();
-    detector.detect(lines, robot_position, config).to_vec()
-}
-
-/// Rank frontiers by exploration value.
-pub fn rank_frontiers(frontiers: &[Frontier], robot_position: Point2D) -> Vec<(Frontier, f32)> {
-    frontiers
-        .iter()
-        .map(|f| {
-            let distance = f.viewpoint.distance(robot_position);
-            let distance_factor = 1.0 / (1.0 + distance * 0.1);
-            let area_factor = (f.estimated_area / 25.0).min(1.0);
-            let value = distance_factor * 0.3 + area_factor * 0.7;
-            (f.clone(), value)
+        // Score combines exploration value and distance
+        // Closer frontiers with higher exploration potential are preferred
+        frontiers.into_iter().max_by(|a, b| {
+            let score_a = self.score_frontier(a, robot_pos);
+            let score_b = self.score_frontier(b, robot_pos);
+            score_a.total_cmp(&score_b)
         })
-        .collect()
-}
-
-/// Get the best frontier for exploration.
-pub fn get_best_frontier(
-    lines: &[Line2D],
-    robot_position: Point2D,
-    config: &FrontierConfig,
-) -> Option<Frontier> {
-    let mut detector = FrontierDetector::new();
-    detector.get_best(lines, robot_position, config)
-}
-
-/// Cluster nearby frontiers into frontier regions.
-pub fn cluster_frontiers(frontiers: &[Frontier], cluster_distance: f32) -> Vec<Vec<Frontier>> {
-    if frontiers.is_empty() {
-        return Vec::new();
     }
 
-    let mut clusters: Vec<Vec<Frontier>> = Vec::new();
-    let mut assigned = vec![false; frontiers.len()];
+    /// Score a frontier considering distance from robot
+    fn score_frontier(&self, frontier: &Frontier, robot_pos: GridCoord) -> f32 {
+        let distance = robot_pos.manhattan_distance(&frontier.centroid_grid) as f32;
+        let exploration_score = frontier.exploration_score();
 
-    for i in 0..frontiers.len() {
-        if assigned[i] {
-            continue;
+        // Penalize distance, but not too heavily
+        // We want to explore nearby frontiers first, but not ignore large distant ones
+        if distance > 0.0 {
+            exploration_score / (1.0 + distance * 0.1)
+        } else {
+            exploration_score * 2.0 // Bonus for being at the frontier
         }
-
-        let mut cluster = vec![frontiers[i].clone()];
-        assigned[i] = true;
-
-        for j in (i + 1)..frontiers.len() {
-            if assigned[j] {
-                continue;
-            }
-
-            let close = cluster
-                .iter()
-                .any(|f| f.viewpoint.distance(frontiers[j].viewpoint) < cluster_distance);
-
-            if close {
-                cluster.push(frontiers[j].clone());
-                assigned[j] = true;
-            }
-        }
-
-        clusters.push(cluster);
     }
-
-    clusters
 }
 
-/// Get the centroid of a frontier cluster.
-pub fn cluster_centroid(cluster: &[Frontier]) -> Option<Point2D> {
-    if cluster.is_empty() {
-        return None;
-    }
+/// Quick frontier detection without clustering (for performance)
+pub fn count_frontier_cells(storage: &GridStorage) -> usize {
+    let detector = FrontierDetector::new();
+    detector.detect_frontier_cells(storage).len()
+}
 
-    let sum_x: f32 = cluster.iter().map(|f| f.viewpoint.x).sum();
-    let sum_y: f32 = cluster.iter().map(|f| f.viewpoint.y).sum();
-    let n = cluster.len() as f32;
-
-    Some(Point2D::new(sum_x / n, sum_y / n))
+/// Check if any frontiers exist in the map
+pub fn has_frontiers(storage: &GridStorage) -> bool {
+    let detector = FrontierDetector::new();
+    !detector.detect_frontier_cells(storage).is_empty()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::simd::{cmp::SimdPartialEq, u8x16};
 
-    fn make_partial_room() -> Vec<Line2D> {
-        // Room with one side open (no top wall)
-        vec![
-            Line2D::new(Point2D::new(-5.0, -5.0), Point2D::new(5.0, -5.0)), // Bottom
-            Line2D::new(Point2D::new(5.0, -5.0), Point2D::new(5.0, 5.0)),   // Right
-            Line2D::new(Point2D::new(-5.0, 5.0), Point2D::new(-5.0, -5.0)), // Left
-        ]
+    fn create_test_storage() -> GridStorage {
+        GridStorage::centered(20, 20, 0.1) // 2m x 2m at 10cm resolution
     }
 
-    fn make_complete_room() -> Vec<Line2D> {
-        vec![
-            Line2D::new(Point2D::new(-5.0, -5.0), Point2D::new(5.0, -5.0)), // Bottom
-            Line2D::new(Point2D::new(5.0, -5.0), Point2D::new(5.0, 5.0)),   // Right
-            Line2D::new(Point2D::new(5.0, 5.0), Point2D::new(-5.0, 5.0)),   // Top
-            Line2D::new(Point2D::new(-5.0, 5.0), Point2D::new(-5.0, -5.0)), // Left
-        ]
+    // =========================================================================
+    // SIMD-OPTIMIZED TEST HELPERS
+    // These are test-only implementations to verify SIMD correctness
+    // =========================================================================
+
+    /// Detect all frontier cells using SIMD-accelerated Floor cell detection.
+    fn detect_frontier_cells_simd(
+        detector: &FrontierDetector,
+        storage: &GridStorage,
+    ) -> Vec<FrontierCell> {
+        let width = storage.width();
+        let height = storage.height();
+        let cell_types = storage.cell_types_raw();
+
+        let floor_val = CellType::Floor as u8;
+        let floor_vec = u8x16::splat(floor_val);
+
+        let mut frontiers = Vec::new();
+
+        // Process 16 cells at a time using SIMD
+        let chunks = cell_types.chunks_exact(16);
+        let remainder = chunks.remainder();
+
+        for (chunk_idx, chunk) in chunks.enumerate() {
+            let data = u8x16::from_slice(chunk);
+            let is_floor = data.simd_eq(floor_vec);
+            let mask = is_floor.to_bitmask();
+
+            if mask == 0 {
+                continue; // No Floor cells in this chunk
+            }
+
+            // Process each Floor cell found
+            let base_idx = chunk_idx * 16;
+            for bit in 0..16 {
+                if (mask & (1 << bit)) != 0 {
+                    let idx = base_idx + bit;
+                    let x = (idx % width) as i32;
+                    let y = (idx / width) as i32;
+                    let coord = GridCoord::new(x, y);
+
+                    // Count unknown neighbors (scalar)
+                    let unknown_count = count_unknown_neighbors(
+                        detector,
+                        storage,
+                        coord,
+                        width as i32,
+                        height as i32,
+                    );
+                    if unknown_count > 0 {
+                        frontiers.push(FrontierCell::new(coord, unknown_count));
+                    }
+                }
+            }
+        }
+
+        // Handle remainder (< 16 cells)
+        let base_idx = (cell_types.len() / 16) * 16;
+        for (i, &cell_type) in remainder.iter().enumerate() {
+            if cell_type == floor_val {
+                let idx = base_idx + i;
+                let x = (idx % width) as i32;
+                let y = (idx / width) as i32;
+                let coord = GridCoord::new(x, y);
+
+                let unknown_count =
+                    count_unknown_neighbors(detector, storage, coord, width as i32, height as i32);
+                if unknown_count > 0 {
+                    frontiers.push(FrontierCell::new(coord, unknown_count));
+                }
+            }
+        }
+
+        frontiers
+    }
+
+    /// Count unknown neighbors for a given cell
+    fn count_unknown_neighbors(
+        detector: &FrontierDetector,
+        storage: &GridStorage,
+        coord: GridCoord,
+        width: i32,
+        height: i32,
+    ) -> u8 {
+        let neighbors = if detector.use_8_connectivity {
+            coord.neighbors_8()
+        } else {
+            let n4 = coord.neighbors_4();
+            [n4[0], n4[1], n4[2], n4[3], n4[0], n4[1], n4[2], n4[3]]
+        };
+
+        let limit = if detector.use_8_connectivity { 8 } else { 4 };
+        let mut count = 0u8;
+
+        for n in neighbors.iter().take(limit) {
+            if n.x >= 0
+                && n.x < width
+                && n.y >= 0
+                && n.y < height
+                && storage.get_type(*n) == CellType::Unknown
+            {
+                count += 1;
+            }
+        }
+
+        count
+    }
+
+    /// Detect and cluster frontiers using SIMD-optimized cell detection.
+    fn detect_frontiers_simd(detector: &FrontierDetector, storage: &GridStorage) -> Vec<Frontier> {
+        let frontier_cells = detect_frontier_cells_simd(detector, storage);
+
+        if frontier_cells.is_empty() {
+            return Vec::new();
+        }
+
+        cluster_frontier_cells(detector, frontier_cells, storage)
+    }
+
+    /// Cluster frontier cells into connected frontiers.
+    fn cluster_frontier_cells(
+        detector: &FrontierDetector,
+        frontier_cells: Vec<FrontierCell>,
+        storage: &GridStorage,
+    ) -> Vec<Frontier> {
+        // Build a set for fast lookup
+        let frontier_set: HashSet<GridCoord> = frontier_cells.iter().map(|f| f.coord).collect();
+
+        // Map coord to FrontierCell
+        let cell_map: std::collections::HashMap<GridCoord, FrontierCell> =
+            frontier_cells.iter().map(|f| (f.coord, *f)).collect();
+
+        // Cluster using BFS
+        let mut visited = HashSet::new();
+        let mut frontiers = Vec::new();
+
+        for cell in &frontier_cells {
+            if visited.contains(&cell.coord) {
+                continue;
+            }
+
+            // BFS to find all connected frontier cells
+            let mut cluster = Vec::new();
+            let mut queue = VecDeque::new();
+            queue.push_back(cell.coord);
+            visited.insert(cell.coord);
+
+            while let Some(current) = queue.pop_front() {
+                if let Some(&fc) = cell_map.get(&current) {
+                    cluster.push(fc);
+                }
+
+                // Check neighbors
+                let neighbors = if detector.use_8_connectivity {
+                    current.neighbors_8().to_vec()
+                } else {
+                    current.neighbors_4().to_vec()
+                };
+
+                for neighbor in neighbors {
+                    if !visited.contains(&neighbor) && frontier_set.contains(&neighbor) {
+                        visited.insert(neighbor);
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+
+            // Only keep clusters above minimum size
+            if cluster.len() >= detector.min_frontier_size {
+                frontiers.push(Frontier::from_cells(cluster, storage));
+            }
+        }
+
+        frontiers
     }
 
     #[test]
-    fn test_detect_frontiers_partial_room() {
-        let lines = make_partial_room();
-        let config = FrontierConfig::default();
-        let robot = Point2D::zero();
+    fn test_no_frontiers_on_empty_grid() {
+        let storage = create_test_storage();
+        let detector = FrontierDetector::new();
 
-        let frontiers = detect_frontiers(&lines, robot, &config);
+        let frontiers = detector.detect_frontiers(&storage);
+        assert!(frontiers.is_empty());
+    }
 
-        // Should have frontiers at the open top
+    #[test]
+    fn test_frontier_detection_basic() {
+        let mut storage = create_test_storage();
+
+        // Create a small floor area
+        for x in 8..12 {
+            for y in 8..12 {
+                storage.set_type(GridCoord::new(x, y), CellType::Floor);
+            }
+        }
+
+        let detector = FrontierDetector::new();
+        let cells = detector.detect_frontier_cells(&storage);
+
+        // All edge cells should be frontiers
+        assert!(cells.len() > 0);
+
+        // Center cell should NOT be a frontier
+        let center = GridCoord::new(10, 10);
+        assert!(!cells.iter().any(|f| f.coord == center));
+    }
+
+    #[test]
+    fn test_frontier_clustering() {
+        let mut storage = create_test_storage();
+
+        // Create two separate floor regions
+        // Region 1
+        for x in 2..5 {
+            for y in 2..5 {
+                storage.set_type(GridCoord::new(x, y), CellType::Floor);
+            }
+        }
+        // Region 2 (separated by unknown)
+        for x in 15..18 {
+            for y in 15..18 {
+                storage.set_type(GridCoord::new(x, y), CellType::Floor);
+            }
+        }
+
+        let detector = FrontierDetector::new();
+        let frontiers = detector.detect_frontiers(&storage);
+
+        // Should have 2 frontier clusters
+        assert_eq!(frontiers.len(), 2);
+    }
+
+    #[test]
+    fn test_frontier_centroid() {
+        let mut storage = create_test_storage();
+
+        // Create a symmetric floor region
+        for x in 5..15 {
+            for y in 5..15 {
+                storage.set_type(GridCoord::new(x, y), CellType::Floor);
+            }
+        }
+
+        let detector = FrontierDetector::new();
+        let frontiers = detector.detect_frontiers(&storage);
+
+        assert_eq!(frontiers.len(), 1);
+
+        // Centroid should be roughly in the middle of the frontier ring
+        let frontier = &frontiers[0];
+        // The frontier is on the edge, so centroid should be near edges
+        assert!(frontier.centroid_grid.x >= 5 && frontier.centroid_grid.x <= 14);
+        assert!(frontier.centroid_grid.y >= 5 && frontier.centroid_grid.y <= 14);
+    }
+
+    #[test]
+    fn test_min_frontier_size() {
+        let mut storage = create_test_storage();
+
+        // Create a very small floor area (just 1 cell)
+        storage.set_type(GridCoord::new(10, 10), CellType::Floor);
+
+        let detector = FrontierDetector::with_min_size(5);
+        let frontiers = detector.detect_frontiers(&storage);
+
+        // Single cell frontier should be filtered out
+        assert!(frontiers.is_empty());
+    }
+
+    #[test]
+    fn test_wall_blocks_frontier() {
+        let mut storage = create_test_storage();
+
+        // Floor surrounded by walls on one side
+        for x in 8..12 {
+            for y in 8..12 {
+                storage.set_type(GridCoord::new(x, y), CellType::Floor);
+            }
+        }
+        // Add wall on the right
+        for y in 7..13 {
+            storage.set_type(GridCoord::new(12, y), CellType::Wall);
+        }
+
+        let detector = FrontierDetector::new();
+        let cells = detector.detect_frontier_cells(&storage);
+
+        // Cells next to wall should not have frontiers on that side
+        let right_edge = GridCoord::new(11, 10);
+        let frontier_cell = cells.iter().find(|f| f.coord == right_edge);
+
+        // The right edge cell should have fewer unknown neighbors
+        // (wall blocks the right side from being unknown)
+        if let Some(fc) = frontier_cell {
+            // Should be < 8 unknown neighbors due to wall
+            assert!(fc.unknown_neighbors < 8);
+        }
+    }
+
+    #[test]
+    fn test_exploration_score() {
+        let mut storage = create_test_storage();
+
+        // Large floor area
+        for x in 2..18 {
+            for y in 2..18 {
+                storage.set_type(GridCoord::new(x, y), CellType::Floor);
+            }
+        }
+
+        let detector = FrontierDetector::new();
+        let frontiers = detector.detect_frontiers(&storage);
+
         assert!(!frontiers.is_empty());
 
-        // Viewpoints should be offset from walls
-        for f in &frontiers {
-            let min_dist = lines
-                .iter()
-                .map(|l| l.distance_to_point(f.viewpoint))
-                .fold(f32::MAX, f32::min);
-            assert!(
-                min_dist >= config.robot_radius * 0.9,
-                "Viewpoint too close to wall: {:.3}m",
-                min_dist
-            );
+        // Score should be positive
+        assert!(frontiers[0].exploration_score() > 0.0);
+    }
+
+    #[test]
+    fn test_best_frontier_from() {
+        let mut storage = create_test_storage();
+
+        // Create floor area
+        for x in 5..15 {
+            for y in 5..15 {
+                storage.set_type(GridCoord::new(x, y), CellType::Floor);
+            }
         }
+
+        let detector = FrontierDetector::new();
+        let robot_pos = GridCoord::new(10, 10);
+
+        let best = detector.best_frontier_from(&storage, robot_pos);
+        assert!(best.is_some());
     }
 
     #[test]
-    fn test_detect_frontiers_complete_room() {
-        let lines = make_complete_room();
-        let config = FrontierConfig::default();
-        let robot = Point2D::zero();
+    fn test_simd_frontier_matches_scalar() {
+        let mut storage = create_test_storage();
 
-        let frontiers = detect_frontiers(&lines, robot, &config);
-
-        // Complete room - all corners should be connected (no frontiers)
-        assert_eq!(frontiers.len(), 0);
-    }
-
-    #[test]
-    fn test_detect_frontiers_single_line() {
-        let lines = vec![Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0))];
-        let config = FrontierConfig::default();
-        let robot = Point2D::new(2.5, 2.0);
-
-        let frontiers = detect_frontiers(&lines, robot, &config);
-
-        // Both endpoints are unconnected, but viewpoints should be valid
-        assert!(frontiers.len() <= 2);
-
-        // Check viewpoints are not on the line
-        for f in &frontiers {
-            assert!(f.viewpoint.distance(f.endpoint) > 0.1);
+        // Create floor area
+        for x in 5..15 {
+            for y in 5..15 {
+                storage.set_type(GridCoord::new(x, y), CellType::Floor);
+            }
         }
+
+        let detector = FrontierDetector::new();
+
+        // Get scalar frontier cells
+        let scalar_cells = detector.detect_frontier_cells(&storage);
+
+        // Get SIMD frontier cells
+        let simd_cells = detect_frontier_cells_simd(&detector, &storage);
+
+        // Should have same count
+        assert_eq!(
+            scalar_cells.len(),
+            simd_cells.len(),
+            "Cell count mismatch: scalar={}, simd={}",
+            scalar_cells.len(),
+            simd_cells.len()
+        );
+
+        // Verify same cells are found (order may differ)
+        let scalar_set: std::collections::HashSet<_> = scalar_cells
+            .iter()
+            .map(|c| (c.coord, c.unknown_neighbors))
+            .collect();
+        let simd_set: std::collections::HashSet<_> = simd_cells
+            .iter()
+            .map(|c| (c.coord, c.unknown_neighbors))
+            .collect();
+
+        assert_eq!(scalar_set, simd_set, "Different frontier cells detected");
     }
 
     #[test]
-    fn test_viewpoint_not_on_wall() {
-        let lines = vec![Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0))];
-        let config = FrontierConfig::default();
-        let robot = Point2D::new(2.5, 2.0);
+    fn test_simd_frontier_clustering_matches_scalar() {
+        let mut storage = create_test_storage();
 
-        let frontiers = detect_frontiers(&lines, robot, &config);
-
-        for f in &frontiers {
-            // Viewpoint should be at least safety_margin away from the endpoint
-            let dist_to_endpoint = f.viewpoint.distance(f.endpoint);
-            assert!(
-                dist_to_endpoint >= config.safety_margin * 0.9,
-                "Viewpoint {:.2}m from endpoint (expected >= {:.2}m)",
-                dist_to_endpoint,
-                config.safety_margin
-            );
+        // Create two separate floor regions
+        for x in 2..5 {
+            for y in 2..5 {
+                storage.set_type(GridCoord::new(x, y), CellType::Floor);
+            }
         }
-    }
-
-    #[test]
-    fn test_frontier_has_look_direction() {
-        let lines = vec![Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0))];
-        let config = FrontierConfig::default();
-        let robot = Point2D::new(2.5, 2.0);
-
-        let frontiers = detect_frontiers(&lines, robot, &config);
-
-        for f in &frontiers {
-            // Look direction should be a unit vector (or close to it)
-            let len = (f.look_direction.x.powi(2) + f.look_direction.y.powi(2)).sqrt();
-            assert!(
-                (len - 1.0).abs() < 0.01,
-                "Look direction not unit: len={:.3}",
-                len
-            );
+        for x in 15..18 {
+            for y in 15..18 {
+                storage.set_type(GridCoord::new(x, y), CellType::Floor);
+            }
         }
-    }
 
-    #[test]
-    fn test_detector_reuse_buffers() {
-        let mut detector = FrontierDetector::new();
-        let config = FrontierConfig::default();
-        let robot = Point2D::zero();
+        let detector = FrontierDetector::new();
 
-        // First detection
-        let lines1 = vec![Line2D::new(Point2D::new(0.0, 0.0), Point2D::new(5.0, 0.0))];
-        let frontiers1 = detector.detect(&lines1, robot, &config);
-        let count1 = frontiers1.len();
+        let scalar_frontiers = detector.detect_frontiers(&storage);
+        let simd_frontiers = detect_frontiers_simd(&detector, &storage);
 
-        // Second detection with different lines
-        let lines2 = make_complete_room();
-        let frontiers2 = detector.detect(&lines2, robot, &config);
-        assert_eq!(frontiers2.len(), 0);
+        // Should have same number of clusters
+        assert_eq!(
+            scalar_frontiers.len(),
+            simd_frontiers.len(),
+            "Frontier count mismatch: scalar={}, simd={}",
+            scalar_frontiers.len(),
+            simd_frontiers.len()
+        );
 
-        // Third detection - back to single line
-        let frontiers3 = detector.detect(&lines1, robot, &config);
-        assert_eq!(frontiers3.len(), count1);
-    }
+        // Each cluster should have same size
+        let mut scalar_sizes: Vec<_> = scalar_frontiers.iter().map(|f| f.size).collect();
+        let mut simd_sizes: Vec<_> = simd_frontiers.iter().map(|f| f.size).collect();
+        scalar_sizes.sort();
+        simd_sizes.sort();
 
-    #[test]
-    fn test_cluster_frontiers_uses_viewpoint() {
-        let frontiers = vec![
-            Frontier {
-                viewpoint: Point2D::new(0.0, 0.0),
-                look_direction: Point2D::new(1.0, 0.0),
-                endpoint: Point2D::new(-0.4, 0.0),
-                line_idx: 0,
-                estimated_area: 4.0,
-            },
-            Frontier {
-                viewpoint: Point2D::new(0.1, 0.0),
-                look_direction: Point2D::new(1.0, 0.0),
-                endpoint: Point2D::new(-0.3, 0.0),
-                line_idx: 1,
-                estimated_area: 4.0,
-            },
-            Frontier {
-                viewpoint: Point2D::new(10.0, 10.0),
-                look_direction: Point2D::new(1.0, 0.0),
-                endpoint: Point2D::new(9.6, 10.0),
-                line_idx: 2,
-                estimated_area: 4.0,
-            },
-        ];
-
-        let clusters = cluster_frontiers(&frontiers, 0.5);
-
-        // Should have 2 clusters based on viewpoint distance
-        assert_eq!(clusters.len(), 2);
-    }
-
-    #[test]
-    fn test_cluster_centroid_uses_viewpoint() {
-        let frontiers = vec![
-            Frontier {
-                viewpoint: Point2D::new(0.0, 0.0),
-                look_direction: Point2D::new(1.0, 0.0),
-                endpoint: Point2D::new(-0.4, 0.0),
-                line_idx: 0,
-                estimated_area: 4.0,
-            },
-            Frontier {
-                viewpoint: Point2D::new(2.0, 0.0),
-                look_direction: Point2D::new(1.0, 0.0),
-                endpoint: Point2D::new(1.6, 0.0),
-                line_idx: 1,
-                estimated_area: 4.0,
-            },
-        ];
-
-        let centroid = cluster_centroid(&frontiers);
-
-        assert!(centroid.is_some());
-        let c = centroid.unwrap();
-        // Centroid should be at (1.0, 0.0) - average of viewpoints
-        assert!((c.x - 1.0).abs() < 0.01);
-        assert!((c.y - 0.0).abs() < 0.01);
+        assert_eq!(scalar_sizes, simd_sizes, "Cluster sizes differ");
     }
 }

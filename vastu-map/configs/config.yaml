@@ -1,0 +1,121 @@
+# VastuMap Occupancy Grid Configuration
+# Units: meters (m), radians (rad), cells (n)
+
+# ============================================================================
+# Grid Configuration
+# ============================================================================
+grid:
+  # Cell resolution in meters per cell
+  resolution: 0.025  # 2.5cm cells
+
+  # Initial grid dimensions (cells)
+  initial_width: 300
+  initial_height: 300
+
+  # Grid origin mode: "center" or "corner"
+  origin_mode: center
+
+  # Custom origin offset (only used if origin_mode: custom)
+  origin_x: 0.0
+  origin_y: 0.0
+
+  # Enable automatic grid expansion
+  auto_expand: true
+
+# ============================================================================
+# Sensor Configuration
+# ============================================================================
+sensor:
+  # LiDAR configuration
+  lidar:
+    # Sensor offset from robot center (x forward, y left)
+    offset_x: -0.110
+    offset_y: 0.0
+
+    # Range limits
+    min_range: 0.15
+    max_range: 8.0
+
+  # Robot geometry
+  robot:
+    radius: 0.17  # CRL-200S physical radius
+
+  # Cliff sensor positions (robot frame)
+  cliff_sensors:
+    left_side: [0.12, 0.10]
+    left_front: [0.15, 0.05]
+    right_front: [0.15, -0.05]
+    right_side: [0.12, -0.10]
+
+  # Bumper zones (angles from center in radians)
+  bumper:
+    left_angle: 0.5   # ~30 degrees
+    right_angle: -0.5
+
+# ============================================================================
+# Query Configuration
+# ============================================================================
+query:
+  # Frontier detection
+  frontier:
+    min_frontier_size: 5       # Minimum cells for valid frontier
+    use_8_connectivity: true   # Use 8-connected grid (vs 4-connected)
+
+  # Traversability checking
+  traversability:
+    safety_margin: 0.05        # Extra clearance around robot (m)
+
+# ============================================================================
+# Pathfinding Configuration
+# ============================================================================
+pathfinding:
+  # A* algorithm settings
+  astar:
+    allow_diagonal: true       # Enable 8-directional movement
+    diagonal_cost: 1.414       # sqrt(2) cost for diagonal moves
+    max_iterations: 100000     # Max nodes to expand
+    clearance_weight: 0.0      # Penalty for paths near obstacles (0=disabled)
+
+  # Path smoothing
+  smoothing:
+    enabled: true
+    los_step_size: 0.05        # Line-of-sight check step (m)
+    max_iterations: 100        # Midpoint smoothing iterations
+
+# ============================================================================
+# Exploration Configuration
+# ============================================================================
+exploration:
+  # Frontier selection
+  min_frontier_size: 5
+  frontier_reached_threshold: 0.3  # Distance to consider frontier reached (m)
+  waypoint_threshold: 0.1          # Distance for waypoint reached (m)
+
+  # Planning
+  max_plan_distance: 5.0           # Maximum planning distance (m)
+  replan_interval: 1.0             # Seconds between replans when blocked
+
+  # Failure handling
+  max_consecutive_failures: 5
+
+  # Path preferences
+  path_clearance_weight: 0.0
+  smooth_paths: true
+
+  # Recovery behavior
+  recovery:
+    turn_angle: 0.785              # 45 degrees in radians
+    backup_distance: 0.1           # Backup distance (m)
+
+# ============================================================================
+# Map Persistence
+# ============================================================================
+persistence:
+  # Output format: "vastu" (binary), "pgm" (ROS), "both"
+  output_format: both
+
+  # Output directory (relative to working directory)
+  output_dir: ./output
+
+  # Auto-save interval during exploration (seconds, 0=disabled)
+  auto_save_interval: 30

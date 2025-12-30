@@ -1,0 +1,23 @@
+# 360 Degree Rotation Test Scenario
+# Tests scan matching during pure rotation
+
+name: "360 Rotation Test"
+description: "Rotate in place at 0.5 rad/s for full 360 degrees"
+
+map: "medium_room"
+
+seed:
+  scans: 20
+  rotation: true
+
+commands:
+  # Full 360 rotation: 2*PI / 0.5 rad/s = ~12.57 seconds
+  - type: move
+    linear_velocity: 0.0
+    angular_velocity: 0.5
+    duration_ms: 12566
+
+svg_output:
+  scale: 50.0
+  marker_interval_s: 1.0
+  trajectory_width: 2.0

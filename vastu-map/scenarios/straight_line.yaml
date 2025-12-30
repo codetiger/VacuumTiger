@@ -1,0 +1,22 @@
+# Straight Line Test Scenario
+# Tests scan matching during forward motion
+
+name: "Straight Line Test"
+description: "Move forward at 0.2 m/s for 10 seconds (2m total)"
+
+map: "medium_room"
+
+seed:
+  scans: 20
+  rotation: true
+
+commands:
+  - type: move
+    linear_velocity: 0.2
+    angular_velocity: 0.0
+    duration_ms: 10000
+
+svg_output:
+  scale: 50.0
+  marker_interval_m: 0.5
+  trajectory_width: 2.0

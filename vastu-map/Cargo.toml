@@ -1,35 +1,30 @@
 [package]
 name = "vastu-map"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "Feature-based 2D SLAM library with SIMD-friendly data layouts"
+description = "Occupancy grid mapping library for robot exploration and navigation"
 license = "MIT"
 
-[features]
-default = []
+# Note: This crate requires nightly Rust for portable_simd feature
 
 [dependencies]
-rstar = "0.12"           # R-tree spatial index
 log = "0.4"              # Logging
-rand = "0.9"             # RANSAC randomness
 serde = { version = "1.0", features = ["derive"] }  # Config serialization
 serde_yaml = "0.9"       # YAML config files
 
 [dev-dependencies]
-criterion = "0.8"        # Benchmarks
 env_logger = "0.11"      # Test logging
 approx = "0.5"           # Approximate comparisons (tests only)
 # Simulation dependencies (examples only)
 sangam-io = { path = "../sangam-io", features = ["mock"] }
-svg = "0.18"
 image = { version = "0.25", default-features = false, features = ["png", "pnm"] }
+clap = { version = "4.5", features = ["derive"] }
+rand = "0.9"
 
 [[example]]
-name = "exploration"
+name = "explore_mock"
+path = "examples/explore_mock.rs"
 
 [profile.release]
 opt-level = 3
 lto = true
-# codegen-units = 1        # Better optimization, slower compile
-# panic = "abort"          # Smaller binary, no unwinding overhead
-# strip = true             # Strip debug symbols for smaller binary
