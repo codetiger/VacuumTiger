@@ -2,13 +2,20 @@
 
 use std::time::Instant;
 
+use super::controller::{
+    ExplorationCommand, ExplorationController, ExplorationEvent, ExplorationProgress,
+};
+use super::error::ExplorationError;
+use super::velocity::{
+    VelocityConfig, compute_angular_velocity_to_heading, compute_velocity_to_target,
+};
 use crate::OccupancyGridMap;
 use crate::core::Pose2D;
-use crate::exploration::{ExplorationCommand, ExplorationController, ExplorationProgress};
 use crate::slam::CorrelativeMatcher;
 use crate::slam::loop_closure::{LoopClosureDetector, PoseGraph};
 
 use super::config::ExplorerConfig;
+use super::motion_filter::MotionFilter;
 use super::source::SensorSource;
 
 /// Result of a completed exploration.
@@ -19,9 +26,32 @@ pub enum ExploreResult {
     Failed {
         /// Partial map collected before failure.
         map: OccupancyGridMap,
-        /// Reason for failure.
-        reason: String,
+        /// Error that caused the failure.
+        error: ExplorationError,
     },
+}
+
+impl ExploreResult {
+    /// Check if exploration completed successfully.
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete(_))
+    }
+
+    /// Get the map regardless of success/failure.
+    pub fn into_map(self) -> OccupancyGridMap {
+        match self {
+            Self::Complete(map) => map,
+            Self::Failed { map, .. } => map,
+        }
+    }
+
+    /// Get the error if exploration failed.
+    pub fn error(&self) -> Option<&ExplorationError> {
+        match self {
+            Self::Complete(_) => None,
+            Self::Failed { error, .. } => Some(error),
+        }
+    }
 }
 
 /// Status returned from a single exploration step.
@@ -36,8 +66,8 @@ pub enum ExploreStatus {
     Complete,
     /// Exploration failed.
     Failed {
-        /// Reason for failure.
-        reason: String,
+        /// Error that caused the failure.
+        error: ExplorationError,
     },
 }
 
@@ -75,6 +105,10 @@ pub struct VastuExplorer {
     loop_detector: LoopClosureDetector,
     /// Pose graph for optimization.
     pose_graph: PoseGraph,
+    /// Motion filter for gating scan processing.
+    motion_filter: MotionFilter,
+    /// Velocity computation configuration.
+    velocity_config: VelocityConfig,
     /// Last corrected pose.
     last_pose: Pose2D,
     /// Last odometry pose (for delta calculation).
@@ -95,6 +129,8 @@ impl VastuExplorer {
         let matcher = CorrelativeMatcher::new(config.matching.clone());
         let loop_detector = LoopClosureDetector::new(config.loop_closure.clone());
         let pose_graph = PoseGraph::new(config.pose_graph.clone());
+        let motion_filter = MotionFilter::new(config.motion_filter.clone());
+        let velocity_config = VelocityConfig::default();
 
         Self {
             config,
@@ -103,6 +139,8 @@ impl VastuExplorer {
             matcher,
             loop_detector,
             pose_graph,
+            motion_filter,
+            velocity_config,
             last_pose: Pose2D::default(),
             last_odom_pose: None,
             start_time: None,
@@ -150,7 +188,7 @@ impl VastuExplorer {
     ///
     /// # Returns
     /// `ExploreResult::Complete` with the finished map, or
-    /// `ExploreResult::Failed` with a partial map and reason.
+    /// `ExploreResult::Failed` with a partial map and error.
     pub fn explore<S: SensorSource>(mut self, source: &mut S) -> ExploreResult {
         // Start exploration
         self.controller.start();
@@ -168,7 +206,7 @@ impl VastuExplorer {
                 source.stop();
                 return ExploreResult::Failed {
                     map: self.map,
-                    reason: "Robot connection lost".to_string(),
+                    error: ExplorationError::ConnectionLost,
                 };
             }
 
@@ -179,16 +217,23 @@ impl VastuExplorer {
                 source.stop();
                 return ExploreResult::Failed {
                     map: self.map,
-                    reason: format!("Battery low: {}%", battery),
+                    error: ExplorationError::LowBattery {
+                        percent: battery,
+                        threshold: self.config.min_battery_percent,
+                    },
                 };
             }
 
             // Check time limit
-            if self.config.max_time_secs > 0.0 && self.elapsed_secs() > self.config.max_time_secs {
+            let elapsed = self.elapsed_secs();
+            if self.config.max_time_secs > 0.0 && elapsed > self.config.max_time_secs {
                 source.stop();
                 return ExploreResult::Failed {
                     map: self.map,
-                    reason: "Time limit exceeded".to_string(),
+                    error: ExplorationError::TimeoutExceeded {
+                        elapsed_secs: elapsed,
+                        limit_secs: self.config.max_time_secs,
+                    },
                 };
             }
 
@@ -201,11 +246,11 @@ impl VastuExplorer {
                     source.stop();
                     return ExploreResult::Complete(self.map);
                 }
-                ExploreStatus::Failed { reason } => {
+                ExploreStatus::Failed { error } => {
                     source.stop();
                     return ExploreResult::Failed {
                         map: self.map,
-                        reason,
+                        error,
                     };
                 }
             }
@@ -252,34 +297,44 @@ impl VastuExplorer {
         });
         self.last_odom_pose = Some(odom_pose);
 
-        // Process lidar scan if available
+        // Process lidar scan if available and motion filter allows
         if let Some(scan) = source.get_lidar_scan() {
-            // Scan matching
-            let match_result = self
-                .matcher
-                .match_scan(&scan, odom_pose, self.map.storage());
+            // Check motion filter - only process if sufficient motion occurred
+            if self.motion_filter.should_process(odom_pose) {
+                // Scan matching
+                let match_result = self
+                    .matcher
+                    .match_scan(&scan, odom_pose, self.map.storage());
 
-            // Use matched pose if good, else use odometry
-            let corrected_pose = if match_result.converged {
-                match_result.pose
-            } else {
-                odom_pose
-            };
+                // Use matched pose if good, else use odometry
+                let corrected_pose = if match_result.converged {
+                    match_result.pose
+                } else {
+                    odom_pose
+                };
 
-            // Integrate scan into map
-            self.map.observe_lidar(&scan, corrected_pose);
+                // Integrate scan into map
+                self.map.observe_lidar(&scan, corrected_pose);
 
-            // Update pose graph
-            self.pose_graph.add_pose(corrected_pose, odom_delta);
+                // Update pose graph
+                self.pose_graph.add_pose(corrected_pose, odom_delta);
 
-            // Check for loop closure
-            if let Some(closure) = self.loop_detector.add_scan(&scan, corrected_pose) {
-                self.pose_graph.add_loop_closure(closure);
-                // Optimize when loop detected
-                self.pose_graph.optimize();
+                // Check for loop closure
+                if let Some(closure) = self.loop_detector.add_scan(&scan, corrected_pose) {
+                    self.pose_graph.add_loop_closure(closure);
+                    // Optimize when loop detected
+                    self.pose_graph.optimize();
+                }
+
+                self.last_pose = corrected_pose;
+            } else if let Some(delta) = odom_delta {
+                // Scan filtered out - update pose from odometry delta only
+                self.last_pose = Pose2D::new(
+                    self.last_pose.x + delta.x,
+                    self.last_pose.y + delta.y,
+                    self.last_pose.theta + delta.theta,
+                );
             }
-
-            self.last_pose = corrected_pose;
         } else if let Some(delta) = odom_delta {
             // No scan available - update pose from odometry delta
             // This prevents the controller from using stale positions
@@ -293,11 +348,11 @@ impl VastuExplorer {
         // Handle cliff/bumper events
         if source.is_cliff_detected() {
             self.controller
-                .handle_event(crate::exploration::ExplorationEvent::ObstacleDetected);
+                .handle_event(ExplorationEvent::ObstacleDetected);
         }
         if source.is_bumper_triggered() {
             self.controller
-                .handle_event(crate::exploration::ExplorationEvent::ObstacleDetected);
+                .handle_event(ExplorationEvent::ObstacleDetected);
         }
 
         // Update exploration controller
@@ -306,18 +361,23 @@ impl VastuExplorer {
         // Execute command
         match command {
             ExplorationCommand::MoveTo { target, max_speed } => {
-                let (linear, angular) =
-                    self.compute_velocity(self.last_pose, target.x, target.y, max_speed);
+                let (linear, angular) = compute_velocity_to_target(
+                    self.last_pose,
+                    target,
+                    max_speed,
+                    &self.velocity_config,
+                );
                 source.send_velocity(linear, angular);
             }
             ExplorationCommand::Rotate {
                 target_heading,
                 max_angular_speed,
             } => {
-                let angular = self.compute_angular_velocity(
+                let angular = compute_angular_velocity_to_heading(
                     self.last_pose.theta,
                     target_heading,
                     max_angular_speed,
+                    &self.velocity_config,
                 );
                 source.send_velocity(0.0, angular);
             }
@@ -330,7 +390,9 @@ impl VastuExplorer {
             }
             ExplorationCommand::ExplorationFailed { reason } => {
                 source.stop();
-                return ExploreStatus::Failed { reason };
+                return ExploreStatus::Failed {
+                    error: ExplorationError::from_message(reason),
+                };
             }
             ExplorationCommand::None => {
                 // Continue with current velocity or stop
@@ -342,48 +404,6 @@ impl VastuExplorer {
         }
     }
 
-    /// Compute velocity command to move towards target.
-    fn compute_velocity(
-        &self,
-        pose: Pose2D,
-        target_x: f32,
-        target_y: f32,
-        max_speed: f32,
-    ) -> (f32, f32) {
-        let dx = target_x - pose.x;
-        let dy = target_y - pose.y;
-        let distance = (dx * dx + dy * dy).sqrt();
-
-        if distance < 0.05 {
-            return (0.0, 0.0);
-        }
-
-        let target_angle = dy.atan2(dx);
-        let angle_error = normalize_angle(target_angle - pose.theta);
-
-        // Turn towards target first if angle is large
-        if angle_error.abs() > 0.3 {
-            let angular = angle_error.signum() * 2.0f32.min(angle_error.abs() * 2.0);
-            return (0.0, angular);
-        }
-
-        // Move forward with proportional angular correction
-        let linear = max_speed.min(distance);
-        let angular = (angle_error * 2.0).clamp(-2.0, 2.0);
-
-        (linear, angular)
-    }
-
-    /// Compute angular velocity to rotate to target heading.
-    fn compute_angular_velocity(&self, current: f32, target: f32, max_speed: f32) -> f32 {
-        let error = normalize_angle(target - current);
-        if error.abs() < 0.05 {
-            0.0
-        } else {
-            (error * 2.0).clamp(-max_speed, max_speed)
-        }
-    }
-
     /// Reset explorer for a new exploration run.
     pub fn reset(&mut self) {
         let map_config = self.config.to_map_config();
@@ -391,27 +411,29 @@ impl VastuExplorer {
         self.controller = ExplorationController::new(self.config.exploration.clone());
         self.loop_detector.reset();
         self.pose_graph.reset();
+        self.motion_filter.reset();
         self.last_pose = Pose2D::default();
         self.last_odom_pose = None;
         self.start_time = None;
         self.started = false;
     }
-}
 
-/// Normalize angle to [-π, π).
-pub fn normalize_angle(angle: f32) -> f32 {
-    let mut a = angle % std::f32::consts::TAU;
-    if a > std::f32::consts::PI {
-        a -= std::f32::consts::TAU;
-    } else if a < -std::f32::consts::PI {
-        a += std::f32::consts::TAU;
+    /// Get motion filter statistics.
+    ///
+    /// Returns (passed_count, filtered_count, efficiency).
+    pub fn motion_filter_stats(&self) -> (u64, u64, f32) {
+        (
+            self.motion_filter.passed_count(),
+            self.motion_filter.filtered_count(),
+            self.motion_filter.filter_efficiency(),
+        )
     }
-    a
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::normalize_angle;
 
     #[test]
     fn test_explorer_creation() {

@@ -9,7 +9,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use vastu_map::exploration::{ExplorationController, ExplorationConfig};
+//! use vastu_map::explore::{ExplorationController, ExplorationConfig};
 //!
 //! let config = ExplorationConfig::default();
 //! let mut controller = ExplorationController::new(config);
@@ -44,9 +44,9 @@
 //! 8. **Failed** - Too many errors
 
 pub mod config;
-pub mod controller;
+mod machine;
 pub mod state;
 
 pub use config::ExplorationConfig;
-pub use controller::{ExplorationController, ExplorationProgress};
+pub use machine::{ExplorationController, ExplorationProgress};
 pub use state::{ExplorationCommand, ExplorationEvent, ExplorationState, RecoveryAction};

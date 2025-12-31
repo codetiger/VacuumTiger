@@ -380,7 +380,6 @@ impl GraphOptimizer {
     }
 
     /// Add edge contribution to H and b.
-    #[allow(clippy::too_many_arguments)]
     fn add_edge_contribution(
         &self,
         h: &mut [f64],

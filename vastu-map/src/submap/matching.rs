@@ -57,33 +57,58 @@ impl MultiSubmapMatchResult {
 }
 
 /// Configuration for multi-submap matching.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MultiSubmapMatchConfig {
     /// Maximum distance to consider overlapping submaps.
+    #[serde(default = "default_max_overlap_distance")]
     pub max_overlap_distance: f32,
 
     /// Include active submap in search.
+    #[serde(default = "default_include_active")]
     pub include_active: bool,
 
     /// Include finalized submaps in search.
+    #[serde(default = "default_include_finalized")]
     pub include_finalized: bool,
 
     /// Maximum number of submaps to search.
+    #[serde(default = "default_max_submaps")]
     pub max_submaps: usize,
 
     /// Minimum score improvement to prefer a different submap.
     /// Prevents jumping between submaps with similar scores.
+    #[serde(default = "default_score_hysteresis")]
     pub score_hysteresis: f32,
+}
+
+fn default_max_overlap_distance() -> f32 {
+    3.0
+}
+
+fn default_include_active() -> bool {
+    true
+}
+
+fn default_include_finalized() -> bool {
+    true
+}
+
+fn default_max_submaps() -> usize {
+    3
+}
+
+fn default_score_hysteresis() -> f32 {
+    0.05
 }
 
 impl Default for MultiSubmapMatchConfig {
     fn default() -> Self {
         Self {
-            max_overlap_distance: 3.0, // 3m
-            include_active: true,
-            include_finalized: true,
-            max_submaps: 5,
-            score_hysteresis: 0.05,
+            max_overlap_distance: default_max_overlap_distance(),
+            include_active: default_include_active(),
+            include_finalized: default_include_finalized(),
+            max_submaps: default_max_submaps(),
+            score_hysteresis: default_score_hysteresis(),
         }
     }
 }

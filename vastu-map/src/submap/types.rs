@@ -2,6 +2,8 @@
 
 use crate::core::{LidarScan, Pose2D, WorldPoint};
 use crate::grid::GridStorage;
+use crate::slam::PrecomputedGrids;
+use std::cell::RefCell;
 
 /// Unique identifier for a submap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -134,6 +136,10 @@ pub struct Submap {
 
     /// Last pose in local frame (for distance tracking).
     last_local_pose: Option<Pose2D>,
+
+    /// Cached precomputed multi-resolution grids for branch-and-bound matching.
+    /// Lazily initialized when first needed, invalidated on grid regeneration.
+    precomputed_cache: RefCell<Option<PrecomputedGrids>>,
 }
 
 impl Submap {
@@ -156,6 +162,7 @@ impl Submap {
             overlap_count: 0,
             distance_traveled: 0.0,
             last_local_pose: None,
+            precomputed_cache: RefCell::new(None),
         }
     }
 
@@ -233,17 +240,58 @@ impl Submap {
     }
 
     /// Finalize the submap - no more updates allowed.
+    /// Also builds the precomputed grids cache for efficient matching.
     pub fn finalize(&mut self) {
         self.state = SubmapState::Finalized;
+        // Pre-build the cache since finalized submaps are used for matching
+        self.build_precomputed_grids();
+    }
+
+    /// Get the precomputed multi-resolution grids for branch-and-bound matching.
+    /// Lazily computes and caches the grids on first access.
+    /// Only useful for finalized submaps.
+    pub fn precomputed_grids(&self) -> std::cell::Ref<'_, PrecomputedGrids> {
+        // Ensure cache is populated
+        {
+            let mut cache = self.precomputed_cache.borrow_mut();
+            if cache.is_none() {
+                *cache = Some(PrecomputedGrids::from_storage(&self.grid));
+            }
+        }
+        std::cell::Ref::map(self.precomputed_cache.borrow(), |opt| {
+            opt.as_ref().expect("Cache should be populated")
+        })
+    }
+
+    /// Check if precomputed grids are already cached.
+    #[inline]
+    pub fn has_precomputed_grids(&self) -> bool {
+        self.precomputed_cache.borrow().is_some()
+    }
+
+    /// Force rebuild of precomputed grids cache.
+    /// Call this after finalization or after origin adjustment.
+    pub fn build_precomputed_grids(&mut self) {
+        *self.precomputed_cache.borrow_mut() = Some(PrecomputedGrids::from_storage(&self.grid));
+    }
+
+    /// Invalidate the precomputed grids cache.
+    /// Called when the grid is regenerated.
+    fn invalidate_precomputed_cache(&mut self) {
+        *self.precomputed_cache.borrow_mut() = None;
     }
 
     /// Regenerate the local grid from stored scans.
     /// Called after the submap origin has been adjusted.
+    /// Invalidates and rebuilds the precomputed grids cache if finalized.
     pub fn regenerate_grid(
         &mut self,
         sensor_config: &crate::grid::SensorConfig,
         grid_config: &crate::grid::GridConfig,
     ) {
+        // Invalidate the cache since grid is changing
+        self.invalidate_precomputed_cache();
+
         // Clear the grid
         self.grid.clear();
 
@@ -256,6 +304,11 @@ impl Submap {
                 sensor_config,
                 grid_config,
             );
+        }
+
+        // Rebuild cache if this is a finalized submap
+        if self.is_finalized() {
+            self.build_precomputed_grids();
         }
     }
 

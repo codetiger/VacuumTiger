@@ -295,8 +295,7 @@ struct DriftStats {
 enum ExplorationStatus {
     Complete,
     MaxStepsReached,
-    #[allow(dead_code)]
-    Failed(String),
+    Failed,
 }
 
 /// Simple wheel odometry tracker
@@ -603,7 +602,7 @@ fn run_exploration(
                 println!("\nExploration failed: {}", reason);
                 return ExplorationResult {
                     map,
-                    status: ExplorationStatus::Failed(reason),
+                    status: ExplorationStatus::Failed,
                     steps: step,
                     elapsed_secs: start_time.elapsed().as_secs_f32(),
                     progress: explorer.progress(),

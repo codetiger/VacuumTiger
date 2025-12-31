@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::Pose2D;
+use crate::core::{Pose2D, normalize_angle};
 
 use super::manager::SubmapCorrection;
 use super::types::SubmapId;
@@ -172,12 +172,6 @@ impl SubmapPoseGraph {
     /// Get node by submap ID.
     pub fn get_node(&self, id: SubmapId) -> Option<&SubmapNode> {
         self.nodes.iter().find(|n| n.id == id)
-    }
-
-    /// Get node index by submap ID.
-    #[allow(dead_code)]
-    fn node_index(&self, id: SubmapId) -> Option<usize> {
-        self.nodes.iter().position(|n| n.id == id)
     }
 
     /// Add a new submap node.
@@ -441,17 +435,6 @@ fn compute_error(expected: Pose2D, actual: Pose2D) -> (f32, f32, f32) {
 fn huber_weight(residual: f32, delta: f32) -> f32 {
     let abs_r = residual.abs();
     if abs_r <= delta { 1.0 } else { delta / abs_r }
-}
-
-/// Normalize angle to [-π, π).
-fn normalize_angle(angle: f32) -> f32 {
-    let mut a = angle % std::f32::consts::TAU;
-    if a > std::f32::consts::PI {
-        a -= std::f32::consts::TAU;
-    } else if a < -std::f32::consts::PI {
-        a += std::f32::consts::TAU;
-    }
-    a
 }
 
 #[cfg(test)]

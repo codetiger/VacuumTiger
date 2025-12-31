@@ -25,12 +25,23 @@
 //! }
 //! ```
 
+mod background_optimizer;
+mod branch_bound;
 mod config;
 mod matcher;
 mod types;
 
 pub mod loop_closure;
 
+pub use background_optimizer::{
+    BackgroundOptimizer, BackgroundOptimizerConfig, OptimizationResult, OptimizerTrigger,
+    PoseCorrection,
+};
+pub use branch_bound::{
+    BranchBoundConfig, BranchBoundResult, NUM_LEVELS, PrecomputedGrids, branch_and_bound_match,
+    branch_and_bound_match_scan, branch_and_bound_match_simd,
+};
 pub use config::CorrelativeMatcherConfig;
-pub use matcher::CorrelativeMatcher;
+pub use loop_closure::{LoopClosureConfig, LoopClosureDetector, PoseGraphConfig};
+pub use matcher::{CorrelativeMatcher, ScratchBuffers};
 pub use types::{MatchQuality, ScanMatchResult};

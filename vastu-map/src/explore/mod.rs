@@ -30,11 +30,26 @@
 //! ```
 
 mod config;
+pub mod controller;
+mod error;
 mod explorer;
+mod motion_filter;
 mod source;
 mod submap_explorer;
+mod velocity;
 
 pub use config::ExplorerConfig;
-pub use explorer::{ExploreResult, ExploreStatus, VastuExplorer, normalize_angle};
+pub use error::ExplorationError;
+pub use explorer::{ExploreResult, ExploreStatus, VastuExplorer};
+pub use motion_filter::{MotionFilter, MotionFilterConfig};
 pub use source::SensorSource;
 pub use submap_explorer::{SubmapExplorerConfig, VastuSubmapExplorer};
+pub use velocity::{
+    VelocityConfig, compute_angular_velocity_to_heading, compute_velocity_to_target,
+};
+
+// Re-export controller types for unified API
+pub use controller::{
+    ExplorationCommand, ExplorationConfig, ExplorationController, ExplorationEvent,
+    ExplorationProgress, ExplorationState, RecoveryAction,
+};

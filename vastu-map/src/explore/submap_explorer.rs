@@ -8,8 +8,17 @@
 
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
+
+use super::controller::{
+    ExplorationCommand, ExplorationController, ExplorationEvent, ExplorationProgress,
+};
+use super::error::ExplorationError;
+use super::motion_filter::MotionFilter;
+use super::velocity::{
+    VelocityConfig, compute_angular_velocity_to_heading, compute_velocity_to_target,
+};
 use crate::core::{LidarScan, Pose2D};
-use crate::exploration::{ExplorationCommand, ExplorationController, ExplorationProgress};
 use crate::grid::GridStorage;
 use crate::slam::CorrelativeMatcherConfig;
 use crate::submap::{
@@ -17,22 +26,35 @@ use crate::submap::{
 };
 
 use super::config::ExplorerConfig;
-use super::explorer::{ExploreResult, ExploreStatus, normalize_angle};
+use super::explorer::{ExploreResult, ExploreStatus};
 use super::source::SensorSource;
 
 /// Configuration specific to submap-based exploration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SubmapExplorerConfig {
     /// Base explorer configuration.
+    #[serde(default)]
     pub base: ExplorerConfig,
     /// Submap configuration.
+    #[serde(default)]
     pub submap: SubmapConfig,
     /// Multi-submap matching configuration.
+    #[serde(default)]
     pub multi_match: MultiSubmapMatchConfig,
     /// Minimum score to accept a loop closure.
+    #[serde(default = "default_loop_closure_min_score")]
     pub loop_closure_min_score: f32,
     /// Minimum submap gap for loop closure (submaps between).
+    #[serde(default = "default_loop_closure_min_gap")]
     pub loop_closure_min_gap: usize,
+}
+
+fn default_loop_closure_min_score() -> f32 {
+    0.7
+}
+
+fn default_loop_closure_min_gap() -> usize {
+    3
 }
 
 impl Default for SubmapExplorerConfig {
@@ -41,8 +63,8 @@ impl Default for SubmapExplorerConfig {
             base: ExplorerConfig::default(),
             submap: SubmapConfig::default(),
             multi_match: MultiSubmapMatchConfig::default(),
-            loop_closure_min_score: 0.7,
-            loop_closure_min_gap: 3,
+            loop_closure_min_score: default_loop_closure_min_score(),
+            loop_closure_min_gap: default_loop_closure_min_gap(),
         }
     }
 }
@@ -85,6 +107,10 @@ pub struct VastuSubmapExplorer {
     controller: ExplorationController,
     /// Matcher configuration.
     matcher_config: CorrelativeMatcherConfig,
+    /// Motion filter for gating scan processing.
+    motion_filter: MotionFilter,
+    /// Velocity computation configuration.
+    velocity_config: VelocityConfig,
     /// Last corrected world pose.
     last_pose: Pose2D,
     /// Last odometry pose (for delta calculation).
@@ -109,6 +135,8 @@ impl VastuSubmapExplorer {
         let pose_graph = SubmapPoseGraph::new(Default::default());
         let controller = ExplorationController::new(config.base.exploration.clone());
         let matcher_config = config.base.matching.clone();
+        let motion_filter = MotionFilter::new(config.base.motion_filter.clone());
+        let velocity_config = VelocityConfig::default();
 
         Self {
             config,
@@ -116,6 +144,8 @@ impl VastuSubmapExplorer {
             pose_graph,
             controller,
             matcher_config,
+            motion_filter,
+            velocity_config,
             last_pose: Pose2D::default(),
             last_odom_pose: None,
             last_submap_origin: None,
@@ -191,8 +221,8 @@ impl VastuSubmapExplorer {
             if !source.is_connected() {
                 source.stop();
                 return ExploreResult::Failed {
-                    map: self.to_occupancy_grid_map(),
-                    reason: "Robot connection lost".to_string(),
+                    map: self.build_occupancy_grid_map(),
+                    error: ExplorationError::ConnectionLost,
                 };
             }
 
@@ -202,8 +232,11 @@ impl VastuSubmapExplorer {
             {
                 source.stop();
                 return ExploreResult::Failed {
-                    map: self.to_occupancy_grid_map(),
-                    reason: format!("Battery low: {}%", battery),
+                    map: self.build_occupancy_grid_map(),
+                    error: ExplorationError::LowBattery {
+                        percent: battery,
+                        threshold: self.config.base.min_battery_percent,
+                    },
                 };
             }
 
@@ -213,8 +246,11 @@ impl VastuSubmapExplorer {
             {
                 source.stop();
                 return ExploreResult::Failed {
-                    map: self.to_occupancy_grid_map(),
-                    reason: "Time limit exceeded".to_string(),
+                    map: self.build_occupancy_grid_map(),
+                    error: ExplorationError::TimeoutExceeded {
+                        elapsed_secs: self.elapsed_secs(),
+                        limit_secs: self.config.base.max_time_secs,
+                    },
                 };
             }
 
@@ -225,13 +261,13 @@ impl VastuSubmapExplorer {
                 }
                 ExploreStatus::Complete => {
                     source.stop();
-                    return ExploreResult::Complete(self.to_occupancy_grid_map());
+                    return ExploreResult::Complete(self.build_occupancy_grid_map());
                 }
-                ExploreStatus::Failed { reason } => {
+                ExploreStatus::Failed { error } => {
                     source.stop();
                     return ExploreResult::Failed {
-                        map: self.to_occupancy_grid_map(),
-                        reason,
+                        map: self.build_occupancy_grid_map(),
+                        error,
                     };
                 }
             }
@@ -269,10 +305,19 @@ impl VastuSubmapExplorer {
         });
         self.last_odom_pose = Some(odom_pose);
 
-        // Process lidar scan if available
+        // Process lidar scan if available and motion filter allows
         if let Some(scan) = source.get_lidar_scan() {
-            let corrected_pose = self.process_scan(&scan, odom_pose);
-            self.last_pose = corrected_pose;
+            if self.motion_filter.should_process(odom_pose) {
+                let corrected_pose = self.process_scan(&scan, odom_pose);
+                self.last_pose = corrected_pose;
+            } else if let Some(delta) = odom_delta {
+                // Scan filtered out - update pose from odometry delta only
+                self.last_pose = Pose2D::new(
+                    self.last_pose.x + delta.x,
+                    self.last_pose.y + delta.y,
+                    self.last_pose.theta + delta.theta,
+                );
+            }
         } else if let Some(delta) = odom_delta {
             // No scan - update from odometry delta
             self.last_pose = Pose2D::new(
@@ -285,7 +330,7 @@ impl VastuSubmapExplorer {
         // Handle cliff/bumper events
         if source.is_cliff_detected() || source.is_bumper_triggered() {
             self.controller
-                .handle_event(crate::exploration::ExplorationEvent::ObstacleDetected);
+                .handle_event(ExplorationEvent::ObstacleDetected);
         }
 
         // Get current global grid for planning
@@ -297,18 +342,23 @@ impl VastuSubmapExplorer {
         // Execute command
         match command {
             ExplorationCommand::MoveTo { target, max_speed } => {
-                let (linear, angular) =
-                    self.compute_velocity(self.last_pose, target.x, target.y, max_speed);
+                let (linear, angular) = compute_velocity_to_target(
+                    self.last_pose,
+                    target,
+                    max_speed,
+                    &self.velocity_config,
+                );
                 source.send_velocity(linear, angular);
             }
             ExplorationCommand::Rotate {
                 target_heading,
                 max_angular_speed,
             } => {
-                let angular = self.compute_angular_velocity(
+                let angular = compute_angular_velocity_to_heading(
                     self.last_pose.theta,
                     target_heading,
                     max_angular_speed,
+                    &self.velocity_config,
                 );
                 source.send_velocity(0.0, angular);
             }
@@ -321,7 +371,9 @@ impl VastuSubmapExplorer {
             }
             ExplorationCommand::ExplorationFailed { reason } => {
                 source.stop();
-                return ExploreStatus::Failed { reason };
+                return ExploreStatus::Failed {
+                    error: ExplorationError::from_message(reason),
+                };
             }
             ExplorationCommand::None => {
                 // Continue with current velocity or stop
@@ -450,7 +502,7 @@ impl VastuSubmapExplorer {
     }
 
     /// Convert to OccupancyGridMap for compatibility with ExploreResult.
-    fn to_occupancy_grid_map(&mut self) -> crate::OccupancyGridMap {
+    fn build_occupancy_grid_map(&mut self) -> crate::OccupancyGridMap {
         let map_config = self.config.base.to_map_config();
         let mut map = crate::OccupancyGridMap::new(map_config);
 
@@ -470,54 +522,13 @@ impl VastuSubmapExplorer {
         map
     }
 
-    /// Compute velocity command to move towards target.
-    fn compute_velocity(
-        &self,
-        pose: Pose2D,
-        target_x: f32,
-        target_y: f32,
-        max_speed: f32,
-    ) -> (f32, f32) {
-        let dx = target_x - pose.x;
-        let dy = target_y - pose.y;
-        let distance = (dx * dx + dy * dy).sqrt();
-
-        if distance < 0.05 {
-            return (0.0, 0.0);
-        }
-
-        let target_angle = dy.atan2(dx);
-        let angle_error = normalize_angle(target_angle - pose.theta);
-
-        // Turn towards target first if angle is large
-        if angle_error.abs() > 0.3 {
-            let angular = angle_error.signum() * 2.0f32.min(angle_error.abs() * 2.0);
-            return (0.0, angular);
-        }
-
-        // Move forward with proportional angular correction
-        let linear = max_speed.min(distance);
-        let angular = (angle_error * 2.0).clamp(-2.0, 2.0);
-
-        (linear, angular)
-    }
-
-    /// Compute angular velocity to rotate to target heading.
-    fn compute_angular_velocity(&self, current: f32, target: f32, max_speed: f32) -> f32 {
-        let error = normalize_angle(target - current);
-        if error.abs() < 0.05 {
-            0.0
-        } else {
-            (error * 2.0).clamp(-max_speed, max_speed)
-        }
-    }
-
     /// Reset explorer for a new exploration run.
     pub fn reset(&mut self) {
         let map_config = self.config.base.to_map_config();
         self.manager = SubmapManager::new(self.config.submap.clone(), &map_config);
         self.pose_graph = SubmapPoseGraph::new(Default::default());
         self.controller = ExplorationController::new(self.config.base.exploration.clone());
+        self.motion_filter.reset();
         self.last_pose = Pose2D::default();
         self.last_odom_pose = None;
         self.last_submap_origin = None;
@@ -525,6 +536,17 @@ impl VastuSubmapExplorer {
         self.last_submap_count = 0;
         self.start_time = None;
         self.started = false;
+    }
+
+    /// Get motion filter statistics.
+    ///
+    /// Returns (passed_count, filtered_count, efficiency).
+    pub fn motion_filter_stats(&self) -> (u64, u64, f32) {
+        (
+            self.motion_filter.passed_count(),
+            self.motion_filter.filtered_count(),
+            self.motion_filter.filter_efficiency(),
+        )
     }
 }
 

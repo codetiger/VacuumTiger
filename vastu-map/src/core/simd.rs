@@ -1,85 +1,84 @@
 //! SIMD-accelerated batch operations for point transformations.
 //!
 //! This module provides vectorized operations for transforming point clouds,
-//! optimized for ARM NEON (f32x4) and x86 SSE/AVX.
+//! optimized for ARM NEON (f32x4) and x86 SSE/AVX. Uses `std::simd` which
+//! provides automatic scalar fallback on platforms without native SIMD.
 //!
 //! ## Key Types
 //!
-//! - [`PointBatch`]: Structure-of-Arrays storage for 2D points
+//! - [`PointCloud`]: Structure-of-Arrays storage for 2D points (SIMD-optimized)
 //! - [`RotationMatrix4`]: Pre-computed rotation matrix for SIMD transforms
 //!
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use vastu_map::core::simd::{PointBatch, transform_points_simd4, RotationMatrix4};
+//! use vastu_map::core::simd::{PointCloud, transform_points, RotationMatrix4};
 //!
-//! let points = PointBatch::from_tuples(&[(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (2.0, 0.0)]);
+//! // Use padded constructors to ensure SIMD alignment
+//! let points = PointCloud::from_tuples_padded(&[(1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
 //! let pose = Pose2D::new(1.0, 2.0, 0.5);
-//! let rot = RotationMatrix4::from_pose(&pose);
 //!
-//! let mut out_xs = vec![0.0f32; 4];
-//! let mut out_ys = vec![0.0f32; 4];
-//! transform_points_simd4(&points, &rot, &mut out_xs, &mut out_ys);
+//! let result = transform_points(&points, &pose);
 //! ```
+//!
+//! ## SIMD Requirements
+//!
+//! All batch operations require inputs to be padded to multiples of [`LANES`] (4).
+//! Use the `*_padded` constructors to ensure proper alignment.
 
 use std::simd::{StdFloat, cmp::SimdPartialOrd, f32x4, i32x4, num::SimdFloat};
 
-use super::Pose2D;
+use super::{LidarScan, Pose2D};
 
 /// Number of lanes for SIMD operations (4 for ARM NEON / SSE)
 pub const LANES: usize = 4;
 
-/// Batch of 2D points in Structure-of-Arrays (SoA) layout.
+/// 2D point cloud in Structure-of-Arrays (SoA) layout for SIMD operations.
 ///
 /// This layout is optimal for SIMD operations where x and y coordinates
-/// are processed independently.
+/// are processed independently. All SIMD operations require the length
+/// to be a multiple of [`LANES`] (4) - use `*_padded` constructors.
 ///
 /// ## Memory Layout
 /// ```text
 /// xs: [x0, x1, x2, x3, x4, ...]
 /// ys: [y0, y1, y2, y3, y4, ...]
 /// ```
+///
+/// ## SIMD Alignment
+///
+/// For optimal performance and correctness, always use:
+/// - [`PointCloud::from_tuples_padded`] instead of `from_tuples`
+/// - [`PointCloud::from_scan_padded`] instead of `from_scan`
 #[derive(Clone, Debug, Default)]
-pub struct PointBatch {
+pub struct PointCloud {
     /// X coordinates
     pub xs: Vec<f32>,
     /// Y coordinates
     pub ys: Vec<f32>,
 }
 
-impl PointBatch {
-    /// Create an empty batch.
+impl PointCloud {
+    /// Create an empty point cloud.
     #[inline]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create with specified capacity.
+    /// Create with specified capacity (rounded up to multiple of LANES).
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
+        let padded = capacity.div_ceil(LANES) * LANES;
         Self {
-            xs: Vec::with_capacity(capacity),
-            ys: Vec::with_capacity(capacity),
+            xs: Vec::with_capacity(padded),
+            ys: Vec::with_capacity(padded),
         }
     }
 
-    /// Create from slice of (x, y) tuples.
-    pub fn from_tuples(points: &[(f32, f32)]) -> Self {
-        let n = points.len();
-        let mut xs = Vec::with_capacity(n);
-        let mut ys = Vec::with_capacity(n);
-        for &(x, y) in points {
-            xs.push(x);
-            ys.push(y);
-        }
-        Self { xs, ys }
-    }
-
-    /// Create with padding to next multiple of LANES.
+    /// Create from slice of (x, y) tuples with padding to LANES multiple.
     ///
     /// Padded values are zero (neutral for transforms).
-    /// This eliminates remainder handling in SIMD loops.
-    pub fn from_tuples_padded(points: &[(f32, f32)]) -> Self {
+    pub fn from_tuples(points: &[(f32, f32)]) -> Self {
         let n = points.len();
         let padded_len = n.div_ceil(LANES) * LANES;
         let mut xs = vec![0.0; padded_len];
@@ -91,14 +90,32 @@ impl PointBatch {
         Self { xs, ys }
     }
 
-    /// Push a point.
+    /// Alias for `from_tuples` - all constructors auto-pad.
+    #[inline]
+    pub fn from_tuples_padded(points: &[(f32, f32)]) -> Self {
+        Self::from_tuples(points)
+    }
+
+    /// Push a point and maintain LANES alignment.
+    ///
+    /// Note: For bulk operations, prefer constructing a new PointCloud.
     #[inline]
     pub fn push(&mut self, x: f32, y: f32) {
         self.xs.push(x);
         self.ys.push(y);
     }
 
-    /// Number of points.
+    /// Ensure length is padded to multiple of LANES.
+    pub fn pad_to_lanes(&mut self) {
+        let n = self.xs.len();
+        let padded_len = n.div_ceil(LANES) * LANES;
+        if padded_len > n {
+            self.xs.resize(padded_len, 0.0);
+            self.ys.resize(padded_len, 0.0);
+        }
+    }
+
+    /// Number of points (including padding).
     #[inline]
     pub fn len(&self) -> usize {
         self.xs.len()
@@ -117,13 +134,54 @@ impl PointBatch {
         self.ys.clear();
     }
 
-    /// Original (unpadded) length for iteration.
+    /// Check if length is SIMD-aligned (multiple of LANES).
+    #[inline]
+    pub fn is_aligned(&self) -> bool {
+        self.xs.len().is_multiple_of(LANES)
+    }
+
+    /// Create from a LidarScan with automatic padding.
     ///
-    /// Use this when the batch was created with padding.
-    pub fn original_len(&self) -> usize {
-        // Find last non-zero element (assuming zeros are padding)
-        // This is a heuristic; for precise tracking, store original_len separately
-        self.len()
+    /// Points are stored as (x, y) in sensor-local coordinates:
+    /// - x = range * cos(angle)
+    /// - y = range * sin(angle)
+    pub fn from_scan(scan: &LidarScan) -> Self {
+        let valid_count = scan.valid_points().count();
+        let padded_len = valid_count.div_ceil(LANES) * LANES;
+
+        let mut xs = vec![0.0; padded_len];
+        let mut ys = vec![0.0; padded_len];
+
+        for (i, (angle, range)) in scan.valid_points().enumerate() {
+            xs[i] = range * angle.cos();
+            ys[i] = range * angle.sin();
+        }
+
+        Self { xs, ys }
+    }
+
+    /// Alias for `from_scan` - all constructors auto-pad.
+    #[inline]
+    pub fn from_scan_padded(scan: &LidarScan) -> Self {
+        Self::from_scan(scan)
+    }
+
+    /// Create from a LidarScan with subsampling and padding.
+    ///
+    /// If max_points > 0 and scan has more points, subsample to reduce computation.
+    pub fn from_scan_subsampled(scan: &LidarScan, max_points: usize) -> Self {
+        let mut cloud = Self::from_scan(scan);
+
+        if max_points > 0 && cloud.len() > max_points {
+            let step = cloud.len() / max_points;
+            let new_xs: Vec<f32> = cloud.xs.iter().step_by(step).copied().collect();
+            let new_ys: Vec<f32> = cloud.ys.iter().step_by(step).copied().collect();
+            cloud.xs = new_xs;
+            cloud.ys = new_ys;
+            cloud.pad_to_lanes();
+        }
+
+        cloud
     }
 }
 
@@ -211,6 +269,7 @@ impl RotationMatrix4 {
 /// Transform points from sensor frame to world frame using SIMD.
 ///
 /// Processes 4 points per iteration using ARM NEON / SSE instructions.
+/// On platforms without native SIMD, `std::simd` provides automatic scalar fallback.
 ///
 /// # Algorithm
 /// ```text
@@ -219,26 +278,29 @@ impl RotationMatrix4 {
 /// ```
 ///
 /// # Arguments
-/// * `points` - Input points in sensor frame (SoA layout)
+/// * `points` - Input points in sensor frame (must be LANES-aligned)
 /// * `rot` - Pre-computed rotation matrix
 /// * `out_xs` - Output X coordinates (must be at least `points.len()` long)
 /// * `out_ys` - Output Y coordinates (must be at least `points.len()` long)
+///
+/// # Panics
+/// Debug-asserts if `points.len()` is not a multiple of [`LANES`].
 #[inline]
 pub fn transform_points_simd4(
-    points: &PointBatch,
+    points: &PointCloud,
     rot: &RotationMatrix4,
     out_xs: &mut [f32],
     out_ys: &mut [f32],
 ) {
     debug_assert_eq!(points.xs.len(), points.ys.len());
+    debug_assert!(points.is_aligned(), "PointCloud must be LANES-aligned");
     debug_assert!(points.xs.len() <= out_xs.len());
     debug_assert!(points.xs.len() <= out_ys.len());
 
     let n = points.xs.len();
-    let simd_end = n - (n % LANES);
 
-    // SIMD path: process 4 points per iteration
-    for i in (0..simd_end).step_by(LANES) {
+    // Pure SIMD path: process 4 points per iteration
+    for i in (0..n).step_by(LANES) {
         // Load 4 x and 4 y coordinates
         let px = f32x4::from_slice(&points.xs[i..]);
         let py = f32x4::from_slice(&points.ys[i..]);
@@ -252,25 +314,12 @@ pub fn transform_points_simd4(
         world_x.copy_to_slice(&mut out_xs[i..]);
         world_y.copy_to_slice(&mut out_ys[i..]);
     }
-
-    // Scalar fallback for remainder
-    let cos = rot.cos[0];
-    let sin = rot.sin[0];
-    let tx = rot.tx[0];
-    let ty = rot.ty[0];
-
-    for i in simd_end..n {
-        let px = points.xs[i];
-        let py = points.ys[i];
-        out_xs[i] = tx + px * cos - py * sin;
-        out_ys[i] = ty + px * sin + py * cos;
-    }
 }
 
 /// Allocating version of `transform_points_simd4`.
 ///
-/// Returns a new `PointBatch` with the transformed points.
-pub fn transform_points(points: &PointBatch, pose: &Pose2D) -> PointBatch {
+/// Returns a new `PointCloud` with the transformed points.
+pub fn transform_points(points: &PointCloud, pose: &Pose2D) -> PointCloud {
     let n = points.xs.len();
     let mut out_xs = vec![0.0; n];
     let mut out_ys = vec![0.0; n];
@@ -278,7 +327,7 @@ pub fn transform_points(points: &PointBatch, pose: &Pose2D) -> PointBatch {
     let rot = RotationMatrix4::from_pose(pose);
     transform_points_simd4(points, &rot, &mut out_xs, &mut out_ys);
 
-    PointBatch {
+    PointCloud {
         xs: out_xs,
         ys: out_ys,
     }
@@ -289,13 +338,16 @@ pub fn transform_points(points: &PointBatch, pose: &Pose2D) -> PointBatch {
 /// Performs: `grid_coord = floor((world - origin) / resolution)`
 ///
 /// # Arguments
-/// * `world_xs` - World X coordinates
-/// * `world_ys` - World Y coordinates
+/// * `world_xs` - World X coordinates (must be LANES-aligned length)
+/// * `world_ys` - World Y coordinates (must be LANES-aligned length)
 /// * `origin_x` - Grid origin X
 /// * `origin_y` - Grid origin Y
 /// * `inv_resolution` - Precomputed `1.0 / resolution`
 /// * `out_xs` - Output grid X coordinates
 /// * `out_ys` - Output grid Y coordinates
+///
+/// # Panics
+/// Debug-asserts if input length is not a multiple of [`LANES`].
 #[inline]
 pub fn world_to_grid_simd4(
     world_xs: &[f32],
@@ -307,13 +359,17 @@ pub fn world_to_grid_simd4(
     out_ys: &mut [i32],
 ) {
     let n = world_xs.len();
-    let simd_end = n - (n % LANES);
+    debug_assert!(
+        n.is_multiple_of(LANES),
+        "Input length must be LANES-aligned"
+    );
+    debug_assert_eq!(world_xs.len(), world_ys.len());
 
     let origin_x_v = f32x4::splat(origin_x);
     let origin_y_v = f32x4::splat(origin_y);
     let inv_res_v = f32x4::splat(inv_resolution);
 
-    for i in (0..simd_end).step_by(LANES) {
+    for i in (0..n).step_by(LANES) {
         let wx = f32x4::from_slice(&world_xs[i..]);
         let wy = f32x4::from_slice(&world_ys[i..]);
 
@@ -331,17 +387,14 @@ pub fn world_to_grid_simd4(
         gx_i32.copy_to_slice(&mut out_xs[i..i + LANES]);
         gy_i32.copy_to_slice(&mut out_ys[i..i + LANES]);
     }
-
-    // Scalar remainder
-    for i in simd_end..n {
-        out_xs[i] = ((world_xs[i] - origin_x) * inv_resolution).floor() as i32;
-        out_ys[i] = ((world_ys[i] - origin_y) * inv_resolution).floor() as i32;
-    }
 }
 
 /// Calculate squared distances from origin for multiple points.
 ///
 /// Returns `dx*dx + dy*dy` for each point (avoids sqrt for efficiency).
+///
+/// # Panics
+/// Debug-asserts if input length is not a multiple of [`LANES`].
 #[inline]
 pub fn distance_squared_simd4(
     xs: &[f32],
@@ -351,12 +404,16 @@ pub fn distance_squared_simd4(
     out: &mut [f32],
 ) {
     let n = xs.len();
-    let simd_end = n - (n % LANES);
+    debug_assert!(
+        n.is_multiple_of(LANES),
+        "Input length must be LANES-aligned"
+    );
+    debug_assert_eq!(xs.len(), ys.len());
 
     let ox = f32x4::splat(origin_x);
     let oy = f32x4::splat(origin_y);
 
-    for i in (0..simd_end).step_by(LANES) {
+    for i in (0..n).step_by(LANES) {
         let px = f32x4::from_slice(&xs[i..]);
         let py = f32x4::from_slice(&ys[i..]);
 
@@ -367,38 +424,37 @@ pub fn distance_squared_simd4(
         let dist_sq = dx * dx + dy * dy;
         dist_sq.copy_to_slice(&mut out[i..]);
     }
-
-    for i in simd_end..n {
-        let dx = xs[i] - origin_x;
-        let dy = ys[i] - origin_y;
-        out[i] = dx * dx + dy * dy;
-    }
 }
 
 /// Calculate actual distances (with sqrt).
 ///
 /// Only use when actual distances are needed; squared is faster.
+///
+/// # Panics
+/// Debug-asserts if input length is not a multiple of [`LANES`].
 #[inline]
 pub fn distance_simd4(xs: &[f32], ys: &[f32], origin_x: f32, origin_y: f32, out: &mut [f32]) {
     distance_squared_simd4(xs, ys, origin_x, origin_y, out);
 
     let n = out.len();
-    let simd_end = n - (n % LANES);
+    debug_assert!(
+        n.is_multiple_of(LANES),
+        "Input length must be LANES-aligned"
+    );
 
-    for i in (0..simd_end).step_by(LANES) {
+    for i in (0..n).step_by(LANES) {
         let sq = f32x4::from_slice(&out[i..]);
         let dist = sq.sqrt();
         dist.copy_to_slice(&mut out[i..]);
-    }
-
-    for val in out.iter_mut().skip(simd_end) {
-        *val = val.sqrt();
     }
 }
 
 /// Check if grid coordinates are within bounds (batch operation).
 ///
 /// Returns a mask where `true` indicates the coordinate is valid.
+///
+/// # Panics
+/// Debug-asserts if input length is not a multiple of [`LANES`].
 #[inline]
 pub fn is_valid_coords_simd4(
     grid_xs: &[i32],
@@ -408,13 +464,17 @@ pub fn is_valid_coords_simd4(
     out_valid: &mut [bool],
 ) {
     let n = grid_xs.len();
-    let simd_end = n - (n % LANES);
+    debug_assert!(
+        n.is_multiple_of(LANES),
+        "Input length must be LANES-aligned"
+    );
+    debug_assert_eq!(grid_xs.len(), grid_ys.len());
 
     let zero_v = i32x4::splat(0);
     let width_v = i32x4::splat(width);
     let height_v = i32x4::splat(height);
 
-    for i in (0..simd_end).step_by(LANES) {
+    for i in (0..n).step_by(LANES) {
         let gx = i32x4::from_slice(&grid_xs[i..]);
         let gy = i32x4::from_slice(&grid_ys[i..]);
 
@@ -431,13 +491,6 @@ pub fn is_valid_coords_simd4(
             out_valid[i + j] = valid.test(j);
         }
     }
-
-    // Scalar remainder
-    for i in simd_end..n {
-        let gx = grid_xs[i];
-        let gy = grid_ys[i];
-        out_valid[i] = gx >= 0 && gy >= 0 && gx < width && gy < height;
-    }
 }
 
 #[cfg(test)]
@@ -446,23 +499,26 @@ mod tests {
     use std::f32::consts::FRAC_PI_2;
 
     #[test]
-    fn test_point_batch_creation() {
-        let points = PointBatch::from_tuples(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
-        assert_eq!(points.len(), 3);
+    fn test_point_cloud_creation() {
+        // All constructors now auto-pad to LANES
+        let points = PointCloud::from_tuples(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+        assert_eq!(points.len(), 4); // Padded to 4
+        assert!(points.is_aligned());
         assert_eq!(points.xs[0], 1.0);
         assert_eq!(points.ys[0], 2.0);
-    }
-
-    #[test]
-    fn test_point_batch_padded() {
-        let points = PointBatch::from_tuples_padded(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
-        assert_eq!(points.len(), 4); // Padded to next multiple of 4
         assert_eq!(points.xs[3], 0.0); // Padding is zero
     }
 
     #[test]
+    fn test_point_cloud_exact_lanes() {
+        let points = PointCloud::from_tuples(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
+        assert_eq!(points.len(), 4); // Exactly 4, no extra padding
+        assert!(points.is_aligned());
+    }
+
+    #[test]
     fn test_transform_identity() {
-        let points = PointBatch::from_tuples(&[(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (2.0, 2.0)]);
+        let points = PointCloud::from_tuples(&[(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (2.0, 2.0)]);
         let pose = Pose2D::new(0.0, 0.0, 0.0);
 
         let result = transform_points(&points, &pose);
@@ -475,7 +531,7 @@ mod tests {
 
     #[test]
     fn test_transform_translation() {
-        let points = PointBatch::from_tuples(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
+        let points = PointCloud::from_tuples(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
         let pose = Pose2D::new(10.0, 20.0, 0.0);
 
         let result = transform_points(&points, &pose);
@@ -488,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_transform_rotation_90deg() {
-        let points = PointBatch::from_tuples(&[(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.0, 0.0)]);
+        let points = PointCloud::from_tuples(&[(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.0, 0.0)]);
         let pose = Pose2D::new(0.0, 0.0, FRAC_PI_2);
 
         let result = transform_points(&points, &pose);
@@ -503,18 +559,21 @@ mod tests {
     }
 
     #[test]
-    fn test_transform_matches_scalar() {
+    fn test_transform_with_padding() {
+        // Test with 5 points (will be padded to 8)
         let points =
-            PointBatch::from_tuples(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0), (9.0, 10.0)]);
+            PointCloud::from_tuples(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0), (9.0, 10.0)]);
+        assert_eq!(points.len(), 8); // Padded to 8
         let pose = Pose2D::new(1.0, 2.0, 0.5);
 
         let result = transform_points(&points, &pose);
 
-        // Compare with scalar transform
+        // Compare with expected transform
         let cos = pose.theta.cos();
         let sin = pose.theta.sin();
 
-        for i in 0..points.len() {
+        // Only check the first 5 (non-padding) points
+        for i in 0..5 {
             let px = points.xs[i];
             let py = points.ys[i];
             let expected_x = pose.x + px * cos - py * sin;

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::Pose2D;
+use crate::core::{Pose2D, normalize_angle};
 
 use super::detector::LoopClosure;
 
@@ -433,17 +433,6 @@ impl PoseGraph {
 fn huber_weight(residual: f32, delta: f32) -> f32 {
     let abs_r = residual.abs();
     if abs_r <= delta { 1.0 } else { delta / abs_r }
-}
-
-/// Normalize angle to [-π, π).
-fn normalize_angle(angle: f32) -> f32 {
-    let mut a = angle % std::f32::consts::TAU;
-    if a > std::f32::consts::PI {
-        a -= std::f32::consts::TAU;
-    } else if a < -std::f32::consts::PI {
-        a += std::f32::consts::TAU;
-    }
-    a
 }
 
 #[cfg(test)]

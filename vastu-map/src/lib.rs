@@ -60,9 +60,6 @@ pub mod query;
 // Path planning
 pub mod pathfinding;
 
-// Exploration controller
-pub mod exploration;
-
 // SLAM (scan matching, loop closure)
 pub mod slam;
 
@@ -71,6 +68,12 @@ pub mod submap;
 
 // High-level exploration API
 pub mod explore;
+
+/// Backward compatibility: re-export exploration types from explore::controller
+#[deprecated(note = "Use `explore::*` instead - exploration types are now in explore module")]
+pub mod exploration {
+    pub use crate::explore::controller::*;
+}
 
 // Persistence (save/load)
 pub mod io;

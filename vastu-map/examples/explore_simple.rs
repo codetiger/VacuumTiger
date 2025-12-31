@@ -237,8 +237,8 @@ fn main() {
             println!("Wall cells: {}", stats.wall_cells);
             println!("Coverage: {:.2}m²", stats.explored_area_m2);
         }
-        ExploreResult::Failed { map, reason } => {
-            println!("\nExploration failed: {}", reason);
+        ExploreResult::Failed { map, error } => {
+            println!("\nExploration failed: {}", error);
 
             // Save partial map
             let output_base = Path::new(&args.output).join(format!("{}_partial", map_name));

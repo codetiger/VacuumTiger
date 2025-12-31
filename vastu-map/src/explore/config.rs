@@ -2,10 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::exploration::ExplorationConfig;
+use super::controller::ExplorationConfig;
 use crate::grid::{GridConfig, MapConfig, SensorConfig};
 use crate::slam::CorrelativeMatcherConfig;
 use crate::slam::loop_closure::{LoopClosureConfig, PoseGraphConfig};
+
+use super::motion_filter::MotionFilterConfig;
 
 /// Configuration for the VastuExplorer.
 ///
@@ -41,6 +43,11 @@ pub struct ExplorerConfig {
     #[serde(default)]
     pub pose_graph: PoseGraphConfig,
 
+    /// Motion filter configuration.
+    /// Gates scan processing based on robot movement.
+    #[serde(default)]
+    pub motion_filter: MotionFilterConfig,
+
     /// Control loop update rate in Hz.
     #[serde(default = "default_update_rate")]
     pub update_rate_hz: f32,
@@ -71,6 +78,7 @@ impl Default for ExplorerConfig {
             matching: CorrelativeMatcherConfig::default(),
             loop_closure: LoopClosureConfig::default(),
             pose_graph: PoseGraphConfig::default(),
+            motion_filter: MotionFilterConfig::default(),
             update_rate_hz: default_update_rate(),
             max_time_secs: 0.0,
             min_battery_percent: default_min_battery(),
@@ -102,6 +110,7 @@ impl ExplorerConfig {
         MapConfig {
             grid: self.grid.clone(),
             sensor: self.sensor.clone(),
+            log_odds: Default::default(),
         }
     }
 }

@@ -140,7 +140,10 @@ impl ExplorationController {
         }
     }
 
-    /// Handle an external event
+    /// Handle an external event.
+    ///
+    /// Events are used to notify the controller of external conditions
+    /// that should trigger state transitions.
     pub fn handle_event(&mut self, event: ExplorationEvent) {
         match event {
             ExplorationEvent::Start => self.start(),
@@ -158,7 +161,6 @@ impl ExplorationController {
             ExplorationEvent::ObstacleDetected | ExplorationEvent::PathBlocked => {
                 self.enter_recovery();
             }
-            _ => {}
         }
     }
 
@@ -248,10 +250,9 @@ impl ExplorationController {
 
     /// Check if a frontier centroid is in the recently failed list
     fn is_recently_failed_frontier(&self, centroid: &WorldPoint) -> bool {
-        const MATCH_THRESHOLD: f32 = 0.5; // 50cm tolerance
         self.failed_frontier_centroids
             .iter()
-            .any(|failed| centroid.distance(failed) < MATCH_THRESHOLD)
+            .any(|failed| centroid.distance(failed) < self.config.frontier_blacklist_tolerance)
     }
 
     fn plan_path(
@@ -600,7 +601,7 @@ impl ExplorationController {
                 };
                 return ExplorationCommand::MoveTo {
                     target: next_target,
-                    max_speed: 0.3, // 30 cm/s default
+                    max_speed: self.config.navigation_max_speed,
                 };
             } else {
                 // Reached end of path - transition to Scanning
@@ -630,17 +631,16 @@ impl ExplorationController {
         if angle_error < 0.5 {
             // ~30 degrees
             let progress = pose.position().distance(&self.stuck_check_position);
-            if progress > 0.05 {
-                // Made meaningful progress (>5cm) - reset stuck counter
+            if progress > self.config.min_progress_distance {
+                // Made meaningful progress - reset stuck counter
                 self.steps_without_progress = 0;
                 self.stuck_check_position = pose.position();
             } else {
                 self.steps_without_progress += 1;
             }
 
-            // If stuck for too long (~5 seconds at 10Hz), trigger recovery
-            const MAX_STUCK_STEPS: usize = 50;
-            if self.steps_without_progress > MAX_STUCK_STEPS {
+            // If stuck for too long, trigger recovery
+            if self.steps_without_progress > self.config.max_stuck_steps {
                 warn!(
                     "[Explore] Stuck detected! {} steps without progress at ({:.2},{:.2})",
                     self.steps_without_progress, pose.x, pose.y
@@ -659,7 +659,7 @@ impl ExplorationController {
         // Continue to current waypoint
         ExplorationCommand::MoveTo {
             target: waypoint,
-            max_speed: 0.3,
+            max_speed: self.config.navigation_max_speed,
         }
     }
 
@@ -669,11 +669,9 @@ impl ExplorationController {
         rotation_remaining: f32,
         pose: Pose2D,
     ) -> ExplorationCommand {
-        // Rotate to scan the area - each update rotates by a fixed amount based on angular speed
-        // Assuming ~0.5 rad/s angular speed and ~0.05s update rate = 0.025 rad per update
-        const ROTATION_PER_STEP: f32 = 0.1; // ~6 degrees per step
-
-        let new_remaining = rotation_remaining - ROTATION_PER_STEP;
+        // Rotate to scan the area - each update rotates by a fixed amount
+        let rotation_step = self.config.scan_rotation_step;
+        let new_remaining = rotation_remaining - rotation_step;
 
         if new_remaining <= 0.0 {
             // Scan complete - frontier successfully explored
@@ -693,25 +691,30 @@ impl ExplorationController {
                 rotation_remaining: new_remaining,
             };
             ExplorationCommand::Rotate {
-                target_heading: pose.theta + ROTATION_PER_STEP,
-                max_angular_speed: 0.5,
+                target_heading: pose.theta + rotation_step,
+                max_angular_speed: self.config.scan_angular_speed,
             }
         }
     }
 
     fn handle_recovery(&mut self, action: RecoveryAction, attempts: usize) -> ExplorationCommand {
+        const MAX_RECOVERY_ATTEMPTS: usize = 3;
+
         debug!(
-            "[Explore] Recovery: {:?}, attempt {}/3",
+            "[Explore] Recovery: {:?}, attempt {}/{}",
             action,
-            attempts + 1
+            attempts + 1,
+            MAX_RECOVERY_ATTEMPTS
         );
 
-        if attempts >= 3 {
+        if attempts >= MAX_RECOVERY_ATTEMPTS {
             // Too many recovery attempts
             self.consecutive_failures += 1;
             warn!(
-                "[Explore] Recovery exhausted after 3 attempts, failures={}/{}",
-                self.consecutive_failures, self.config.max_consecutive_failures
+                "[Explore] Recovery exhausted after {} attempts, failures={}/{}",
+                MAX_RECOVERY_ATTEMPTS,
+                self.consecutive_failures,
+                self.config.max_consecutive_failures
             );
             if self.consecutive_failures >= self.config.max_consecutive_failures {
                 self.state = ExplorationState::Failed {
@@ -735,7 +738,7 @@ impl ExplorationController {
                         self.last_pose.x - distance * self.last_pose.theta.cos(),
                         self.last_pose.y - distance * self.last_pose.theta.sin(),
                     ),
-                    max_speed: 0.1,
+                    max_speed: self.config.recovery_max_speed,
                 }
             }
             RecoveryAction::TurnInPlace(angle) => {
@@ -743,7 +746,7 @@ impl ExplorationController {
                 self.state = ExplorationState::SearchingFrontiers;
                 ExplorationCommand::Rotate {
                     target_heading: self.last_pose.theta + angle,
-                    max_angular_speed: 0.5,
+                    max_angular_speed: self.config.scan_angular_speed,
                 }
             }
             RecoveryAction::Wait => {

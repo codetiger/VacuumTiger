@@ -115,6 +115,128 @@ impl Default for SensorConfig {
     }
 }
 
+/// Configuration for log-odds occupancy updates.
+///
+/// Based on Google Cartographer's probability grid model:
+/// - Log-odds: L(x) = log(P(x) / (1 - P(x)))
+/// - Bayesian update: L_new = L_old + L_observation
+/// - Stored as fixed-point i16: actual = value / 100
+///
+/// Lower values = more observations needed to establish walls.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LogOddsConfig {
+    /// Log-odds increment for hit (lidar endpoint = occupied).
+    /// Cartographer default: ~20 (hit_probability=0.55)
+    /// VastuMap aggressive: 70 (P=0.67)
+    #[serde(default = "default_l_hit")]
+    pub l_hit: i16,
+
+    /// Log-odds decrement for miss (ray passes through = free).
+    /// Cartographer default: ~-4 (miss_probability=0.49)
+    /// VastuMap aggressive: -28 (P=0.43)
+    /// Asymmetric to make walls "stickier" than free space.
+    #[serde(default = "default_l_miss")]
+    pub l_miss: i16,
+
+    /// Threshold for considering cell occupied. P > 0.62 → L > 50
+    #[serde(default = "default_l_occupied")]
+    pub l_occupied_threshold: i16,
+
+    /// Threshold for considering cell free. P < 0.38 → L < -50
+    #[serde(default = "default_l_free")]
+    pub l_free_threshold: i16,
+
+    /// Minimum log-odds value (clamping). P ≈ 0.12
+    #[serde(default = "default_l_min")]
+    pub l_min: i16,
+
+    /// Maximum log-odds value (clamping). P ≈ 0.88
+    #[serde(default = "default_l_max")]
+    pub l_max: i16,
+}
+
+fn default_l_hit() -> i16 {
+    20
+} // P≈0.55 (Cartographer default)
+fn default_l_miss() -> i16 {
+    -4
+} // P≈0.49 (Cartographer default)
+fn default_l_occupied() -> i16 {
+    50
+}
+fn default_l_free() -> i16 {
+    -50
+}
+fn default_l_min() -> i16 {
+    -200
+}
+fn default_l_max() -> i16 {
+    200
+}
+
+impl Default for LogOddsConfig {
+    fn default() -> Self {
+        Self {
+            l_hit: default_l_hit(),
+            l_miss: default_l_miss(),
+            l_occupied_threshold: default_l_occupied(),
+            l_free_threshold: default_l_free(),
+            l_min: default_l_min(),
+            l_max: default_l_max(),
+        }
+    }
+}
+
+impl LogOddsConfig {
+    /// Cartographer-like conservative updates (DEFAULT).
+    /// Requires 3-5 observations to establish wall.
+    /// This is the recommended default for robust mapping.
+    pub fn cartographer() -> Self {
+        Self::default()
+    }
+
+    /// Aggressive updates (original VastuMap behavior).
+    /// Single observation can establish wall.
+    /// Use for fast mapping in controlled environments.
+    pub fn aggressive() -> Self {
+        Self {
+            l_hit: 70,   // P=0.67
+            l_miss: -28, // P=0.43
+            ..Default::default()
+        }
+    }
+
+    /// Balanced - 2-3 observations for wall.
+    /// Mid-ground between Cartographer and aggressive.
+    pub fn balanced() -> Self {
+        Self {
+            l_hit: 30,   // P=0.57
+            l_miss: -12, // P=0.47
+            ..Default::default()
+        }
+    }
+
+    /// Convert hit probability to log-odds.
+    /// Formula: L = 100 * log(p / (1 - p))
+    pub fn from_probability(hit_prob: f32, miss_prob: f32) -> Self {
+        let l_hit = (100.0 * (hit_prob / (1.0 - hit_prob)).ln()) as i16;
+        let l_miss = (100.0 * (miss_prob / (1.0 - miss_prob)).ln()) as i16;
+        Self {
+            l_hit,
+            l_miss,
+            ..Default::default()
+        }
+    }
+
+    /// Convert log-odds to probability.
+    /// Formula: P = exp(L/100) / (1 + exp(L/100))
+    pub fn log_odds_to_probability(log_odds: i16) -> f32 {
+        let l = log_odds as f32 / 100.0;
+        let exp_l = l.exp();
+        exp_l / (1.0 + exp_l)
+    }
+}
+
 /// Full map configuration
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MapConfig {
@@ -122,6 +244,9 @@ pub struct MapConfig {
     pub grid: GridConfig,
     /// Sensor configuration (lidar, robot geometry)
     pub sensor: SensorConfig,
+    /// Log-odds occupancy configuration
+    #[serde(default)]
+    pub log_odds: LogOddsConfig,
 }
 
 impl MapConfig {

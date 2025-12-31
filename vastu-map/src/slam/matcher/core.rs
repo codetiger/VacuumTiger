@@ -1,15 +1,27 @@
-//! Correlative scan-to-map matcher.
-//!
-//! Performs brute-force search over a 3D pose space (x, y, theta) to find
-//! the best alignment of a lidar scan to the current occupancy grid map.
+//! Correlative scan-to-map matcher implementation.
 
 use crate::core::{CellType, LidarScan, Pose2D, WorldPoint};
 use crate::grid::GridStorage;
 
-use crate::core::simd::{PointBatch, RotationMatrix4, transform_points_simd4, world_to_grid_simd4};
+use crate::core::simd::{PointCloud, RotationMatrix4, transform_points_simd4, world_to_grid_simd4};
 
-use super::config::CorrelativeMatcherConfig;
-use super::types::ScanMatchResult;
+use super::helpers::{normalize_angle, solve_3x3};
+use super::lm::AdaptiveLM;
+use super::types::ScratchBuffers;
+use crate::slam::config::CorrelativeMatcherConfig;
+use crate::slam::types::ScanMatchResult;
+
+/// Parameters for pose search space.
+struct SearchParams {
+    /// Center pose for the search grid.
+    center_pose: Pose2D,
+    /// Prior pose for tie-breaking penalty.
+    prior_pose: Pose2D,
+    /// Linear step size in meters.
+    linear_step: f32,
+    /// Angular step size in radians.
+    angular_step: f32,
+}
 
 /// Correlative scan-to-map matcher.
 ///
@@ -17,40 +29,6 @@ use super::types::ScanMatchResult;
 /// to find the best alignment of a lidar scan to the map.
 pub struct CorrelativeMatcher {
     config: CorrelativeMatcherConfig,
-}
-
-/// Scratch buffers for SIMD operations to avoid per-call allocations.
-pub struct ScratchBuffers {
-    /// Transformed world X coordinates
-    world_xs: Vec<f32>,
-    /// Transformed world Y coordinates
-    world_ys: Vec<f32>,
-    /// Grid X coordinates
-    grid_xs: Vec<i32>,
-    /// Grid Y coordinates
-    grid_ys: Vec<i32>,
-}
-
-impl ScratchBuffers {
-    /// Create scratch buffers for a given number of points.
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            world_xs: vec![0.0; capacity],
-            world_ys: vec![0.0; capacity],
-            grid_xs: vec![0; capacity],
-            grid_ys: vec![0; capacity],
-        }
-    }
-
-    /// Resize buffers if needed.
-    pub fn resize(&mut self, n: usize) {
-        if self.world_xs.len() < n {
-            self.world_xs.resize(n, 0.0);
-            self.world_ys.resize(n, 0.0);
-            self.grid_xs.resize(n, 0);
-            self.grid_ys.resize(n, 0);
-        }
-    }
 }
 
 impl CorrelativeMatcher {
@@ -185,13 +163,16 @@ impl CorrelativeMatcher {
         self.refine_with_gauss_newton(points, fine_result, storage)
     }
 
-    /// Refine a scan match result using Gauss-Newton optimization.
+    /// Refine a scan match result using Gauss-Newton optimization with adaptive LM.
     ///
     /// This provides sub-pixel/sub-degree accuracy by minimizing the sum of
     /// squared distances from scan points to the nearest walls.
     ///
-    /// Uses Levenberg-Marquardt damping for stability and a prior constraint
-    /// (like Cartographer's CeresScanMatcher) to prevent over-correction.
+    /// Uses **adaptive** Levenberg-Marquardt damping that adjusts based on step
+    /// quality, providing faster convergence than fixed damping while maintaining
+    /// stability. Also implements step acceptance/rejection logic.
+    ///
+    /// Prior constraints (like Cartographer's CeresScanMatcher) prevent over-correction.
     fn refine_with_gauss_newton(
         &self,
         points: &[(f32, f32)],
@@ -207,9 +188,21 @@ impl CorrelativeMatcher {
         let (offset_x, offset_y) = self.config.sensor_offset;
 
         // Prior constraint weights (Cartographer-style)
-        // These penalize deviation from the correlative search result
         let trans_weight = self.config.gn_translation_weight;
         let rot_weight = self.config.gn_rotation_weight;
+
+        // Adaptive LM optimizer
+        let mut lm = AdaptiveLM::new();
+
+        // Compute initial cost
+        let mut current_cost = self.compute_refinement_cost(
+            points,
+            pose,
+            initial_pose,
+            storage,
+            trans_weight,
+            rot_weight,
+        );
 
         for _iter in 0..self.config.gn_max_iterations {
             // Build normal equations: H * delta = -g
@@ -239,10 +232,6 @@ impl CorrelativeMatcher {
                 }
 
                 // Jacobian row: [∂d/∂x, ∂d/∂y, ∂d/∂θ]
-                // ∂d/∂x = grad_x (direct translation effect)
-                // ∂d/∂y = grad_y (direct translation effect)
-                // ∂d/∂θ = grad_x * ∂world_x/∂θ + grad_y * ∂world_y/∂θ
-                //       = grad_x * (-px*sin - py*cos) + grad_y * (px*cos - py*sin)
                 let dworld_x_dtheta = -px * sin_theta - py * cos_theta;
                 let dworld_y_dtheta = px * cos_theta - py * sin_theta;
                 let j_theta = grad_x * dworld_x_dtheta + grad_y * dworld_y_dtheta;
@@ -250,7 +239,6 @@ impl CorrelativeMatcher {
                 let j = [grad_x, grad_y, j_theta];
 
                 // Accumulate H = J^T * J and g = J^T * r
-                // Using outer product: H += j * j^T, g += j * dist
                 for i in 0..3 {
                     g[i] += j[i] * dist;
                     for k in 0..3 {
@@ -260,9 +248,6 @@ impl CorrelativeMatcher {
             }
 
             // Add prior constraint (Cartographer-style CeresScanMatcher)
-            // This penalizes deviation from the correlative search result
-            // E_prior = trans_weight * ||p - p_init||² + rot_weight * (θ - θ_init)²
-            // Adds to H diagonal and g vector
             if trans_weight > 0.0 {
                 h[0][0] += trans_weight;
                 h[1][1] += trans_weight;
@@ -275,10 +260,13 @@ impl CorrelativeMatcher {
                 g[2] += rot_weight * angle_error;
             }
 
-            // Add Levenberg-Marquardt damping to diagonal
-            let damping = self.config.gn_damping;
-            for i in 0..3 {
-                h[i][i] += damping * (1.0 + h[i][i]);
+            // Store undamped Hessian for predicted reduction calculation
+            let h_undamped = h;
+
+            // Add adaptive Levenberg-Marquardt damping to diagonal
+            let damping = lm.damping();
+            for (i, row) in h.iter_mut().enumerate() {
+                row[i] += damping * (1.0 + row[i]);
             }
 
             // Solve 3x3 system using Cramer's rule
@@ -289,18 +277,69 @@ impl CorrelativeMatcher {
                 break;
             }
 
-            // Update pose
-            pose.x += delta[0];
-            pose.y += delta[1];
-            pose.theta += delta[2];
+            // Compute predicted cost reduction using linear model
+            // predicted_reduction = -delta^T * g - 0.5 * delta^T * H * delta
+            let htd = [
+                h_undamped[0][0] * delta[0]
+                    + h_undamped[0][1] * delta[1]
+                    + h_undamped[0][2] * delta[2],
+                h_undamped[1][0] * delta[0]
+                    + h_undamped[1][1] * delta[1]
+                    + h_undamped[1][2] * delta[2],
+                h_undamped[2][0] * delta[0]
+                    + h_undamped[2][1] * delta[1]
+                    + h_undamped[2][2] * delta[2],
+            ];
+            let delta_dot_g = delta[0] * g[0] + delta[1] * g[1] + delta[2] * g[2];
+            let delta_dot_htd = delta[0] * htd[0] + delta[1] * htd[1] + delta[2] * htd[2];
+            let predicted_reduction = -delta_dot_g - 0.5 * delta_dot_htd;
 
-            // Normalize theta to [-π, π]
-            pose.theta = normalize_angle(pose.theta);
+            // Compute candidate pose
+            let mut candidate = pose;
+            candidate.x += delta[0];
+            candidate.y += delta[1];
+            candidate.theta = normalize_angle(candidate.theta + delta[2]);
 
-            // Check convergence
-            let update_mag = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
-            if update_mag < self.config.gn_convergence_threshold {
-                break;
+            // Compute actual cost at candidate pose
+            let candidate_cost = self.compute_refinement_cost(
+                points,
+                candidate,
+                initial_pose,
+                storage,
+                trans_weight,
+                rot_weight,
+            );
+            let actual_reduction = current_cost - candidate_cost;
+
+            // Compute step quality ratio (rho)
+            let rho = if predicted_reduction.abs() > 1e-10 {
+                actual_reduction / predicted_reduction
+            } else if actual_reduction > 0.0 {
+                1.0 // Tiny predicted but positive actual = good
+            } else {
+                0.0
+            };
+
+            // Accept or reject step based on actual improvement
+            if actual_reduction > 0.0 {
+                // Step improved cost - accept it
+                pose = candidate;
+                current_cost = candidate_cost;
+                lm.update(rho);
+
+                // Check convergence
+                let update_mag = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+                if update_mag < self.config.gn_convergence_threshold {
+                    break;
+                }
+            } else {
+                // Step made things worse - reject and increase damping
+                lm.reject_step();
+
+                // If stuck at maximum damping, stop
+                if lm.is_stuck() {
+                    break;
+                }
             }
         }
 
@@ -313,6 +352,54 @@ impl CorrelativeMatcher {
         };
 
         ScanMatchResult::new(pose, normalized_score, hits, points.len())
+    }
+
+    /// Compute the total cost for Gauss-Newton refinement.
+    ///
+    /// Cost = sum of squared distances + prior constraint penalties.
+    fn compute_refinement_cost(
+        &self,
+        points: &[(f32, f32)],
+        pose: Pose2D,
+        initial_pose: Pose2D,
+        storage: &GridStorage,
+        trans_weight: f32,
+        rot_weight: f32,
+    ) -> f32 {
+        let (offset_x, offset_y) = self.config.sensor_offset;
+        let cos_theta = pose.theta.cos();
+        let sin_theta = pose.theta.sin();
+
+        // Sensor position in world frame
+        let sensor_x = pose.x + offset_x * cos_theta - offset_y * sin_theta;
+        let sensor_y = pose.y + offset_x * sin_theta + offset_y * cos_theta;
+
+        let max_dist = storage.resolution() * 20.0;
+        let mut cost = 0.0f32;
+
+        // Sum of squared distances
+        for &(px, py) in points {
+            let world_x = sensor_x + px * cos_theta - py * sin_theta;
+            let world_y = sensor_y + px * sin_theta + py * cos_theta;
+
+            let (dist, _, _) = storage.get_distance_interpolated(WorldPoint::new(world_x, world_y));
+            if dist < max_dist {
+                cost += dist * dist;
+            }
+        }
+
+        // Prior constraint cost
+        if trans_weight > 0.0 {
+            let dx = pose.x - initial_pose.x;
+            let dy = pose.y - initial_pose.y;
+            cost += trans_weight * (dx * dx + dy * dy);
+        }
+        if rot_weight > 0.0 {
+            let dtheta = normalize_angle(pose.theta - initial_pose.theta);
+            cost += rot_weight * dtheta * dtheta;
+        }
+
+        cost
     }
 
     /// Search over pose space to find best match.
@@ -383,7 +470,7 @@ impl CorrelativeMatcher {
     /// Score how well a pose aligns the scan points with the map.
     ///
     /// Returns (raw_score, hit_count).
-    fn score_pose(
+    pub fn score_pose(
         &self,
         points: &[(f32, f32)],
         pose: Pose2D,
@@ -496,7 +583,13 @@ impl CorrelativeMatcher {
     }
 
     /// Extract valid points from scan in SoA format for SIMD processing.
-    fn extract_scan_points_simd(&self, scan: &LidarScan) -> PointBatch {
+    fn extract_scan_points_simd(&self, scan: &LidarScan) -> PointCloud {
+        // Use PointCloud::from_scan for simple case (handles padding automatically)
+        if self.config.max_points == 0 || scan.ranges.len() <= self.config.max_points {
+            return PointCloud::from_scan(scan);
+        }
+
+        // Manual extraction with subsampling
         let mut xs = Vec::with_capacity(scan.ranges.len());
         let mut ys = Vec::with_capacity(scan.ranges.len());
 
@@ -505,31 +598,33 @@ impl CorrelativeMatcher {
             ys.push(range * angle.sin());
         }
 
-        // Subsample if needed
-        if self.config.max_points > 0 && xs.len() > self.config.max_points {
-            let step = xs.len() / self.config.max_points;
-            xs = xs.into_iter().step_by(step).collect();
-            ys = ys.into_iter().step_by(step).collect();
-        }
+        // Subsample
+        let step = xs.len() / self.config.max_points;
+        xs = xs.into_iter().step_by(step).collect();
+        ys = ys.into_iter().step_by(step).collect();
 
-        PointBatch { xs, ys }
+        let mut points = PointCloud { xs, ys };
+        points.pad_to_lanes(); // Ensure SIMD alignment
+        points
     }
 
     /// Single resolution search with SIMD.
     fn match_single_resolution_simd(
         &self,
-        points: &PointBatch,
+        points: &PointCloud,
         prior_pose: Pose2D,
         storage: &GridStorage,
         scratch: &mut ScratchBuffers,
     ) -> ScanMatchResult {
         self.search_poses_simd(
             points,
-            prior_pose,
-            prior_pose, // center and prior are the same for single resolution
+            SearchParams {
+                center_pose: prior_pose,
+                prior_pose, // center and prior are the same for single resolution
+                linear_step: self.config.linear_resolution,
+                angular_step: self.config.angular_resolution,
+            },
             storage,
-            self.config.linear_resolution,
-            self.config.angular_resolution,
             scratch,
         )
     }
@@ -537,7 +632,7 @@ impl CorrelativeMatcher {
     /// Multi-resolution search with SIMD: coarse first, then refine with Gauss-Newton.
     fn match_multi_resolution_simd(
         &self,
-        points: &PointBatch,
+        points: &PointCloud,
         prior_pose: Pose2D,
         storage: &GridStorage,
         scratch: &mut ScratchBuffers,
@@ -548,11 +643,13 @@ impl CorrelativeMatcher {
 
         let coarse_result = self.search_poses_simd(
             points,
-            prior_pose,
-            prior_pose,
+            SearchParams {
+                center_pose: prior_pose,
+                prior_pose,
+                linear_step: coarse_linear,
+                angular_step: coarse_angular,
+            },
             storage,
-            coarse_linear,
-            coarse_angular,
             scratch,
         );
 
@@ -572,16 +669,18 @@ impl CorrelativeMatcher {
         let fine_matcher = CorrelativeMatcher::new(fine_config);
         let fine_result = fine_matcher.search_poses_simd(
             points,
-            coarse_result.pose, // center on coarse result
-            prior_pose,         // but penalize based on original prior
+            SearchParams {
+                center_pose: coarse_result.pose, // center on coarse result
+                prior_pose,                      // but penalize based on original prior
+                linear_step: self.config.linear_resolution,
+                angular_step: self.config.angular_resolution,
+            },
             storage,
-            self.config.linear_resolution,
-            self.config.angular_resolution,
             scratch,
         );
 
         // Gauss-Newton refinement for sub-pixel accuracy
-        // Convert PointBatch to Vec<(f32, f32)> for refinement
+        // Convert PointCloud to Vec<(f32, f32)> for refinement
         let points_vec: Vec<(f32, f32)> = points
             .xs
             .iter()
@@ -594,31 +693,28 @@ impl CorrelativeMatcher {
     /// Search over pose space to find best match using SIMD.
     fn search_poses_simd(
         &self,
-        points: &PointBatch,
-        center_pose: Pose2D,
-        prior_pose: Pose2D,
+        points: &PointCloud,
+        params: SearchParams,
         storage: &GridStorage,
-        linear_step: f32,
-        angular_step: f32,
         scratch: &mut ScratchBuffers,
     ) -> ScanMatchResult {
-        let mut best_pose = center_pose;
+        let mut best_pose = params.center_pose;
         let mut best_score = f32::NEG_INFINITY;
         let mut best_hits = 0usize;
 
         // Generate search poses
-        let x_steps = (self.config.search_x / linear_step).ceil() as i32;
-        let y_steps = (self.config.search_y / linear_step).ceil() as i32;
-        let theta_steps = (self.config.search_theta / angular_step).ceil() as i32;
+        let x_steps = (self.config.search_x / params.linear_step).ceil() as i32;
+        let y_steps = (self.config.search_y / params.linear_step).ceil() as i32;
+        let theta_steps = (self.config.search_theta / params.angular_step).ceil() as i32;
 
         for dx in -x_steps..=x_steps {
-            let x = center_pose.x + dx as f32 * linear_step;
+            let x = params.center_pose.x + dx as f32 * params.linear_step;
 
             for dy in -y_steps..=y_steps {
-                let y = center_pose.y + dy as f32 * linear_step;
+                let y = params.center_pose.y + dy as f32 * params.linear_step;
 
                 for dtheta in -theta_steps..=theta_steps {
-                    let theta = center_pose.theta + dtheta as f32 * angular_step;
+                    let theta = params.center_pose.theta + dtheta as f32 * params.angular_step;
                     let candidate = Pose2D::new(x, y, theta);
 
                     let (score, hits) = self.score_pose_simd(points, candidate, storage, scratch);
@@ -627,10 +723,10 @@ impl CorrelativeMatcher {
                     // This prefers poses closer to odometry when scores are similar
                     // Position: Higher weight since encoders are typically reliable for distance
                     // Angular: Lower weight to allow scan matching to correct heading drift
-                    let dist_to_prior = ((candidate.x - prior_pose.x).powi(2)
-                        + (candidate.y - prior_pose.y).powi(2))
+                    let dist_to_prior = ((candidate.x - params.prior_pose.x).powi(2)
+                        + (candidate.y - params.prior_pose.y).powi(2))
                     .sqrt();
-                    let angle_dist = (candidate.theta - prior_pose.theta).abs();
+                    let angle_dist = (candidate.theta - params.prior_pose.theta).abs();
                     let adjusted_score = score - dist_to_prior * 300.0 - angle_dist * 30.0;
 
                     if adjusted_score > best_score {
@@ -656,9 +752,9 @@ impl CorrelativeMatcher {
     ///
     /// Uses SIMD for batch point transformation and world-to-grid conversion.
     /// The final scoring loop is scalar due to random memory access patterns.
-    fn score_pose_simd(
+    pub fn score_pose_simd(
         &self,
-        points: &PointBatch,
+        points: &PointCloud,
         pose: Pose2D,
         storage: &GridStorage,
         scratch: &mut ScratchBuffers,
@@ -756,257 +852,5 @@ impl CorrelativeMatcher {
         }
 
         (score, hits)
-    }
-}
-
-/// Solve a 3x3 linear system Ax = b using Cramer's rule.
-///
-/// Returns [0, 0, 0] if the matrix is singular.
-fn solve_3x3(a: &[[f32; 3]; 3], b: &[f32; 3]) -> [f32; 3] {
-    // Compute determinant of A
-    let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
-        - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
-        + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
-
-    if det.abs() < 1e-10 {
-        return [0.0, 0.0, 0.0];
-    }
-
-    let inv_det = 1.0 / det;
-
-    // Cramer's rule: x_i = det(A_i) / det(A)
-    // where A_i is A with column i replaced by b
-    let x0 = (b[0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
-        - a[0][1] * (b[1] * a[2][2] - a[1][2] * b[2])
-        + a[0][2] * (b[1] * a[2][1] - a[1][1] * b[2]))
-        * inv_det;
-
-    let x1 = (a[0][0] * (b[1] * a[2][2] - a[1][2] * b[2])
-        - b[0] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
-        + a[0][2] * (a[1][0] * b[2] - b[1] * a[2][0]))
-        * inv_det;
-
-    let x2 = (a[0][0] * (a[1][1] * b[2] - b[1] * a[2][1])
-        - a[0][1] * (a[1][0] * b[2] - b[1] * a[2][0])
-        + b[0] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]))
-        * inv_det;
-
-    [x0, x1, x2]
-}
-
-/// Normalize angle to [-π, π).
-fn normalize_angle(angle: f32) -> f32 {
-    let mut a = angle % std::f32::consts::TAU;
-    if a > std::f32::consts::PI {
-        a -= std::f32::consts::TAU;
-    } else if a < -std::f32::consts::PI {
-        a += std::f32::consts::TAU;
-    }
-    a
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::GridCoord;
-
-    fn create_test_storage() -> GridStorage {
-        GridStorage::centered(100, 100, 0.05) // 5m x 5m at 5cm resolution
-    }
-
-    fn create_wall_in_front(storage: &mut GridStorage, pose: Pose2D, distance: f32) {
-        // Create a wall in front of the pose
-        let wall_x = pose.x + distance * pose.theta.cos();
-        let wall_y = pose.y + distance * pose.theta.sin();
-
-        // Create a line of wall cells
-        for offset in -10..=10 {
-            let perp_angle = pose.theta + std::f32::consts::FRAC_PI_2;
-            let wx = wall_x + offset as f32 * 0.05 * perp_angle.cos();
-            let wy = wall_y + offset as f32 * 0.05 * perp_angle.sin();
-            let coord = storage.world_to_grid(WorldPoint::new(wx, wy));
-            if storage.is_valid_coord(coord) {
-                storage.set_type(coord, CellType::Wall);
-            }
-        }
-
-        // Update distance field for Gaussian scoring
-        storage.recompute_distance_field();
-    }
-
-    fn create_simple_scan(distance: f32, num_points: usize) -> LidarScan {
-        // Create a scan with points at uniform angles, all at same distance
-        let angle_min = -std::f32::consts::PI;
-        let angle_max = std::f32::consts::PI;
-        let angle_increment = (angle_max - angle_min) / num_points as f32;
-
-        let ranges = vec![distance; num_points];
-        let angles: Vec<f32> = (0..num_points)
-            .map(|i| angle_min + i as f32 * angle_increment)
-            .collect();
-
-        LidarScan::new(ranges, angles, 0.1, 10.0)
-    }
-
-    #[test]
-    fn test_matcher_creation() {
-        let matcher = CorrelativeMatcher::with_defaults();
-        assert!(matcher.config().enabled);
-    }
-
-    #[test]
-    fn test_disabled_matcher() {
-        let config = CorrelativeMatcherConfig::disabled();
-        let matcher = CorrelativeMatcher::new(config);
-
-        let storage = create_test_storage();
-        let scan = create_simple_scan(2.0, 360);
-        let pose = Pose2D::new(0.0, 0.0, 0.0);
-
-        let result = matcher.match_scan(&scan, pose, &storage);
-
-        // Disabled matcher should return input pose unchanged
-        assert!((result.pose.x - pose.x).abs() < 0.001);
-        assert!((result.pose.y - pose.y).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_matching_returns_result() {
-        let mut storage = create_test_storage();
-        let true_pose = Pose2D::new(0.0, 0.0, 0.0);
-
-        // Create a wall 2m in front
-        create_wall_in_front(&mut storage, true_pose, 2.0);
-
-        // Use fast config for speed
-        let config = CorrelativeMatcherConfig::fast();
-        let matcher = CorrelativeMatcher::new(config);
-
-        // Test with prior very close to true pose
-        let prior = Pose2D::new(0.01, 0.01, 0.01);
-
-        // Create a scan that simulates hitting the wall from the prior pose
-        let angles: Vec<f32> = (-10..=10).map(|i| i as f32 * 0.05).collect();
-        let ranges: Vec<f32> = vec![2.0; angles.len()];
-        let scan = LidarScan::new(ranges, angles, 0.1, 10.0);
-
-        let result = matcher.match_scan(&scan, prior, &storage);
-
-        // Matcher should return a result (may or may not converge depending on map state)
-        // At minimum, it should return a valid pose
-        assert!(result.pose.x.is_finite());
-        assert!(result.pose.y.is_finite());
-        assert!(result.pose.theta.is_finite());
-    }
-
-    #[test]
-    fn test_score_increases_with_hits() {
-        let mut storage = create_test_storage();
-
-        // Fill some cells with walls
-        for x in 40..60 {
-            for y in 40..60 {
-                storage.set_type(GridCoord::new(x, y), CellType::Wall);
-            }
-        }
-
-        // Update distance field for Gaussian scoring
-        storage.recompute_distance_field();
-
-        let matcher = CorrelativeMatcher::with_defaults();
-        let points: Vec<(f32, f32)> = vec![(0.0, 0.0), (0.05, 0.0), (0.1, 0.0)];
-
-        // Pose in wall area should score higher
-        let pose_in_wall = Pose2D::new(0.0, 0.0, 0.0);
-        let pose_in_floor = Pose2D::new(-2.0, -2.0, 0.0);
-
-        let (score_wall, hits_wall) = matcher.score_pose(&points, pose_in_wall, &storage);
-        let (score_floor, hits_floor) = matcher.score_pose(&points, pose_in_floor, &storage);
-
-        assert!(hits_wall > hits_floor);
-        assert!(score_wall > score_floor);
-    }
-
-    #[test]
-    fn test_simd_matches_scalar() {
-        let mut storage = create_test_storage();
-        let true_pose = Pose2D::new(0.0, 0.0, 0.0);
-
-        // Create a wall 2m in front
-        create_wall_in_front(&mut storage, true_pose, 2.0);
-
-        // Use fast config for speed
-        let config = CorrelativeMatcherConfig::fast();
-        let matcher = CorrelativeMatcher::new(config);
-
-        // Create a scan
-        let angles: Vec<f32> = (-10..=10).map(|i| i as f32 * 0.05).collect();
-        let ranges: Vec<f32> = vec![2.0; angles.len()];
-        let scan = LidarScan::new(ranges, angles, 0.1, 10.0);
-
-        let prior = Pose2D::new(0.01, 0.01, 0.01);
-
-        // Get scalar result
-        let scalar_result = matcher.match_scan(&scan, prior, &storage);
-
-        // Get SIMD result
-        let mut scratch = ScratchBuffers::new(scan.ranges.len());
-        let simd_result = matcher.match_scan_simd(&scan, prior, &storage, &mut scratch);
-
-        // Results should match
-        assert!((scalar_result.pose.x - simd_result.pose.x).abs() < 0.001);
-        assert!((scalar_result.pose.y - simd_result.pose.y).abs() < 0.001);
-        assert!((scalar_result.pose.theta - simd_result.pose.theta).abs() < 0.001);
-        assert!((scalar_result.score - simd_result.score).abs() < 0.001);
-        assert_eq!(scalar_result.hits, simd_result.hits);
-    }
-
-    #[test]
-    fn test_simd_score_matches_scalar() {
-        let mut storage = create_test_storage();
-
-        // Fill some cells with walls
-        for x in 40..60 {
-            for y in 40..60 {
-                storage.set_type(GridCoord::new(x, y), CellType::Wall);
-            }
-        }
-
-        // Update distance field for Gaussian scoring
-        storage.recompute_distance_field();
-
-        let matcher = CorrelativeMatcher::with_defaults();
-
-        // Create points in AoS format for scalar
-        let points: Vec<(f32, f32)> = vec![(0.0, 0.0), (0.05, 0.0), (0.1, 0.0), (0.15, 0.0)];
-
-        // Convert to SoA format for SIMD
-        let points_soa = PointBatch {
-            xs: points.iter().map(|(x, _)| *x).collect(),
-            ys: points.iter().map(|(_, y)| *y).collect(),
-        };
-
-        let pose = Pose2D::new(0.0, 0.0, 0.0);
-        let mut scratch = ScratchBuffers::new(points.len());
-
-        // Get scalar score
-        let (scalar_score, scalar_hits) = matcher.score_pose(&points, pose, &storage);
-
-        // Get SIMD score
-        let (simd_score, simd_hits) =
-            matcher.score_pose_simd(&points_soa, pose, &storage, &mut scratch);
-
-        // Results should match
-        assert!(
-            (scalar_score - simd_score).abs() < 0.001,
-            "score mismatch: {} vs {}",
-            scalar_score,
-            simd_score
-        );
-        assert_eq!(
-            scalar_hits, simd_hits,
-            "hits mismatch: {} vs {}",
-            scalar_hits, simd_hits
-        );
     }
 }

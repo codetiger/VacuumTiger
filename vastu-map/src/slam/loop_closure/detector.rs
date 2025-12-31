@@ -2,15 +2,19 @@
 //!
 //! Two-stage detection (like Cartographer):
 //! 1. Fast candidate detection using LiDAR-IRIS descriptors
-//! 2. Verification via correlative scan matching with Gauss-Newton refinement
+//! 2. Verification via scan matching (correlative or branch-and-bound)
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{LidarScan, Pose2D};
+use crate::core::simd::PointCloud;
+use crate::core::{LidarScan, Pose2D, normalize_angle};
 use crate::grid::GridStorage;
 
 use super::descriptor::LidarIris;
-use crate::slam::{CorrelativeMatcher, CorrelativeMatcherConfig};
+use crate::slam::{
+    BranchBoundConfig, CorrelativeMatcher, CorrelativeMatcherConfig, PrecomputedGrids,
+    branch_and_bound_match_simd,
+};
 
 /// Configuration for loop closure detection.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -57,6 +61,12 @@ pub struct LoopClosureConfig {
     /// Angular search window for verification (radians).
     #[serde(default = "default_verification_angular")]
     pub verification_angular_window: f32,
+
+    /// Use branch-and-bound matching instead of correlative matcher.
+    /// More efficient for large search windows (>30cm).
+    /// Enabled by default (Cartographer-style).
+    #[serde(default = "default_true")]
+    pub use_branch_bound: bool,
 }
 
 fn default_keyframe_distance() -> f32 {
@@ -107,6 +117,7 @@ impl Default for LoopClosureConfig {
             min_verification_score: default_min_verification_score(),
             verification_search_window: default_verification_search(),
             verification_angular_window: default_verification_angular(),
+            use_branch_bound: true, // Cartographer-style branch-and-bound
         }
     }
 }
@@ -138,10 +149,6 @@ struct Keyframe {
     pose: Pose2D,
     /// LiDAR-IRIS descriptor.
     descriptor: LidarIris,
-    /// Stored scan for potential scan-to-scan verification.
-    /// Currently using scan-to-map, but kept for future use.
-    #[allow(dead_code)]
-    scan: Option<LidarScan>,
 }
 
 /// Result of loop closure verification.
@@ -251,12 +258,11 @@ impl LoopClosureDetector {
         // Search for loop closure candidates
         let loop_closure = self.find_loop_closure(pose_idx, pose, &descriptor);
 
-        // Add as new keyframe (store scan for verification)
+        // Add as new keyframe
         self.keyframes.push(Keyframe {
             pose_idx,
             pose,
             descriptor,
-            scan: Some(scan.clone()),
         });
         self.last_keyframe_pose = Some(pose);
 
@@ -327,6 +333,89 @@ impl LoopClosureDetector {
             match_score,
             verified,
         }
+    }
+
+    /// Verify a loop closure candidate using branch-and-bound matching.
+    ///
+    /// This variant uses precomputed multi-resolution grids for more efficient
+    /// matching over larger search windows (Cartographer-style).
+    ///
+    /// # Arguments
+    /// * `candidate` - The loop closure candidate from `add_scan`
+    /// * `current_scan` - The current lidar scan
+    /// * `precomputed_grids` - Precomputed grids from finalized submap
+    /// * `target_pose` - The pose of the target keyframe in world frame
+    /// * `sensor_offset` - Lidar sensor offset (x, y) in robot frame
+    ///
+    /// # Returns
+    /// Verification result with refined pose and match score.
+    pub fn verify_loop_closure_branch_bound(
+        &self,
+        candidate: &LoopClosure,
+        current_scan: &LidarScan,
+        precomputed_grids: &PrecomputedGrids,
+        target_pose: Pose2D,
+        sensor_offset: (f32, f32),
+    ) -> VerifiedLoopClosure {
+        // Convert scan to PointCloud for SIMD-optimized matching
+        let points = PointCloud::from_scan(current_scan);
+
+        // Use the candidate's estimated pose as prior
+        let estimated_current_pose = Pose2D::new(
+            target_pose.x - candidate.relative_pose.x,
+            target_pose.y - candidate.relative_pose.y,
+            normalize_angle(target_pose.theta - candidate.relative_pose.theta),
+        );
+
+        // Configure branch-and-bound search
+        let bb_config = BranchBoundConfig {
+            search_x: self.config.verification_search_window,
+            search_y: self.config.verification_search_window,
+            search_theta: self.config.verification_angular_window,
+            angular_resolution: 0.02, // ~1.15 degrees
+            min_score: 0.0,
+            sensor_offset,
+        };
+
+        // Run branch-and-bound matching
+        let result = branch_and_bound_match_simd(
+            &points,
+            precomputed_grids,
+            estimated_current_pose,
+            &bb_config,
+        );
+
+        // Normalize score to 0.0-1.0 range (based on number of points)
+        let max_possible_score = points.len() as f32;
+        let normalized_score = if max_possible_score > 0.0 {
+            result.score / max_possible_score
+        } else {
+            0.0
+        };
+
+        // Compute refined relative pose
+        let refined_relative = Pose2D::new(
+            target_pose.x - result.pose.x,
+            target_pose.y - result.pose.y,
+            normalize_angle(target_pose.theta - result.pose.theta),
+        );
+
+        let verified = result.converged && normalized_score >= self.config.min_verification_score;
+
+        VerifiedLoopClosure {
+            closure: candidate.clone(),
+            refined_relative_pose: refined_relative,
+            match_score: normalized_score,
+            verified,
+        }
+    }
+
+    /// Get the target keyframe pose for a loop closure candidate.
+    pub fn get_keyframe_pose(&self, pose_idx: usize) -> Option<Pose2D> {
+        self.keyframes
+            .iter()
+            .find(|kf| kf.pose_idx == pose_idx)
+            .map(|kf| kf.pose)
     }
 
     /// Check if we should create a keyframe at current pose.
@@ -411,17 +500,6 @@ impl LoopClosureDetector {
     pub fn keyframe_poses(&self) -> Vec<Pose2D> {
         self.keyframes.iter().map(|kf| kf.pose).collect()
     }
-}
-
-/// Normalize angle to [-π, π).
-fn normalize_angle(angle: f32) -> f32 {
-    let mut a = angle % std::f32::consts::TAU;
-    if a > std::f32::consts::PI {
-        a -= std::f32::consts::TAU;
-    } else if a < -std::f32::consts::PI {
-        a += std::f32::consts::TAU;
-    }
-    a
 }
 
 #[cfg(test)]

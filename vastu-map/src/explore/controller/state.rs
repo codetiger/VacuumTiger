@@ -3,6 +3,8 @@
 use crate::core::WorldPoint;
 use crate::query::Frontier;
 
+// Note: Frontier and WorldPoint are still used by ExplorationState and ExplorationCommand
+
 /// Exploration state
 #[derive(Clone, Debug)]
 pub enum ExplorationState {
@@ -132,51 +134,32 @@ pub enum ExplorationCommand {
     },
 }
 
-/// Event that can trigger state transitions
+/// Event that can trigger state transitions.
+///
+/// These events are used to communicate external conditions to the exploration
+/// controller, allowing it to respond appropriately (e.g., entering recovery
+/// mode when an obstacle is detected).
 #[derive(Clone, Debug)]
 pub enum ExplorationEvent {
-    /// Start exploration
+    /// Start exploration.
     Start,
 
-    /// Stop exploration
+    /// Stop exploration and return to Idle state.
     Stop,
 
-    /// Resume from pause
-    Resume,
-
-    /// Frontier detected
-    FrontierFound(Frontier),
-
-    /// No frontiers available
-    NoFrontiers,
-
-    /// Path planned successfully
-    PathPlanned(Vec<WorldPoint>),
-
-    /// Path planning failed
-    PlanningFailed,
-
-    /// Reached current waypoint
-    WaypointReached,
-
-    /// Reached final destination
-    DestinationReached,
-
-    /// Obstacle detected
+    /// Obstacle detected by sensors (cliff, bumper, etc.).
+    /// Triggers recovery behavior.
     ObstacleDetected,
 
-    /// Path is blocked
+    /// Path is blocked and cannot continue.
+    /// Triggers recovery behavior.
     PathBlocked,
 
-    /// Recovery completed
+    /// Recovery maneuver completed successfully.
+    /// Returns to frontier searching.
     RecoveryComplete,
 
-    /// Recovery failed
-    RecoveryFailed,
-
-    /// Scan complete
+    /// Scan rotation completed at frontier.
+    /// Increments frontiers explored and searches for next.
     ScanComplete,
-
-    /// Timeout
-    Timeout,
 }
