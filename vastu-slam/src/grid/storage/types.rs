@@ -1,6 +1,7 @@
 //! Types used by grid storage.
 
 use crate::core::CellType;
+use serde::{Deserialize, Serialize};
 
 /// Mutable reference to a single cell's fields in the SoA storage.
 ///
@@ -84,7 +85,7 @@ impl<'a> CellMut<'a> {
 }
 
 /// Cell counts by type.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct CellCounts {
     /// Unknown cells (not yet observed).
     pub unknown: usize,

@@ -67,6 +67,9 @@ pub mod modes;
 // Persistence (save/load)
 pub mod io;
 
+// Evaluation framework (Cartographer-style)
+pub mod evaluation;
+
 // Re-export commonly used types
 pub use core::{
     BumperSensors, Cell, CellType, CliffSensors, GridCoord, LidarScan, MotionModel, Odometry,

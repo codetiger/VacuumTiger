@@ -16,6 +16,19 @@ serde_yaml = "0.9"       # YAML config files
 env_logger = "0.11"      # Test logging
 approx = "0.5"           # Approximate comparisons (tests only)
 image = { version = "0.25", default-features = false, features = ["png", "pnm"] }
+criterion = "0.5"        # Benchmarking
+
+[[bench]]
+name = "scan_matching"
+harness = false
+
+[[bench]]
+name = "grid_operations"
+harness = false
+
+[[bench]]
+name = "evaluation"
+harness = false
 
 [profile.release]
 opt-level = 3
