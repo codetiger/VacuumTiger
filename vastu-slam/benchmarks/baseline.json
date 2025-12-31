@@ -1,0 +1,90 @@
+{
+  "version": "1.0",
+  "entries": [
+    {
+      "commit": "1321540e164d6955c07759ce8a200a7313bcb57a",
+      "date": "2025-12-31T20:44:09+05:30",
+      "message": "Simplify vastu-slam configuration and increase default grid size",
+      "platform": {
+        "os": "Darwin 25.2.0",
+        "arch": "arm64",
+        "rust": "nightly"
+      },
+      "performance": {
+        "scan_matching": {
+          "180_pts_us": 964.96,
+          "360_pts_us": 1793.7,
+          "720_pts_us": 6546.6
+        },
+        "grid_update": {
+          "180_pts_us": 104.96,
+          "360_pts_us": 209.88,
+          "720_pts_us": 418.05
+        },
+        "evaluation": {
+          "coverage_stats_us": 125.15,
+          "ate_100_us": 1.51,
+          "rpe_100_us": 3.04,
+          "relations_100_us": 58.32,
+          "ground_truth_100_us": 19.96
+        }
+      },
+      "throughput": {
+        "scan_matching_360_per_sec": 557,
+        "grid_update_360_per_sec": 4765,
+        "combined_360_per_sec": 499,
+        "realtime_factor_5hz": 100
+      },
+      "tests": {
+        "unit_tests": {
+          "passed": 195,
+          "total": 195
+        },
+        "accuracy_tests": {
+          "passed": 10,
+          "total": 10
+        },
+        "performance_tests": {
+          "passed": 6,
+          "total": 6
+        },
+        "quality_tests": {
+          "passed": 10,
+          "total": 10
+        },
+        "all_pass": true
+      },
+      "targets": {
+        "scan_matching_360_us": 3000,
+        "grid_update_360_us": 400,
+        "ate_trans_m": 0.01,
+        "ate_rot_deg": 0.5,
+        "loop_closure_precision": 0.9,
+        "loop_closure_recall": 0.8
+      },
+      "notes": [
+        "First baseline entry after config simplification",
+        "Scan matching improved ~3% (reduced config overhead)",
+        "Coverage stats improved ~5% (SIMD optimization benefit)",
+        "All accuracy/quality thresholds met"
+      ]
+    }
+  ],
+  "thresholds": {
+    "regression_pct": {
+      "scan_matching": 10,
+      "grid_update": 20,
+      "coverage_stats": 20
+    },
+    "accuracy": {
+      "ate_trans_m": 0.01,
+      "ate_rot_deg": 0.5,
+      "rpe_trans_m": 0.005,
+      "rpe_rot_deg": 0.3
+    },
+    "quality": {
+      "loop_closure_precision": 0.9,
+      "loop_closure_recall": 0.8
+    }
+  }
+}
