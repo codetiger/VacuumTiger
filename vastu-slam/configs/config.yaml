@@ -1,5 +1,4 @@
-# VastuMap Occupancy Grid Configuration
-# Inspired by Google Cartographer SLAM parameters
+# VastuSLAM Configuration
 # Units: meters (m), radians (rad), cells (n)
 
 # ============================================================================
@@ -7,40 +6,21 @@
 # ============================================================================
 grid:
   # Cell resolution in meters per cell
-  resolution: 0.025  # 2.5cm cells (Cartographer default: 0.05)
+  resolution: 0.025  # 2.5cm cells
 
   # Initial grid dimensions (cells)
-  initial_width: 300
-  initial_height: 300
+  initial_width: 800   # 20m at 2.5cm
+  initial_height: 800  # 20m at 2.5cm
 
   # Grid origin mode: "center" or "corner"
   origin_mode: center
 
-  # Custom origin offset (only used if origin_mode: custom)
+  # Custom origin offset (only used if origin_mode: corner)
   origin_x: 0.0
   origin_y: 0.0
 
   # Enable automatic grid expansion
   auto_expand: true
-
-  # Log-odds occupancy model (Cartographer-style)
-  # Lower values = more observations needed to establish walls
-  log_odds:
-    # Log-odds increment for hit (lidar endpoint)
-    # Cartographer: ~20 (P=0.55), VastuMap aggressive: 70 (P=0.67)
-    l_hit: 20              # Cartographer default: ~3-5 observations for wall
-
-    # Log-odds decrement for miss (ray passes through)
-    # Cartographer: ~-4 (P=0.49), VastuMap aggressive: -28 (P=0.43)
-    l_miss: -4             # Cartographer default: asymmetric for sticky walls
-
-    # Cell classification thresholds
-    l_occupied_threshold: 50
-    l_free_threshold: -50
-
-    # Clamping range (probability bounds)
-    l_min: -200            # P ≈ 0.12
-    l_max: 200             # P ≈ 0.88
 
 # ============================================================================
 # Sensor Configuration
@@ -76,18 +56,36 @@ sensor:
 # SLAM Configuration
 # ============================================================================
 slam:
-  # Correlative scan matcher (local SLAM)
+  # Log-odds occupancy model (Cartographer-style)
+  log_odds:
+    # Log-odds increment for hit (lidar endpoint)
+    # Cartographer default: ~20 (P=0.55)
+    l_hit: 20
+
+    # Log-odds decrement for miss (ray passes through)
+    # Asymmetric to make walls "stickier" than free space
+    l_miss: -4
+
+    # Cell classification thresholds
+    l_occupied_threshold: 50
+    l_free_threshold: -50
+
+    # Clamping range (probability bounds)
+    l_min: -200  # P ~ 0.12
+    l_max: 200   # P ~ 0.88
+
+  # Correlative scan matcher
   correlative:
     enabled: true
 
     # Search window
     search_x: 0.3          # meters
     search_y: 0.3          # meters
-    search_theta: 0.15     # radians (~8.6°)
+    search_theta: 0.15     # radians (~8.6 degrees)
 
-    # Search resolution (finer = more accurate but slower)
-    linear_resolution: 0.01    # Was 0.02, now 1cm
-    angular_resolution: 0.01   # Was 0.02, now ~0.57°
+    # Search resolution
+    linear_resolution: 0.02    # 2cm
+    angular_resolution: 0.02   # ~1.1 degrees
 
     # Multi-resolution search (coarse-to-fine)
     multi_resolution: true
@@ -95,7 +93,7 @@ slam:
 
     # Gaussian scoring (uses distance field)
     use_gaussian_scoring: true
-    gaussian_sigma: 0.05       # Was 0.10, now 2x grid resolution
+    gaussian_sigma: 0.10       # 10cm - matches 2x grid resolution
 
     # Gauss-Newton refinement for sub-pixel accuracy
     gn_max_iterations: 10
@@ -110,158 +108,53 @@ slam:
     # Maximum points to use (0 = all)
     max_points: 0
 
-    # Optional: skip correlative search for reliable odometry
-    skip_when_confident: false
-    skip_confidence_threshold: 0.8
-
-  # Branch-and-bound matcher (for loop closure)
-  # More efficient than brute-force for large search windows
-  branch_bound:
-    enabled: true
-
-    # Large search window for loop closure
-    search_x: 2.0          # meters (Cartographer global: ~7m)
-    search_y: 2.0          # meters
-    search_theta: 0.5      # radians (~28°)
-
-    # Angular resolution
-    angular_resolution: 0.02   # ~1.1°
-
-    # Minimum score ratio (fraction of max possible)
-    min_score_ratio: 0.5
-
   # Loop closure detection
   loop_closure:
     enabled: true
 
     # Keyframe creation thresholds
-    keyframe_distance: 0.3     # Was 0.5, now denser
-    keyframe_rotation: 0.35    # Was 0.5 (~20° now)
+    keyframe_distance: 0.5     # 50cm between keyframes
+    keyframe_rotation: 0.5     # ~28 degrees
 
     # LiDAR-IRIS descriptor matching
-    max_descriptor_distance: 80    # Was 100, now stricter (out of 640)
+    max_descriptor_distance: 100   # Out of 640 bits
 
     # Spatial constraints
     min_loop_gap: 20           # Minimum pose index gap
-    max_loop_distance: 10.0    # Maximum spatial distance (m)
+    max_loop_distance: 5.0     # Maximum spatial distance (m)
 
-    # Verification
+    # Verification via scan matching
     min_verification_score: 0.6
-    use_branch_bound: true     # Use B&B instead of correlative
+    use_branch_bound: true     # Use branch-and-bound instead of correlative
 
-    # Verification search window (fallback if B&B disabled)
-    verification_search_window: 0.2
-    verification_angular_window: 0.2
+    # Verification search window
+    verification_search_window: 0.2   # 20cm
+    verification_angular_window: 0.2  # ~11 degrees
 
-# ============================================================================
-# Submap Configuration
-# ============================================================================
-submap:
-  scans_per_submap: 50         # Cartographer: 90
-  overlap_scans: 10            # Smooth transitions between submaps
-  local_grid_size: 200         # 5m × 5m at 2.5cm resolution
-  max_distance_per_submap: 3.0 # Force new submap after this distance
-  max_submaps: 100             # Maximum submaps to store
+  # Pose graph optimization
+  pose_graph:
+    max_iterations: 20
+    convergence_threshold: 1e-4
+    damping: 1e-3
 
-  # Loop closure between submaps
-  min_loop_closure_gap: 3      # Minimum submap index gap
-  max_loop_closure_distance: 10.0
+    # Edge weights
+    odometry_weight: 100.0     # Strong trust in encoder odometry
+    loop_weight: 50.0          # Lower to handle noise
 
-# ============================================================================
-# Pose Graph Optimization
-# ============================================================================
-pose_graph:
-  # Optimization trigger
-  optimize_every_n_nodes: 0    # 0 = only on loop closure
+    # Huber loss for robust optimization (downweight outliers)
+    huber_scale: 0.1           # 10cm
 
-  # Solver parameters
-  max_iterations: 50
-  convergence_threshold: 1e-5
+  # Background optimizer
+  background_optimizer:
+    max_iterations: 50
+    convergence_threshold: 1e-5
+    huber_scale: 0.1
 
-  # Huber loss for robust optimization (downweight outliers)
-  huber_scale: 0.1             # 10cm
+    # Trigger optimization every N nodes (0 = only on loop closure)
+    trigger_every_n_nodes: 0
 
-  # Edge weights
-  odometry_weight: 100.0       # Strong trust in encoder odometry
-  loop_closure_weight: 50.0    # Lower to handle noise
-
-  # Background thread (optional, not recommended for ARM)
-  use_background_thread: false
-
-# ============================================================================
-# Motion Filter Configuration (Cartographer-style)
-# ============================================================================
-# Gates scan processing based on robot movement to reduce redundant observations
-# and save CPU when stationary. A scan is processed if ANY threshold is exceeded.
-motion_filter:
-  # Enable/disable motion filtering (true = filter enabled)
-  enabled: true
-
-  # Maximum time between scan insertions (seconds)
-  # Ensures at least some updates even when stationary
-  max_time_secs: 5.0
-
-  # Maximum distance before forcing scan insertion (meters)
-  max_distance: 0.2
-
-  # Maximum rotation before forcing scan insertion (radians)
-  # 0.17 rad ≈ 10 degrees
-  max_angle: 0.17
-
-# ============================================================================
-# Query Configuration
-# ============================================================================
-query:
-  # Frontier detection
-  frontier:
-    min_frontier_size: 5       # Minimum cells for valid frontier
-    use_8_connectivity: true   # Use 8-connected grid (vs 4-connected)
-
-  # Traversability checking
-  traversability:
-    safety_margin: 0.05        # Extra clearance around robot (m)
-
-# ============================================================================
-# Pathfinding Configuration
-# ============================================================================
-pathfinding:
-  # A* algorithm settings
-  astar:
-    allow_diagonal: true       # Enable 8-directional movement
-    diagonal_cost: 1.414       # sqrt(2) cost for diagonal moves
-    max_iterations: 100000     # Max nodes to expand
-    clearance_weight: 0.0      # Penalty for paths near obstacles (0=disabled)
-
-  # Path smoothing
-  smoothing:
-    enabled: true
-    los_step_size: 0.05        # Line-of-sight check step (m)
-    max_iterations: 100        # Midpoint smoothing iterations
-
-# ============================================================================
-# Exploration Configuration
-# ============================================================================
-exploration:
-  # Frontier selection
-  min_frontier_size: 5
-  frontier_reached_threshold: 0.3  # Distance to consider frontier reached (m)
-  waypoint_threshold: 0.1          # Distance for waypoint reached (m)
-
-  # Planning
-  max_plan_distance: 5.0           # Maximum planning distance (m)
-  replan_interval: 1.0             # Seconds between replans when blocked
-
-  # Failure handling
-  max_consecutive_failures: 5
-
-  # Path preferences
-  path_clearance_weight: 0.0
-  smooth_paths: true
-
-  # Recovery behavior
-  recovery:
-    turn_angle: 0.785              # 45 degrees in radians
-    backup_distance: 0.1           # Backup distance (m)
+    # Background thread (not recommended for ARM)
+    use_background_thread: false
 
 # ============================================================================
 # Map Persistence
