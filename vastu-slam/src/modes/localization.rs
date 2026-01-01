@@ -41,7 +41,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::{LidarScan, Pose2D};
+use crate::core::{
+    ImuMeasurement, LidarScan, MotionFilter, MotionFilterConfig, Pose2D, PoseExtrapolator,
+    PoseExtrapolatorConfig,
+};
 use crate::grid::GridStorage;
 use crate::matching::{CorrelativeMatcher, CorrelativeMatcherConfig, ScanMatchResult};
 
@@ -91,6 +94,20 @@ pub struct LocalizerConfig {
     /// Default: 0.5 rad (~28.6°)
     #[serde(default = "default_max_angular_deviation")]
     pub max_angular_deviation: f32,
+
+    /// Optional pose extrapolator configuration for IMU fusion.
+    ///
+    /// When set, enables Cartographer-style pose extrapolation with
+    /// odometry (primary) and IMU (secondary) fusion.
+    #[serde(default)]
+    pub pose_extrapolator: Option<PoseExtrapolatorConfig>,
+
+    /// Optional motion filter configuration for scan insertion throttling.
+    ///
+    /// When set, only processes scans when the robot has moved enough
+    /// (distance, rotation, or time since last scan).
+    #[serde(default)]
+    pub motion_filter: Option<MotionFilterConfig>,
 }
 
 fn default_min_score() -> f32 {
@@ -110,6 +127,23 @@ impl Default for LocalizerConfig {
             min_score: default_min_score(),
             max_linear_deviation: default_max_linear_deviation(),
             max_angular_deviation: default_max_angular_deviation(),
+            pose_extrapolator: None,
+            motion_filter: None,
+        }
+    }
+}
+
+impl LocalizerConfig {
+    /// Create a config with motion filtering enabled (Cartographer-style).
+    ///
+    /// Uses default values for pose extrapolation and motion filtering:
+    /// - IMU rotation weight: 0.3 (70% odometry, 30% IMU)
+    /// - Motion filter: insert when moved 20cm, rotated 2°, or 5s elapsed
+    pub fn with_motion_filtering() -> Self {
+        Self {
+            pose_extrapolator: Some(PoseExtrapolatorConfig::default()),
+            motion_filter: Some(MotionFilterConfig::default()),
+            ..Default::default()
         }
     }
 }
@@ -126,6 +160,7 @@ impl Default for LocalizerConfig {
 ///
 /// - `converged=true`: Match accepted, `pose` is scan-corrected
 /// - `converged=false`: Match rejected, `pose` is odometry fallback
+/// - `skipped=true`: Scan was skipped by motion filter (not enough motion)
 #[derive(Clone, Debug)]
 pub struct LocalizationResult {
     /// Estimated robot pose in world frame.
@@ -138,6 +173,7 @@ pub struct LocalizationResult {
     ///
     /// Higher values indicate better alignment with the map.
     /// Typical good matches: 0.6 - 0.9
+    /// Returns 0.0 if skipped.
     pub score: f32,
 
     /// Whether the localization converged successfully.
@@ -154,8 +190,29 @@ pub struct LocalizationResult {
     /// which may indicate a false match or robot kidnapping.
     pub within_bounds: bool,
 
+    /// Whether the scan was skipped by the motion filter.
+    ///
+    /// True if the robot hasn't moved enough since the last scan
+    /// to warrant processing this scan.
+    pub skipped: bool,
+
     /// Raw scan match result for detailed diagnostics.
+    /// Contains a default value if skipped.
     pub match_result: ScanMatchResult,
+}
+
+impl LocalizationResult {
+    /// Create a result indicating the scan was skipped due to motion filter.
+    pub fn skipped(pose: Pose2D) -> Self {
+        Self {
+            pose,
+            score: 0.0,
+            converged: false,
+            within_bounds: true,
+            skipped: true,
+            match_result: ScanMatchResult::failed(pose),
+        }
+    }
 }
 
 /// Localizer for known maps.
@@ -208,6 +265,12 @@ pub struct Localizer {
 
     /// Whether we have a valid initial pose.
     initialized: bool,
+
+    /// Optional pose extrapolator for IMU fusion (Cartographer-style).
+    pose_extrapolator: Option<PoseExtrapolator>,
+
+    /// Optional motion filter for scan insertion throttling.
+    motion_filter: Option<MotionFilter>,
 }
 
 impl Localizer {
@@ -215,12 +278,25 @@ impl Localizer {
     pub fn new(map: GridStorage, config: LocalizerConfig) -> Self {
         let matcher = CorrelativeMatcher::new(config.matcher.clone());
 
+        // Create optional motion filtering components
+        let pose_extrapolator = config
+            .pose_extrapolator
+            .as_ref()
+            .map(|c| PoseExtrapolator::new(c.clone()));
+
+        let motion_filter = config
+            .motion_filter
+            .as_ref()
+            .map(|c| MotionFilter::new(c.clone()));
+
         Self {
             map,
             matcher,
             config,
             pose: Pose2D::default(),
             initialized: false,
+            pose_extrapolator,
+            motion_filter,
         }
     }
 
@@ -228,6 +304,22 @@ impl Localizer {
     pub fn set_initial_pose(&mut self, pose: Pose2D) {
         self.pose = pose;
         self.initialized = true;
+
+        // Initialize pose extrapolator if present
+        if let Some(ref mut extrapolator) = self.pose_extrapolator {
+            extrapolator.set_initial_pose(pose, 0);
+        }
+    }
+
+    /// Set the initial pose estimate with timestamp
+    pub fn set_initial_pose_with_timestamp(&mut self, pose: Pose2D, timestamp_us: u64) {
+        self.pose = pose;
+        self.initialized = true;
+
+        // Initialize pose extrapolator if present
+        if let Some(ref mut extrapolator) = self.pose_extrapolator {
+            extrapolator.set_initial_pose(pose, timestamp_us);
+        }
     }
 
     /// Get current pose estimate
@@ -245,7 +337,37 @@ impl Localizer {
         &self.map
     }
 
-    /// Localize using a lidar scan
+    /// Check if motion filtering is enabled
+    pub fn has_motion_filtering(&self) -> bool {
+        self.pose_extrapolator.is_some() || self.motion_filter.is_some()
+    }
+
+    /// Get a reference to the pose extrapolator (if enabled)
+    pub fn pose_extrapolator(&self) -> Option<&PoseExtrapolator> {
+        self.pose_extrapolator.as_ref()
+    }
+
+    /// Get a mutable reference to the pose extrapolator (if enabled)
+    pub fn pose_extrapolator_mut(&mut self) -> Option<&mut PoseExtrapolator> {
+        self.pose_extrapolator.as_mut()
+    }
+
+    /// Get a reference to the motion filter (if enabled)
+    pub fn motion_filter(&self) -> Option<&MotionFilter> {
+        self.motion_filter.as_ref()
+    }
+
+    /// Feed an IMU measurement to the pose extrapolator.
+    ///
+    /// Call this at high rate (~110 Hz) to keep the IMU tracker updated.
+    /// Does nothing if pose extrapolator is not configured.
+    pub fn add_imu(&mut self, imu: &ImuMeasurement) {
+        if let Some(ref mut extrapolator) = self.pose_extrapolator {
+            extrapolator.add_imu(imu);
+        }
+    }
+
+    /// Localize using a lidar scan (basic version, backward compatible)
     ///
     /// # Arguments
     /// * `scan` - The lidar scan to match
@@ -285,6 +407,95 @@ impl Localizer {
             score: match_result.score,
             converged,
             within_bounds,
+            skipped: false,
+            match_result,
+        }
+    }
+
+    /// Localize using a lidar scan with IMU fusion and motion filtering.
+    ///
+    /// This is the full-featured version that uses:
+    /// - Pose extrapolation with IMU fusion for better prediction
+    /// - Motion filtering to skip redundant scans
+    ///
+    /// # Arguments
+    /// * `scan` - The lidar scan to match
+    /// * `odom_delta` - Optional odometry delta since last localization
+    /// * `timestamp_us` - Timestamp in microseconds
+    ///
+    /// # Returns
+    /// Localization result with pose estimate and confidence.
+    /// Returns `skipped=true` if motion filter rejected the scan.
+    ///
+    /// # Note
+    /// Call `add_imu()` at high rate (~110 Hz) before calling this method
+    /// to keep the IMU tracker updated.
+    pub fn localize_with_timestamp(
+        &mut self,
+        scan: &LidarScan,
+        odom_delta: Option<Pose2D>,
+        timestamp_us: u64,
+    ) -> LocalizationResult {
+        // Feed odometry to pose extrapolator if available
+        if let Some(ref mut extrapolator) = self.pose_extrapolator
+            && let Some(delta) = odom_delta
+        {
+            extrapolator.add_odometry(delta, timestamp_us);
+        }
+
+        // Get predicted pose (uses filtered motion if extrapolator is available)
+        let predicted_pose = if let Some(ref extrapolator) = self.pose_extrapolator {
+            extrapolator.extrapolate_pose(timestamp_us)
+        } else if let Some(delta) = odom_delta {
+            self.pose.compose(&delta)
+        } else {
+            self.pose
+        };
+
+        // Check motion filter (should we process this scan?)
+        if let Some(ref filter) = self.motion_filter
+            && !filter.should_insert(predicted_pose, timestamp_us)
+        {
+            // Update pose with prediction even if skipped
+            self.pose = predicted_pose;
+            return LocalizationResult::skipped(predicted_pose);
+        }
+
+        // Match scan against map
+        let match_result = self.matcher.match_scan(scan, predicted_pose, &self.map);
+
+        // Check if match is within acceptable bounds
+        let within_bounds = self.check_deviation(&predicted_pose, &match_result.pose);
+
+        // Determine if we accept this match
+        let converged =
+            match_result.converged && match_result.score >= self.config.min_score && within_bounds;
+
+        // Update pose if converged
+        if converged {
+            self.pose = match_result.pose;
+            self.initialized = true;
+
+            // Update pose extrapolator with matched pose
+            if let Some(ref mut extrapolator) = self.pose_extrapolator {
+                extrapolator.add_pose(match_result.pose, timestamp_us);
+            }
+        } else if odom_delta.is_some() {
+            // Fall back to prediction
+            self.pose = predicted_pose;
+        }
+
+        // Update motion filter
+        if let Some(ref mut filter) = self.motion_filter {
+            filter.accept(self.pose, timestamp_us);
+        }
+
+        LocalizationResult {
+            pose: self.pose,
+            score: match_result.score,
+            converged,
+            within_bounds,
+            skipped: false,
             match_result,
         }
     }

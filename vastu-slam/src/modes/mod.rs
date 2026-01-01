@@ -40,6 +40,48 @@
 //! }
 //! ```
 //!
+//! # Localization with IMU Fusion
+//!
+//! For improved accuracy, enable Cartographer-style motion filtering with IMU:
+//!
+//! ```ignore
+//! use vastu_slam::modes::{Localizer, LocalizerConfig};
+//! use vastu_slam::core::ImuMeasurement;
+//!
+//! // Enable motion filtering (includes pose extrapolator + motion filter)
+//! let config = LocalizerConfig::with_motion_filtering();
+//! let mut localizer = Localizer::new(map, config);
+//! localizer.set_initial_pose_with_timestamp(Pose2D::new(0.0, 0.0, 0.0), 0);
+//!
+//! // Feed IMU at high rate (~110 Hz) - call this frequently
+//! localizer.add_imu(&ImuMeasurement::from_raw(timestamp_us, gyro, accel));
+//!
+//! // Localize with timestamp for motion filtering
+//! let result = localizer.localize_with_timestamp(&scan, Some(odom_delta), timestamp_us);
+//!
+//! if result.skipped {
+//!     // Motion filter rejected scan (not enough motion)
+//!     println!("Scan skipped, pose: {:?}", result.pose);
+//! } else if result.converged {
+//!     println!("Localized at: {:?}", result.pose);
+//! }
+//! ```
+//!
+//! ## Motion Filtering Algorithm
+//!
+//! The motion filter uses Cartographer-style thresholds:
+//! - **Distance**: Insert scan if moved > 0.2m (default)
+//! - **Rotation**: Insert scan if rotated > 2° (default)
+//! - **Time**: Insert scan if > 5 seconds since last (default)
+//!
+//! ## IMU Fusion Algorithm
+//!
+//! The pose extrapolator combines odometry and IMU:
+//! - **Translation**: 100% from wheel odometry (most accurate for ground robots)
+//! - **Rotation**: Weighted blend (default: 70% odometry + 30% IMU)
+//!
+//! This prioritizes wheel encoders while using IMU to smooth rotation estimates.
+//!
 //! # Choosing a Mode
 //!
 //! **Use Localization Mode when:**

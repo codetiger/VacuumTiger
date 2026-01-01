@@ -18,6 +18,8 @@
 //! - **Scan Matching**: Correlative and branch-and-bound scan-to-map alignment
 //! - **Loop Closure**: LiDAR-IRIS descriptors for place recognition
 //! - **Submap Architecture**: Cartographer-style reversible map updates
+//! - **IMU Fusion**: Cartographer-style pose extrapolation with odometry + IMU blending
+//! - **Motion Filtering**: Scan insertion throttling based on distance/rotation/time
 //!
 //! ## Quick Start
 //!
@@ -34,6 +36,27 @@
 //! let result = map.observe_lidar(&scan, pose);
 //!
 //! println!("Updated {} cells", result.cells_updated);
+//! ```
+//!
+//! ## Localization with IMU Fusion
+//!
+//! ```rust,ignore
+//! use vastu_slam::modes::{Localizer, LocalizerConfig};
+//! use vastu_slam::core::ImuMeasurement;
+//!
+//! // Create localizer with motion filtering enabled
+//! let config = LocalizerConfig::with_motion_filtering();
+//! let mut localizer = Localizer::new(map, config);
+//! localizer.set_initial_pose(Pose2D::new(0.0, 0.0, 0.0));
+//!
+//! // Feed IMU at high rate (~110 Hz)
+//! localizer.add_imu(&ImuMeasurement::from_raw(timestamp_us, gyro, accel));
+//!
+//! // Localize with motion filtering
+//! let result = localizer.localize_with_timestamp(&scan, Some(odom_delta), timestamp_us);
+//! if !result.skipped && result.converged {
+//!     println!("Localized at {:?}", result.pose);
+//! }
 //! ```
 //!
 //! ## Coordinate System
@@ -72,8 +95,9 @@ pub mod evaluation;
 
 // Re-export commonly used types
 pub use core::{
-    BumperSensors, Cell, CellType, CliffSensors, GridCoord, LidarScan, MotionModel, Odometry,
-    Pose2D, SensorObservation, WorldPoint,
+    BumperSensors, Cell, CellType, CliffSensors, GridCoord, ImuMeasurement, ImuTracker,
+    ImuTrackerConfig, LidarScan, MotionFilter, MotionFilterConfig, MotionModel, Odometry, Pose2D,
+    PoseExtrapolator, PoseExtrapolatorConfig, SensorObservation, WorldPoint,
 };
 
 pub use grid::{CellCounts, ConfigError, GridConfig, GridStorage, MapConfig, SensorConfig};

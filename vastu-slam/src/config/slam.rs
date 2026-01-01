@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::{MotionFilterConfig, PoseExtrapolatorConfig};
 use crate::grid::LogOddsConfig;
 use crate::matching::{
     BackgroundOptimizerConfig, CorrelativeMatcherConfig, LoopClosureConfig, PoseGraphConfig,
@@ -29,4 +30,18 @@ pub struct SlamSection {
     /// Background optimizer configuration
     #[serde(default)]
     pub background_optimizer: BackgroundOptimizerConfig,
+
+    /// Pose extrapolator configuration for IMU fusion.
+    ///
+    /// When set, enables Cartographer-style pose extrapolation with
+    /// odometry (primary) and IMU (secondary) fusion.
+    #[serde(default)]
+    pub pose_extrapolator: Option<PoseExtrapolatorConfig>,
+
+    /// Motion filter configuration for scan insertion throttling.
+    ///
+    /// When set, only processes scans when the robot has moved enough
+    /// (distance, rotation, or time since last scan).
+    #[serde(default)]
+    pub motion_filter: Option<MotionFilterConfig>,
 }

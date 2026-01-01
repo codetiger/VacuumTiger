@@ -355,6 +355,125 @@ impl BumperSensors {
     }
 }
 
+/// IMU measurement from inertial measurement unit (6-axis).
+///
+/// All values are in SI units (m/s², rad/s). The coordinate frame follows
+/// ROS REP-103: X forward, Y left, Z up.
+///
+/// # Conversion from SangamIO raw i16 values
+///
+/// SangamIO streams raw i16 values that need conversion:
+/// - gyro: `raw_i16 / 1000.0` → rad/s
+/// - accel: `raw_i16 / 16384.0 * 9.81` → m/s²
+///
+/// Use [`ImuMeasurement::from_raw`] for automatic conversion.
+///
+/// # Usage for 2D SLAM
+///
+/// For 2D ground robots, primarily use:
+/// - `gyro_z`: Yaw rate (rotation around vertical axis)
+/// - `accel_x`, `accel_y`: For gravity estimation (tilt detection)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use vastu_slam::core::ImuMeasurement;
+///
+/// // From SangamIO raw values
+/// let imu = ImuMeasurement::from_raw(
+///     timestamp_us,
+///     [gyro_x_raw, gyro_y_raw, gyro_z_raw],
+///     [accel_x_raw, accel_y_raw, accel_z_raw],
+/// );
+///
+/// // Yaw rate for rotation estimation
+/// let yaw_rate = imu.gyro_z;  // rad/s, CCW positive
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ImuMeasurement {
+    /// Timestamp in microseconds since epoch
+    pub timestamp_us: u64,
+    /// Linear acceleration X in m/s² (forward)
+    pub accel_x: f32,
+    /// Linear acceleration Y in m/s² (left)
+    pub accel_y: f32,
+    /// Linear acceleration Z in m/s² (up, includes gravity: ~+9.81 when level)
+    pub accel_z: f32,
+    /// Angular velocity X in rad/s (roll rate, rotation around forward axis)
+    pub gyro_x: f32,
+    /// Angular velocity Y in rad/s (pitch rate, rotation around left axis)
+    pub gyro_y: f32,
+    /// Angular velocity Z in rad/s (yaw rate, rotation around up axis, CCW positive)
+    /// This is the PRIMARY value for 2D SLAM rotation estimation.
+    pub gyro_z: f32,
+}
+
+/// Scale factor for converting raw gyroscope i16 to rad/s
+const GYRO_SCALE: f32 = 1000.0;
+
+/// Scale factor for converting raw accelerometer i16 to g units
+const ACCEL_SCALE: f32 = 16384.0;
+
+/// Standard gravity in m/s²
+const G: f32 = 9.81;
+
+impl ImuMeasurement {
+    /// Create a new IMU measurement with SI units
+    pub fn new(timestamp_us: u64, accel: [f32; 3], gyro: [f32; 3]) -> Self {
+        Self {
+            timestamp_us,
+            accel_x: accel[0],
+            accel_y: accel[1],
+            accel_z: accel[2],
+            gyro_x: gyro[0],
+            gyro_y: gyro[1],
+            gyro_z: gyro[2],
+        }
+    }
+
+    /// Create from SangamIO raw i16 values
+    ///
+    /// Converts raw sensor values to SI units:
+    /// - gyro: raw / 1000.0 → rad/s
+    /// - accel: raw / 16384.0 * 9.81 → m/s²
+    pub fn from_raw(timestamp_us: u64, gyro: [i16; 3], accel: [i16; 3]) -> Self {
+        Self {
+            timestamp_us,
+            gyro_x: gyro[0] as f32 / GYRO_SCALE,
+            gyro_y: gyro[1] as f32 / GYRO_SCALE,
+            gyro_z: gyro[2] as f32 / GYRO_SCALE,
+            accel_x: accel[0] as f32 / ACCEL_SCALE * G,
+            accel_y: accel[1] as f32 / ACCEL_SCALE * G,
+            accel_z: accel[2] as f32 / ACCEL_SCALE * G,
+        }
+    }
+
+    /// Get acceleration as array [x, y, z] in m/s²
+    #[inline]
+    pub fn accel(&self) -> [f32; 3] {
+        [self.accel_x, self.accel_y, self.accel_z]
+    }
+
+    /// Get angular velocity as array [x, y, z] in rad/s
+    #[inline]
+    pub fn gyro(&self) -> [f32; 3] {
+        [self.gyro_x, self.gyro_y, self.gyro_z]
+    }
+
+    /// Get acceleration magnitude in m/s²
+    #[inline]
+    pub fn accel_magnitude(&self) -> f32 {
+        (self.accel_x * self.accel_x + self.accel_y * self.accel_y + self.accel_z * self.accel_z)
+            .sqrt()
+    }
+
+    /// Get angular velocity magnitude in rad/s
+    #[inline]
+    pub fn gyro_magnitude(&self) -> f32 {
+        (self.gyro_x * self.gyro_x + self.gyro_y * self.gyro_y + self.gyro_z * self.gyro_z).sqrt()
+    }
+}
+
 /// Combined sensor observation for a single timestep.
 ///
 /// Bundles all sensor readings taken at approximately the same time,
@@ -365,6 +484,7 @@ impl BumperSensors {
 ///
 /// Not all sensors report at the same rate:
 /// - **Lidar**: ~5 Hz (every ~200ms) - may be `None` on most ticks
+/// - **IMU**: ~110 Hz - optional, for motion filtering
 /// - **Cliff/Bumper**: ~110 Hz - always available
 ///
 /// # Processing Order
@@ -383,6 +503,8 @@ pub struct SensorObservation {
     pub cliffs: CliffSensors,
     /// Bumper sensor states (event-driven, only true on collision)
     pub bumpers: BumperSensors,
+    /// IMU measurement (optional, ~110 Hz, for motion filtering)
+    pub imu: Option<ImuMeasurement>,
     /// Timestamp in microseconds since epoch (for temporal ordering)
     pub timestamp_us: u64,
 }
@@ -395,6 +517,7 @@ impl SensorObservation {
             lidar: None,
             cliffs: CliffSensors::SAFE,
             bumpers: BumperSensors::CLEAR,
+            imu: None,
             timestamp_us,
         }
     }
@@ -406,6 +529,36 @@ impl SensorObservation {
             lidar: Some(lidar),
             cliffs: CliffSensors::SAFE,
             bumpers: BumperSensors::CLEAR,
+            imu: None,
+            timestamp_us,
+        }
+    }
+
+    /// Create an observation with lidar and IMU
+    pub fn with_lidar_and_imu(
+        pose: Pose2D,
+        lidar: LidarScan,
+        imu: ImuMeasurement,
+        timestamp_us: u64,
+    ) -> Self {
+        Self {
+            pose,
+            lidar: Some(lidar),
+            cliffs: CliffSensors::SAFE,
+            bumpers: BumperSensors::CLEAR,
+            imu: Some(imu),
+            timestamp_us,
+        }
+    }
+
+    /// Create an observation with IMU only (no lidar)
+    pub fn with_imu(pose: Pose2D, imu: ImuMeasurement, timestamp_us: u64) -> Self {
+        Self {
+            pose,
+            lidar: None,
+            cliffs: CliffSensors::SAFE,
+            bumpers: BumperSensors::CLEAR,
+            imu: Some(imu),
             timestamp_us,
         }
     }
@@ -413,6 +566,11 @@ impl SensorObservation {
     /// Any sensor triggered (cliff or bumper)?
     pub fn any_triggered(&self) -> bool {
         self.cliffs.any_triggered() || self.bumpers.any_triggered()
+    }
+
+    /// Check if IMU data is available
+    pub fn has_imu(&self) -> bool {
+        self.imu.is_some()
     }
 }
 
@@ -511,5 +669,62 @@ mod tests {
         // Forward in robot frame (which is +Y in world) should be at (0, 1)
         assert!((world_points[0].x - 0.0).abs() < 1e-5);
         assert!((world_points[0].y - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_imu_measurement_from_raw() {
+        // Test conversion from raw i16 values
+        let imu = ImuMeasurement::from_raw(
+            1000000,         // 1 second timestamp
+            [1000, 0, -500], // gyro raw: 1 rad/s X, 0 Y, -0.5 rad/s Z
+            [0, 0, 16384],   // accel raw: 0, 0, 1g (level)
+        );
+
+        // Check gyro conversion: raw / 1000.0 = rad/s
+        assert!((imu.gyro_x - 1.0).abs() < 1e-6);
+        assert!((imu.gyro_y - 0.0).abs() < 1e-6);
+        assert!((imu.gyro_z - (-0.5)).abs() < 1e-6);
+
+        // Check accel conversion: raw / 16384.0 * 9.81 = m/s²
+        assert!((imu.accel_x - 0.0).abs() < 1e-6);
+        assert!((imu.accel_y - 0.0).abs() < 1e-6);
+        assert!((imu.accel_z - 9.81).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_imu_measurement_new() {
+        let imu = ImuMeasurement::new(
+            500000,
+            [0.0, 0.0, 9.81], // accel
+            [0.1, 0.0, -0.2], // gyro
+        );
+
+        assert_eq!(imu.timestamp_us, 500000);
+        assert_eq!(imu.accel(), [0.0, 0.0, 9.81]);
+        assert_eq!(imu.gyro(), [0.1, 0.0, -0.2]);
+    }
+
+    #[test]
+    fn test_imu_measurement_magnitudes() {
+        let imu = ImuMeasurement::new(
+            0,
+            [3.0, 4.0, 0.0], // accel: magnitude = 5.0
+            [0.0, 0.0, 1.0], // gyro: magnitude = 1.0
+        );
+
+        assert!((imu.accel_magnitude() - 5.0).abs() < 1e-6);
+        assert!((imu.gyro_magnitude() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_sensor_observation_with_imu() {
+        let pose = Pose2D::new(1.0, 2.0, 0.5);
+        let imu = ImuMeasurement::default();
+
+        let obs = SensorObservation::with_imu(pose, imu, 123456);
+
+        assert!(obs.has_imu());
+        assert!(obs.lidar.is_none());
+        assert_eq!(obs.timestamp_us, 123456);
     }
 }

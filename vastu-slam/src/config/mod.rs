@@ -16,6 +16,9 @@
 //! // Convert to runtime configs
 //! let map_config = config.to_map_config();
 //! let matcher_config = config.correlative_matcher_config();
+//!
+//! // Create localizer config with motion filtering (if configured)
+//! let localizer_config = config.to_localizer_config();
 //! ```
 //!
 //! ## Configuration Sections
@@ -24,7 +27,7 @@
 //! |---------|-------------|
 //! | [`GridSection`] | Grid dimensions, resolution, origin |
 //! | [`SensorSection`] | Robot geometry, LiDAR, cliff, bumper |
-//! | [`SlamSection`] | Matcher, loop closure, pose graph settings |
+//! | [`SlamSection`] | Matcher, loop closure, pose graph, motion filtering |
 //! | [`PersistenceSection`] | Output format and directory |
 //!
 //! ## Example YAML
@@ -45,6 +48,38 @@
 //!   correlative:
 //!     enabled: true
 //!     multi_resolution: true
+//!
+//!   # Optional: IMU fusion for improved pose estimation
+//!   pose_extrapolator:
+//!     pose_queue_duration: 0.5        # seconds
+//!     odom_queue_duration: 0.5        # seconds
+//!     imu_gravity_time_constant: 10.0 # seconds
+//!     imu_rotation_weight: 0.3        # 0.0=odom only, 1.0=IMU only
+//!
+//!   # Optional: Scan insertion throttling
+//!   motion_filter:
+//!     max_time_seconds: 5.0           # insert at least every 5s
+//!     max_distance_meters: 0.2        # insert if moved 20cm
+//!     max_angle_radians: 0.035        # insert if rotated ~2°
+//! ```
+//!
+//! ## Motion Filtering
+//!
+//! Enable Cartographer-style motion filtering for improved accuracy:
+//!
+//! ```rust,ignore
+//! use vastu_slam::config::VastuConfig;
+//!
+//! let config = VastuConfig::load_default()?;
+//!
+//! // Check if motion filtering is enabled
+//! if config.has_motion_filtering() {
+//!     let extrapolator = config.pose_extrapolator_config();
+//!     let filter = config.motion_filter_config();
+//! }
+//!
+//! // Create complete localizer config
+//! let localizer_config = config.to_localizer_config();
 //! ```
 
 mod defaults;
