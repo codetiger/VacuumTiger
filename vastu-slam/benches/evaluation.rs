@@ -6,6 +6,8 @@ use vastu_slam::evaluation::{
     AbsoluteTrajectoryError, GroundTruthConfig, GroundTruthRelations, RelationsMetrics,
     RelativePoseError,
 };
+use vastu_slam::matching::loop_closure::LidarIris;
+use vastu_slam::LidarScan;
 
 fn create_trajectory(n: usize, spacing: f32) -> Vec<Pose2D> {
     (0..n)
@@ -111,11 +113,37 @@ fn bench_rpe(c: &mut Criterion) {
     group.finish();
 }
 
+fn create_test_scan(n: usize) -> LidarScan {
+    use std::f32::consts::PI;
+    let angles: Vec<f32> = (0..n).map(|i| -PI + i as f32 * 2.0 * PI / n as f32).collect();
+    let ranges: Vec<f32> = angles.iter().map(|a| 2.0 + (a * 3.0).sin() * 0.5).collect();
+    LidarScan::new(ranges, angles, 0.15, 8.0)
+}
+
+fn bench_descriptor_best_match(c: &mut Criterion) {
+    // Create two different scans
+    let scan1 = create_test_scan(360);
+    let scan2 = create_test_scan(360);
+
+    let desc1 = LidarIris::from_scan(&scan1);
+    let desc2 = LidarIris::from_scan(&scan2);
+
+    // Note: Parallelization was tested but sequential is faster (~19µs vs ~45µs)
+    // because only 20 coarse rotations - too few for parallel overhead to pay off
+    c.bench_function("descriptor_best_match", |b| {
+        b.iter(|| {
+            let result = black_box(&desc1).best_match(black_box(&desc2));
+            black_box(result)
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_ground_truth_generation,
     bench_relations_metrics,
     bench_ate,
-    bench_rpe
+    bench_rpe,
+    bench_descriptor_best_match
 );
 criterion_main!(benches);
