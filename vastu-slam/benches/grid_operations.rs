@@ -2,8 +2,8 @@
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::f32::consts::PI;
-use vastu_slam::{LidarScan, MapConfig, OccupancyGridMap, Pose2D};
 use vastu_slam::matching::PrecomputedGrids;
+use vastu_slam::{LidarScan, MapConfig, OccupancyGridMap, Pose2D};
 
 /// Create a room scan for benchmarking.
 fn room_scan(

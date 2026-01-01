@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 VacuumTiger is an open-source robotic vacuum firmware project for the CRL-200S hardware platform. The project consists of three main components:
 
 1. **SangamIO**: A daemon providing hardware abstraction and real-time control via TCP/UDP streaming
-2. **DhruvaSLAM**: A multi-threaded 2D SLAM daemon for localization and mapping
+2. **VastuSLAM**: A high-performance 2D SLAM library for robot vacuum cleaners
 3. **Drishti**: Python visualization and control client for monitoring and commanding the robot
 
 **Target Platform**: Embedded Linux (ARM) - Allwinner A33 running Tina Linux
@@ -126,7 +126,7 @@ All messages use length-prefixed framing with Protobuf payloads:
 
 ### Proto Schema
 
-See `sangam-io/proto/sangamio.proto` for SangamIO messages (sensors, commands) and `dhruva-slam/proto/dhruva.proto` for SLAM output messages (odometry, map, scan).
+See `sangam-io/proto/sangamio.proto` for SangamIO messages (sensors, commands).
 
 ### Topics (UDP Streaming)
 
@@ -256,20 +256,22 @@ VacuumTiger/
 │   ├── sangamio.toml         # Hardware configuration
 │   └── mock.toml             # Simulation configuration
 │
-├── dhruva-slam/              # 2D SLAM daemon
+├── vastu-slam/               # High-performance 2D SLAM library
 │   ├── src/
-│   │   ├── main.rs           # Entry point, multi-threaded daemon
-│   │   ├── core/             # Foundation types (Pose2D, PointCloud2D)
-│   │   ├── sensors/          # Odometry fusion, lidar preprocessing
-│   │   ├── algorithms/       # Matching, mapping, planning, descriptors
-│   │   ├── engine/           # SLAM orchestration, pose graph
-│   │   ├── io/               # SangamIO client, streaming, bags
-│   │   ├── state/            # Multi-threaded state management
-│   │   ├── threads/          # SLAM, publisher, exploration, navigation
-│   │   ├── exploration/      # Frontier-based exploration
-│   │   └── navigation/       # Path planning and execution
-│   ├── proto/                # Protobuf schema (dhruva.proto)
-│   └── dhruva-slam.toml      # Runtime configuration
+│   │   ├── lib.rs            # Library entry point
+│   │   ├── core/             # Foundation types (Pose2D, WorldPoint, GridCoord, sensors)
+│   │   ├── grid/             # Occupancy grid storage (SoA layout, log-odds updates)
+│   │   ├── matching/         # Scan matching (correlative, branch-bound, loop closure)
+│   │   ├── submap/           # Submap manager, pose graph, multi-submap matching
+│   │   ├── config/           # YAML configuration loading
+│   │   ├── io/               # Persistence (.vastu, .pgm, .svg formats)
+│   │   ├── modes/            # Operation modes (localization-only)
+│   │   └── evaluation/       # Cartographer-style evaluation metrics
+│   ├── configs/              # YAML configuration files
+│   ├── maps/                 # Test maps (PGM format)
+│   ├── scenarios/            # Test scenarios (YAML)
+│   ├── benches/              # Performance benchmarks
+│   └── tests/                # Integration tests
 │
 └── drishti/                  # Python visualization client
     ├── drishti.py           # Console client
@@ -410,19 +412,18 @@ python drishti.py --robot 192.168.68.101 --verbose
 - **v0.2.0**: Daemon architecture, performance optimizations
 - **v0.1.0**: Initial release with basic functionality
 
-### DhruvaSLAM
-- **v0.1.0**: Multi-threaded SLAM daemon with exploration and navigation
+### VastuSLAM
+- **v0.1.0**: High-performance 2D SLAM library with scan matching, submap architecture, and loop closure
 
 ## Documentation References
 
 - **sangam-io/README.md**: SangamIO daemon documentation
 - **sangam-io/COMMANDS.md**: GD32 command reference with TCP API
 - **sangam-io/SENSORSTATUS.md**: Sensor packet byte layout
-- **dhruva-slam/README.md**: SLAM daemon documentation
-- **dhruva-slam/src/*/README.md**: Module-specific documentation (core, sensors, algorithms, engine, io)
+- **vastu-slam/README.md**: VastuSLAM library documentation
+- **vastu-slam/src/*/README.md**: Module-specific documentation (core, grid, matching, submap, config, io, modes, evaluation)
 - **drishti/README.md**: Python client documentation
 - **protocol-mitm/README.md**: MITM reverse engineering tools
-- **slam-test/README.md**: SLAM integration test framework
 
 ## Future Roadmap
 

@@ -1,13 +1,13 @@
 //! Benchmark evaluation metrics performance.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use vastu_slam::LidarScan;
 use vastu_slam::Pose2D;
 use vastu_slam::evaluation::{
     AbsoluteTrajectoryError, GroundTruthConfig, GroundTruthRelations, RelationsMetrics,
     RelativePoseError,
 };
 use vastu_slam::matching::loop_closure::LidarIris;
-use vastu_slam::LidarScan;
 
 fn create_trajectory(n: usize, spacing: f32) -> Vec<Pose2D> {
     (0..n)
@@ -115,7 +115,9 @@ fn bench_rpe(c: &mut Criterion) {
 
 fn create_test_scan(n: usize) -> LidarScan {
     use std::f32::consts::PI;
-    let angles: Vec<f32> = (0..n).map(|i| -PI + i as f32 * 2.0 * PI / n as f32).collect();
+    let angles: Vec<f32> = (0..n)
+        .map(|i| -PI + i as f32 * 2.0 * PI / n as f32)
+        .collect();
     let ranges: Vec<f32> = angles.iter().map(|a| 2.0 + (a * 3.0).sin() * 0.5).collect();
     LidarScan::new(ranges, angles, 0.15, 8.0)
 }

@@ -196,6 +196,7 @@ Priority (highest to lowest):
 | [`config`](src/config/) | YAML configuration loading with sensible defaults | [README](src/config/README.md) |
 | [`io`](src/io/) | Persistence: native .vastu format, ROS .pgm export, SVG visualization | [README](src/io/README.md) |
 | [`modes`](src/modes/) | Operation modes: localization-only (no map updates) | [README](src/modes/README.md) |
+| [`evaluation`](src/evaluation/) | Cartographer-style evaluation: ATE, RPE, pose relations metrics | [README](src/evaluation/README.md) |
 
 ## Coordinate System
 
