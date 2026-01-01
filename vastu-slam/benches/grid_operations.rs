@@ -3,6 +3,7 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use std::f32::consts::PI;
 use vastu_slam::{LidarScan, MapConfig, OccupancyGridMap, Pose2D};
+use vastu_slam::matching::PrecomputedGrids;
 
 /// Create a room scan for benchmarking.
 fn room_scan(
@@ -140,10 +141,34 @@ fn bench_coverage_stats(c: &mut Criterion) {
     });
 }
 
+fn bench_grid_pyramid(c: &mut Criterion) {
+    let config = MapConfig::default();
+    let mut map = OccupancyGridMap::new(config);
+
+    // Build up a map with some structure
+    for i in 0..20 {
+        let angle = i as f32 * 0.2;
+        let pose = Pose2D::new(3.0, 3.0, angle);
+        let scan = room_scan(6.0, 6.0, 3.0, 3.0, 360);
+        map.observe_lidar(&scan, pose);
+    }
+
+    let storage = map.storage();
+    let (w, h) = (storage.width(), storage.height());
+
+    c.bench_function(&format!("grid_pyramid_{}x{}", w, h), |b| {
+        b.iter(|| {
+            let grids = PrecomputedGrids::from_storage(black_box(storage));
+            black_box(grids)
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_map_update,
     bench_map_update_resolutions,
-    bench_coverage_stats
+    bench_coverage_stats,
+    bench_grid_pyramid
 );
 criterion_main!(benches);

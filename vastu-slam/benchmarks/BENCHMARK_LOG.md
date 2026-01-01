@@ -52,6 +52,38 @@ This file tracks performance, accuracy, and quality metrics across commits for o
 
 ## Benchmark History
 
+### Entry: 2026-01-01 (Grid Pyramid Parallelization)
+
+**Commit:** `db285a3`
+**Message:** Parallelize grid pyramid construction with rayon
+**Platform:** macOS Darwin 25.2.0 (Apple Silicon, 10 cores)
+**Rust:** nightly (portable_simd feature)
+
+#### Grid Pyramid Build Performance
+
+| Metric | Sequential | Parallel | Speedup |
+|--------|------------|----------|---------|
+| grid_pyramid_863x860 | 1230 µs | 670.43 µs | **1.84x** |
+
+#### Implementation Details
+
+| Component | Cells | Parallelization |
+|-----------|-------|-----------------|
+| Level 0 | 742K | `par_iter` over flat index |
+| Level 1 | 185K | `par_iter` within level |
+| Level 2 | 46K | `par_iter` within level |
+| Level 3 | 11K | `par_iter` within level |
+
+#### Notes
+
+- Parallelized Level 0 construction (742K cells with Gaussian exp())
+- Parallelized coarse levels within each level (max of 2x2 regions)
+- Levels must be built sequentially (level i depends on level i-1)
+- Also parallelized `update_from_storage()` for incremental updates
+- 1.84x speedup (45% improvement) on 10-core Apple Silicon
+
+---
+
 ### Entry: 2026-01-01 (Rayon Parallelization)
 
 **Commit:** `a1e3d28e6d5c77f0107a89ee95251ba8b59c1ad1`
@@ -243,6 +275,10 @@ scan_matching_360 (µs)
 ├─ 2026-01-01: 448.75 µs (parallel, 3.82x speedup)
 ├─ 2026-01-01: 1716.1 µs (sequential, inlined)
 ├─ 2025-12-31: 1793.7 µs (baseline)
+│
+grid_pyramid_863x860 (µs)
+├─ 2026-01-01: 670.43 µs (parallel, 1.84x speedup)
+├─ 2026-01-01: 1230 µs (sequential)
 │
 grid_update_360 (µs)
 ├─ 2025-12-31: 209.88 µs (baseline)

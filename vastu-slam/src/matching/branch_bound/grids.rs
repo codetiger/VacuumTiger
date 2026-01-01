@@ -3,6 +3,7 @@
 use crate::core::simd::{PointCloud, RotationMatrix4, transform_points_simd4};
 use crate::core::{GridCoord, Pose2D, WorldPoint};
 use crate::grid::GridStorage;
+use rayon::prelude::*;
 
 use super::config::NUM_LEVELS;
 
@@ -49,24 +50,28 @@ impl PrecomputedGrids {
         let sigma = resolution * 2.0;
         let two_sigma_sq = 2.0 * sigma * sigma;
 
-        for y in 0..height {
-            for x in 0..width {
+        // Parallel Level 0 construction: each cell is independent
+        levels[0] = (0..height * width)
+            .into_par_iter()
+            .map(|idx| {
+                let y = idx / width;
+                let x = idx % width;
                 let coord = GridCoord::new(x as i32, y as i32);
                 let distance = storage.get_distance(coord);
 
                 // Gaussian score: high near walls, low far from walls
-                let score = if distance < f32::MAX / 2.0 {
+                if distance < f32::MAX / 2.0 {
                     (-distance * distance / two_sigma_sq).exp()
                 } else {
                     // Unknown area - small positive score for exploration
                     0.1
-                };
-
-                levels[0].push(score);
-            }
-        }
+                }
+            })
+            .collect();
 
         // Build coarser levels by taking max of 2x2 regions
+        // Levels must be built sequentially (level i depends on level i-1)
+        // but within each level, cells are independent and can be parallelized
         for level in 1..NUM_LEVELS {
             let prev_width = widths[level - 1];
             let prev_height = heights[level - 1];
@@ -78,10 +83,16 @@ impl PrecomputedGrids {
             widths[level] = new_width;
             heights[level] = new_height;
 
-            let mut new_grid = vec![0.0f32; new_width * new_height];
+            // Reference to previous level for parallel access
+            let prev_level = &levels[level - 1];
 
-            for y in 0..new_height {
-                for x in 0..new_width {
+            // Parallel construction of this level
+            let new_grid: Vec<f32> = (0..new_height * new_width)
+                .into_par_iter()
+                .map(|idx| {
+                    let y = idx / new_width;
+                    let x = idx % new_width;
+
                     // Find max of 2x2 region in previous level
                     let mut max_val = 0.0f32;
 
@@ -91,15 +102,15 @@ impl PrecomputedGrids {
                             let py = y * 2 + dy;
 
                             if px < prev_width && py < prev_height {
-                                let idx = py * prev_width + px;
-                                max_val = max_val.max(levels[level - 1][idx]);
+                                let pidx = py * prev_width + px;
+                                max_val = max_val.max(prev_level[pidx]);
                             }
                         }
                     }
 
-                    new_grid[y * new_width + x] = max_val;
-                }
-            }
+                    max_val
+                })
+                .collect();
 
             levels[level] = new_grid;
         }
@@ -288,35 +299,41 @@ impl PrecomputedGrids {
             return;
         }
 
-        // Update level 0
+        // Update level 0 (parallel)
         let sigma = self.resolution * 2.0;
         let two_sigma_sq = 2.0 * sigma * sigma;
 
-        self.levels[0].clear();
-        for y in 0..height {
-            for x in 0..width {
+        self.levels[0] = (0..height * width)
+            .into_par_iter()
+            .map(|idx| {
+                let y = idx / width;
+                let x = idx % width;
                 let coord = GridCoord::new(x as i32, y as i32);
                 let distance = storage.get_distance(coord);
 
-                let score = if distance < f32::MAX / 2.0 {
+                if distance < f32::MAX / 2.0 {
                     (-distance * distance / two_sigma_sq).exp()
                 } else {
                     0.1
-                };
+                }
+            })
+            .collect();
 
-                self.levels[0].push(score);
-            }
-        }
-
-        // Rebuild coarser levels
+        // Rebuild coarser levels (parallel within each level)
         for level in 1..NUM_LEVELS {
             let prev_width = self.widths[level - 1];
             let prev_height = self.heights[level - 1];
             let new_width = self.widths[level];
             let new_height = self.heights[level];
 
-            for y in 0..new_height {
-                for x in 0..new_width {
+            let prev_level = &self.levels[level - 1];
+
+            self.levels[level] = (0..new_height * new_width)
+                .into_par_iter()
+                .map(|idx| {
+                    let y = idx / new_width;
+                    let x = idx % new_width;
+
                     let mut max_val = 0.0f32;
 
                     for dy in 0..2 {
@@ -325,15 +342,15 @@ impl PrecomputedGrids {
                             let py = y * 2 + dy;
 
                             if px < prev_width && py < prev_height {
-                                let idx = py * prev_width + px;
-                                max_val = max_val.max(self.levels[level - 1][idx]);
+                                let pidx = py * prev_width + px;
+                                max_val = max_val.max(prev_level[pidx]);
                             }
                         }
                     }
 
-                    self.levels[level][y * new_width + x] = max_val;
-                }
-            }
+                    max_val
+                })
+                .collect();
         }
     }
 

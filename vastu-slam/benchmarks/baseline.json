@@ -2,6 +2,34 @@
   "version": "1.0",
   "entries": [
     {
+      "commit": "db285a3",
+      "date": "2026-01-01T19:30:00+05:30",
+      "message": "Parallelize grid pyramid construction with rayon",
+      "platform": {
+        "os": "Darwin 25.2.0",
+        "arch": "arm64",
+        "rust": "nightly",
+        "cpu_cores": 10
+      },
+      "performance": {
+        "grid_pyramid": {
+          "863x860_sequential_us": 1230,
+          "863x860_parallel_us": 670.43,
+          "speedup": 1.84
+        }
+      },
+      "parallel_config": {
+        "rayon_version": "1.10",
+        "parallelization_target": "Level 0 cells + coarse level cells"
+      },
+      "notes": [
+        "Parallelized Level 0 construction (742K cells with Gaussian exp())",
+        "Parallelized coarse levels within each level (max of 2x2 regions)",
+        "Achieved 1.84x speedup (45% improvement) on 10-core Apple Silicon",
+        "Also parallelized update_from_storage() for incremental updates"
+      ]
+    },
+    {
       "commit": "a1e3d28e6d5c77f0107a89ee95251ba8b59c1ad1",
       "date": "2026-01-01T18:00:00+05:30",
       "message": "Add rayon parallelization for scan matching",
