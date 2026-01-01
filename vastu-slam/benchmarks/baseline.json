@@ -2,6 +2,75 @@
   "version": "1.0",
   "entries": [
     {
+      "commit": "5e1bf5c5e55295fd0ded132fafd90ec30efd1281",
+      "date": "2026-01-01T12:30:00+05:30",
+      "message": "Optimize scan matching with inlined scoring loop",
+      "platform": {
+        "os": "Darwin 25.2.0",
+        "arch": "arm64",
+        "rust": "nightly"
+      },
+      "performance": {
+        "scan_matching": {
+          "180_pts_us": 924.08,
+          "360_pts_us": 1724.9,
+          "720_pts_us": 5783.8
+        },
+        "grid_update": {
+          "180_pts_us": 94.35,
+          "360_pts_us": 187.74,
+          "720_pts_us": 371.95
+        },
+        "evaluation": {
+          "coverage_stats_us": 125.11,
+          "ate_100_us": 1.58,
+          "rpe_100_us": 3.10,
+          "relations_100_us": 59.37,
+          "ground_truth_100_us": 20.03
+        }
+      },
+      "throughput": {
+        "scan_matching_360_per_sec": 580,
+        "grid_update_360_per_sec": 5326,
+        "combined_360_per_sec": 523,
+        "realtime_factor_5hz": 104
+      },
+      "tests": {
+        "unit_tests": {
+          "passed": 195,
+          "total": 195
+        },
+        "accuracy_tests": {
+          "passed": 10,
+          "total": 10
+        },
+        "performance_tests": {
+          "passed": 6,
+          "total": 6
+        },
+        "quality_tests": {
+          "passed": 10,
+          "total": 10
+        },
+        "all_pass": true
+      },
+      "targets": {
+        "scan_matching_360_us": 3000,
+        "grid_update_360_us": 400,
+        "ate_trans_m": 0.01,
+        "ate_rot_deg": 0.5,
+        "loop_closure_precision": 0.9,
+        "loop_closure_recall": 0.8
+      },
+      "notes": [
+        "Inlined score_pose loop in CorrelativeMatcher for better cache locality",
+        "Scan matching improved ~4% (360pts: 1793.7 -> 1724.9 µs)",
+        "Grid update improved ~10% (360pts: 209.88 -> 187.74 µs)",
+        "Pre-computed Gaussian scoring constants and sensor offsets",
+        "All accuracy/quality thresholds met"
+      ]
+    },
+    {
       "commit": "1321540e164d6955c07759ce8a200a7313bcb57a",
       "date": "2025-12-31T20:44:09+05:30",
       "message": "Simplify vastu-slam configuration and increase default grid size",

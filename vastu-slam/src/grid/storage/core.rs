@@ -43,6 +43,8 @@ pub struct GridStorage {
     pub(super) width: usize,
     pub(super) height: usize,
     pub(super) resolution: f32,
+    /// Pre-computed 1.0 / resolution for faster world-to-grid conversion.
+    pub(super) inv_resolution: f32,
     pub(super) origin: WorldPoint,
     pub(super) max_distance: f32,
     pub(super) log_odds_config: LogOddsConfig,
@@ -104,6 +106,7 @@ impl GridStorage {
             width,
             height,
             resolution,
+            inv_resolution: 1.0 / resolution,
             origin,
             max_distance: Self::DEFAULT_MAX_DISTANCE,
             log_odds_config,
@@ -184,10 +187,11 @@ impl GridStorage {
     // === Coordinate Conversion ===
 
     /// Convert world coordinates to grid coordinates.
+    /// Uses pre-computed inverse resolution for faster computation.
     #[inline]
     pub fn world_to_grid(&self, point: WorldPoint) -> GridCoord {
-        let x = ((point.x - self.origin.x) / self.resolution).floor() as i32;
-        let y = ((point.y - self.origin.y) / self.resolution).floor() as i32;
+        let x = ((point.x - self.origin.x) * self.inv_resolution).floor() as i32;
+        let y = ((point.y - self.origin.y) * self.inv_resolution).floor() as i32;
         GridCoord::new(x, y)
     }
 

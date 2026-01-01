@@ -23,6 +23,27 @@ struct SearchParams {
     angular_step: f32,
 }
 
+/// Pre-computed parameters for pose scoring.
+/// Groups trig values, sensor offset, and Gaussian scoring constants
+/// to avoid redundant computations in tight loops.
+#[derive(Clone, Copy)]
+struct ScoringParams {
+    /// Pre-computed sin(theta)
+    sin_theta: f32,
+    /// Pre-computed cos(theta)
+    cos_theta: f32,
+    /// Sensor X offset
+    offset_x: f32,
+    /// Sensor Y offset
+    offset_y: f32,
+    /// Whether to use Gaussian scoring
+    use_gaussian: bool,
+    /// Pre-computed 1.0 / (2.0 * sigma^2)
+    inv_two_sigma_sq: f32,
+    /// Hit threshold (sigma)
+    hit_threshold: f32,
+}
+
 /// Correlative scan-to-map matcher.
 ///
 /// Uses a brute-force search with optional multi-resolution refinement
@@ -421,11 +442,21 @@ impl CorrelativeMatcher {
         let mut best_score = f32::NEG_INFINITY;
         let mut best_hits = 0usize;
 
-        // Generate search poses
+        // Generate search steps
         let x_steps = (self.config.search_x / linear_step).ceil() as i32;
         let y_steps = (self.config.search_y / linear_step).ceil() as i32;
         let theta_steps = (self.config.search_theta / angular_step).ceil() as i32;
 
+        // Pre-compute Gaussian scoring constants (avoid recomputing per pose)
+        let use_gaussian = self.config.use_gaussian_scoring;
+        let sigma = self.config.gaussian_sigma;
+        let inv_two_sigma_sq = 1.0 / (2.0 * sigma * sigma);
+        let hit_threshold = sigma;
+
+        // Pre-compute sensor offset
+        let (offset_x, offset_y) = self.config.sensor_offset;
+
+        // Original loop order: x → y → theta (innermost)
         for dx in -x_steps..=x_steps {
             let x = center_pose.x + dx as f32 * linear_step;
 
@@ -436,7 +467,57 @@ impl CorrelativeMatcher {
                     let theta = center_pose.theta + dtheta as f32 * angular_step;
                     let candidate = Pose2D::new(x, y, theta);
 
-                    let (score, hits) = self.score_pose(points, candidate, storage);
+                    // Hardware sin/cos is faster than cache lookup on Apple Silicon
+                    let sin_theta = theta.sin();
+                    let cos_theta = theta.cos();
+
+                    // Calculate sensor position in world frame
+                    let sensor_x = x + offset_x * cos_theta - offset_y * sin_theta;
+                    let sensor_y = y + offset_x * sin_theta + offset_y * cos_theta;
+
+                    let mut hits = 0usize;
+                    let mut score = 0.0f32;
+
+                    for &(px, py) in points {
+                        // Transform point from sensor frame to world frame
+                        let world_x = sensor_x + px * cos_theta - py * sin_theta;
+                        let world_y = sensor_y + px * sin_theta + py * cos_theta;
+
+                        let world_point = WorldPoint::new(world_x, world_y);
+                        let grid_coord = storage.world_to_grid(world_point);
+
+                        // Check if point is within map bounds
+                        if !storage.is_valid_coord(grid_coord) {
+                            continue;
+                        }
+
+                        if use_gaussian {
+                            let distance = storage.get_distance(grid_coord);
+                            if distance < f32::MAX {
+                                let point_score = (-distance * distance * inv_two_sigma_sq).exp();
+                                score += point_score;
+                                if distance <= hit_threshold {
+                                    hits += 1;
+                                }
+                            } else {
+                                score += 0.1;
+                            }
+                        } else {
+                            match storage.get_type(grid_coord) {
+                                CellType::Wall => {
+                                    hits += 1;
+                                    score += 1.0;
+                                }
+                                CellType::Floor => {
+                                    score -= 1.0;
+                                }
+                                CellType::Unknown => {
+                                    score += 0.1;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
 
                     // Add tie-breaking penalty for distance from ORIGINAL prior pose
                     // This prefers poses closer to odometry when scores are similar
@@ -476,28 +557,46 @@ impl CorrelativeMatcher {
         pose: Pose2D,
         storage: &GridStorage,
     ) -> (f32, usize) {
-        let cos_theta = pose.theta.cos();
-        let sin_theta = pose.theta.sin();
-
-        // Calculate sensor position in world frame (applying sensor offset)
         let (offset_x, offset_y) = self.config.sensor_offset;
-        let sensor_x = pose.x + offset_x * cos_theta - offset_y * sin_theta;
-        let sensor_y = pose.y + offset_x * sin_theta + offset_y * cos_theta;
+        let sigma = self.config.gaussian_sigma;
+
+        let params = ScoringParams {
+            sin_theta: pose.theta.sin(),
+            cos_theta: pose.theta.cos(),
+            offset_x,
+            offset_y,
+            use_gaussian: self.config.use_gaussian_scoring,
+            inv_two_sigma_sq: 1.0 / (2.0 * sigma * sigma),
+            hit_threshold: sigma,
+        };
+
+        self.score_pose_with_trig(points, pose, storage, &params)
+    }
+
+    /// Internal scoring method with pre-computed trigonometric and Gaussian values.
+    ///
+    /// This avoids redundant sin/cos and constant computations in tight loops.
+    #[inline]
+    fn score_pose_with_trig(
+        &self,
+        points: &[(f32, f32)],
+        pose: Pose2D,
+        storage: &GridStorage,
+        params: &ScoringParams,
+    ) -> (f32, usize) {
+        // Calculate sensor position in world frame (applying sensor offset)
+        let sensor_x =
+            pose.x + params.offset_x * params.cos_theta - params.offset_y * params.sin_theta;
+        let sensor_y =
+            pose.y + params.offset_x * params.sin_theta + params.offset_y * params.cos_theta;
 
         let mut hits = 0usize;
         let mut score = 0.0f32;
 
-        // Precompute Gaussian constants
-        let use_gaussian = self.config.use_gaussian_scoring;
-        let sigma = self.config.gaussian_sigma;
-        let two_sigma_sq = 2.0 * sigma * sigma;
-        // Hit threshold: within 1 sigma of wall
-        let hit_threshold = sigma;
-
         for &(px, py) in points {
             // Transform point from sensor frame to world frame
-            let world_x = sensor_x + px * cos_theta - py * sin_theta;
-            let world_y = sensor_y + px * sin_theta + py * cos_theta;
+            let world_x = sensor_x + px * params.cos_theta - py * params.sin_theta;
+            let world_y = sensor_y + px * params.sin_theta + py * params.cos_theta;
 
             let world_point = WorldPoint::new(world_x, world_y);
             let grid_coord = storage.world_to_grid(world_point);
@@ -507,7 +606,7 @@ impl CorrelativeMatcher {
                 continue;
             }
 
-            if use_gaussian {
+            if params.use_gaussian {
                 // Gaussian scoring based on distance field
                 let distance = storage.get_distance(grid_coord);
 
@@ -516,10 +615,10 @@ impl CorrelativeMatcher {
                     // Distance 0 → score 1.0
                     // Distance sigma → score ~0.6
                     // Distance 2*sigma → score ~0.14
-                    let point_score = (-distance * distance / two_sigma_sq).exp();
+                    let point_score = (-distance * distance * params.inv_two_sigma_sq).exp();
                     score += point_score;
 
-                    if distance <= hit_threshold {
+                    if distance <= params.hit_threshold {
                         hits += 1;
                     }
                 } else {

@@ -40,7 +40,8 @@ pub fn update_from_lidar(
     let mut result = ObserveResult::default();
 
     // Track newly added wall cells for distance field update
-    let mut new_wall_coords: Vec<GridCoord> = Vec::new();
+    // Pre-allocate with typical capacity to avoid reallocations
+    let mut new_wall_coords: Vec<GridCoord> = Vec::with_capacity(32);
 
     // Calculate sensor position in world frame
     let sensor_pos = robot_pose.transform_point(sensor_config.lidar_offset);
@@ -88,18 +89,15 @@ pub fn update_from_lidar(
 
         // Trace ray using Bresenham line algorithm
         // Apply log-odds updates: miss for ray cells, hit for endpoint
-        let bresenham = BresenhamLine::new(sensor_coord, endpoint_coord);
-
-        // Use peekable to detect the last element without collecting
-        let mut iter = bresenham.peekable();
-        while let Some(coord) = iter.next() {
+        // Compare against endpoint directly instead of using peekable()
+        for coord in BresenhamLine::new(sensor_coord, endpoint_coord) {
             if !storage.is_valid_coord(coord) {
                 continue;
             }
 
-            let is_last = iter.peek().is_none();
+            let is_endpoint = coord == endpoint_coord;
 
-            if !is_last {
+            if !is_endpoint {
                 // Not the endpoint - apply "miss" observation (evidence of free space)
                 // This uses Bayesian log-odds update: L_new = L_old + L_MISS
                 if storage.apply_miss(coord) {
