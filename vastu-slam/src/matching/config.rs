@@ -106,6 +106,12 @@ pub struct CorrelativeMatcherConfig {
     /// Penalizes angular deviation from the correlative search result.
     #[serde(default = "default_gn_rotation_weight")]
     pub gn_rotation_weight: f32,
+
+    /// Whether to use parallel search (rayon).
+    /// Parallelizes the pose search loop across CPU cores.
+    /// Recommended for multi-core systems (4+ cores).
+    #[serde(default)]
+    pub use_parallel: bool,
 }
 
 fn default_search_xy() -> f32 {
@@ -185,6 +191,7 @@ impl Default for CorrelativeMatcherConfig {
             gn_damping: default_gn_damping(),
             gn_translation_weight: default_gn_translation_weight(),
             gn_rotation_weight: default_gn_rotation_weight(),
+            use_parallel: false,
         }
     }
 }

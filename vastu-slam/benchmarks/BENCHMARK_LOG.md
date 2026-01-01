@@ -52,6 +52,68 @@ This file tracks performance, accuracy, and quality metrics across commits for o
 
 ## Benchmark History
 
+### Entry: 2026-01-01 (Rayon Parallelization)
+
+**Commit:** `a1e3d28e6d5c77f0107a89ee95251ba8b59c1ad1`
+**Message:** Add rayon parallelization for scan matching
+**Platform:** macOS Darwin 25.2.0 (Apple Silicon, 10 cores)
+**Rust:** nightly (portable_simd feature)
+
+#### Parallel vs Sequential Performance
+
+| Metric | Sequential | Parallel | Speedup |
+|--------|------------|----------|---------|
+| scan_matching_360 | 1716.1 µs | 448.75 µs | **3.82x** |
+
+#### Configuration
+
+| Setting | Value |
+|---------|-------|
+| Rayon version | 1.10 |
+| Default threads | auto (CPU cores) |
+| Parallelization | Outer x-loop in search_poses |
+
+#### Test Results
+
+| Category | Passed | Total | Status |
+|----------|--------|-------|--------|
+| Unit tests | 195 | 195 | ✅ |
+| Accuracy tests | 10 | 10 | ✅ |
+| Performance tests | 6 | 6 | ✅ |
+| Quality tests | 10 | 10 | ✅ |
+| **Total** | **221** | **221** | ✅ |
+
+#### Changes Made
+
+- Added `rayon = "1.10"` dependency to Cargo.toml
+- Implemented `search_poses_parallel()` in `matching/matcher/core.rs`
+- Added `dispatch_search_poses()` to choose between sequential/parallel
+- Added `use_parallel: bool` config flag in `matching/config.rs`
+- Added `configure_thread_pool(threads, stack_kb)` API in `lib.rs`
+- Updated benchmarks to compare sequential vs parallel
+
+#### API Usage
+
+```rust
+// Configure thread pool at startup (optional, for embedded)
+vastu_slam::configure_thread_pool(3, 256);  // 3 threads, 256KB stack
+
+// Enable parallel matching
+let config = CorrelativeMatcherConfig {
+    use_parallel: true,
+    ..Default::default()
+};
+```
+
+#### Notes
+
+- 3.82x speedup on 10-core Apple Silicon
+- Expected 2-3x speedup on 4-core ARM (Allwinner A33)
+- Default: parallel disabled (use_parallel: false) for backwards compatibility
+- Thread pool defaults to CPU core count if not configured
+
+---
+
 ### Entry: 2025-12-31
 
 **Commit:** `1321540e164d6955c07759ce8a200a7313bcb57a`
@@ -178,6 +240,8 @@ Expected performance scaling from Apple Silicon:
 
 ```
 scan_matching_360 (µs)
+├─ 2026-01-01: 448.75 µs (parallel, 3.82x speedup)
+├─ 2026-01-01: 1716.1 µs (sequential, inlined)
 ├─ 2025-12-31: 1793.7 µs (baseline)
 │
 grid_update_360 (µs)

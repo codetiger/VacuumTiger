@@ -2,6 +2,56 @@
   "version": "1.0",
   "entries": [
     {
+      "commit": "a1e3d28e6d5c77f0107a89ee95251ba8b59c1ad1",
+      "date": "2026-01-01T18:00:00+05:30",
+      "message": "Add rayon parallelization for scan matching",
+      "platform": {
+        "os": "Darwin 25.2.0",
+        "arch": "arm64",
+        "rust": "nightly",
+        "cpu_cores": 10
+      },
+      "performance": {
+        "scan_matching": {
+          "360_pts_sequential_us": 1716.1,
+          "360_pts_parallel_us": 448.75,
+          "speedup": 3.82
+        }
+      },
+      "parallel_config": {
+        "rayon_version": "1.10",
+        "default_threads": "auto (cores)",
+        "parallelization_target": "outer x-loop in search_poses"
+      },
+      "tests": {
+        "unit_tests": {
+          "passed": 195,
+          "total": 195
+        },
+        "accuracy_tests": {
+          "passed": 10,
+          "total": 10
+        },
+        "performance_tests": {
+          "passed": 6,
+          "total": 6
+        },
+        "quality_tests": {
+          "passed": 10,
+          "total": 10
+        },
+        "all_pass": true
+      },
+      "notes": [
+        "Added rayon 1.10 dependency for data parallelism",
+        "Implemented search_poses_parallel() with par_iter on x-loop",
+        "Added use_parallel config flag (default: false)",
+        "Added configure_thread_pool() API for embedded systems",
+        "Achieved 3.82x speedup on 10-core Apple Silicon",
+        "Expected 2-3x speedup on 4-core ARM (Allwinner A33)"
+      ]
+    },
+    {
       "commit": "5e1bf5c5e55295fd0ded132fafd90ec30efd1281",
       "date": "2026-01-01T12:30:00+05:30",
       "message": "Optimize scan matching with inlined scoring loop",

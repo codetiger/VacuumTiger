@@ -93,6 +93,42 @@ pub use submap::{
     SubmapManager, SubmapPoseGraph, SubmapState,
 };
 
+/// Configure the rayon thread pool for parallel scan matching.
+///
+/// Call this once at application startup, before any parallel operations.
+/// If not called, rayon uses all available CPU cores.
+///
+/// # Arguments
+/// * `num_threads` - Number of worker threads. Use 0 for auto-detect (cores - 1).
+/// * `stack_size_kb` - Stack size per thread in KB. Use 256 for embedded systems.
+///
+/// # Example
+/// ```rust,ignore
+/// // For embedded ARM (Allwinner A33 with 4 cores)
+/// vastu_slam::configure_thread_pool(3, 256);
+///
+/// // For desktop with auto-detect
+/// vastu_slam::configure_thread_pool(0, 1024);
+/// ```
+///
+/// # Returns
+/// `true` if configuration succeeded, `false` if pool was already initialized.
+pub fn configure_thread_pool(num_threads: usize, stack_size_kb: usize) -> bool {
+    let threads = if num_threads == 0 {
+        std::thread::available_parallelism()
+            .map(|p| p.get().saturating_sub(1).max(1))
+            .unwrap_or(2)
+    } else {
+        num_threads
+    };
+
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .stack_size(stack_size_kb * 1024)
+        .build_global()
+        .is_ok()
+}
+
 /// Result of processing sensor observations
 #[derive(Clone, Debug, Default)]
 pub struct ObserveResult {

@@ -11,6 +11,7 @@ license = "MIT"
 log = "0.4"              # Logging
 serde = { version = "1.0", features = ["derive"] }  # Config serialization
 serde_yaml = "0.9"       # YAML config files
+rayon = "1.10"           # Data parallelism for scan matching
 
 [dev-dependencies]
 env_logger = "0.11"      # Test logging

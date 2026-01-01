@@ -2,6 +2,7 @@
 
 use crate::core::{CellType, LidarScan, Pose2D, WorldPoint};
 use crate::grid::GridStorage;
+use rayon::prelude::*;
 
 use crate::core::simd::{PointCloud, RotationMatrix4, transform_points_simd4, world_to_grid_simd4};
 
@@ -120,6 +121,38 @@ impl CorrelativeMatcher {
         points
     }
 
+    /// Dispatch to either sequential or parallel search based on config.
+    #[inline]
+    fn dispatch_search_poses(
+        &self,
+        points: &[(f32, f32)],
+        center_pose: Pose2D,
+        prior_pose: Pose2D,
+        storage: &GridStorage,
+        linear_step: f32,
+        angular_step: f32,
+    ) -> ScanMatchResult {
+        if self.config.use_parallel {
+            self.search_poses_parallel(
+                points,
+                center_pose,
+                prior_pose,
+                storage,
+                linear_step,
+                angular_step,
+            )
+        } else {
+            self.search_poses(
+                points,
+                center_pose,
+                prior_pose,
+                storage,
+                linear_step,
+                angular_step,
+            )
+        }
+    }
+
     /// Single resolution search.
     fn match_single_resolution(
         &self,
@@ -127,7 +160,7 @@ impl CorrelativeMatcher {
         prior_pose: Pose2D,
         storage: &GridStorage,
     ) -> ScanMatchResult {
-        self.search_poses(
+        self.dispatch_search_poses(
             points,
             prior_pose,
             prior_pose, // center and prior are the same for single resolution
@@ -148,7 +181,7 @@ impl CorrelativeMatcher {
         let coarse_linear = self.config.linear_resolution * self.config.coarse_factor;
         let coarse_angular = self.config.angular_resolution * self.config.coarse_factor;
 
-        let coarse_result = self.search_poses(
+        let coarse_result = self.dispatch_search_poses(
             points,
             prior_pose,
             prior_pose,
@@ -171,7 +204,7 @@ impl CorrelativeMatcher {
         };
 
         let fine_matcher = CorrelativeMatcher::new(fine_config);
-        let fine_result = fine_matcher.search_poses(
+        let fine_result = fine_matcher.dispatch_search_poses(
             points,
             coarse_result.pose, // center on coarse result
             prior_pose,         // but penalize based on original prior
@@ -537,6 +570,130 @@ impl CorrelativeMatcher {
                 }
             }
         }
+
+        // Normalize score to 0-1 range
+        let normalized_score = if points.is_empty() {
+            0.0
+        } else {
+            (best_hits as f32 / points.len() as f32).min(1.0)
+        };
+
+        ScanMatchResult::new(best_pose, normalized_score, best_hits, points.len())
+    }
+
+    /// Parallel version of search_poses using rayon.
+    ///
+    /// Parallelizes across the outer x-loop for better CPU utilization
+    /// on multi-core systems.
+    fn search_poses_parallel(
+        &self,
+        points: &[(f32, f32)],
+        center_pose: Pose2D,
+        prior_pose: Pose2D,
+        storage: &GridStorage,
+        linear_step: f32,
+        angular_step: f32,
+    ) -> ScanMatchResult {
+        // Generate search steps
+        let x_steps = (self.config.search_x / linear_step).ceil() as i32;
+        let y_steps = (self.config.search_y / linear_step).ceil() as i32;
+        let theta_steps = (self.config.search_theta / angular_step).ceil() as i32;
+
+        // Pre-compute constants
+        let use_gaussian = self.config.use_gaussian_scoring;
+        let sigma = self.config.gaussian_sigma;
+        let inv_two_sigma_sq = 1.0 / (2.0 * sigma * sigma);
+        let hit_threshold = sigma;
+        let (offset_x, offset_y) = self.config.sensor_offset;
+
+        // Parallel search over x dimension
+        let best_result = (-x_steps..=x_steps)
+            .into_par_iter()
+            .map(|dx| {
+                let x = center_pose.x + dx as f32 * linear_step;
+                let mut local_best_pose = center_pose;
+                let mut local_best_score = f32::NEG_INFINITY;
+                let mut local_best_hits = 0usize;
+
+                for dy in -y_steps..=y_steps {
+                    let y = center_pose.y + dy as f32 * linear_step;
+
+                    for dtheta in -theta_steps..=theta_steps {
+                        let theta = center_pose.theta + dtheta as f32 * angular_step;
+                        let candidate = Pose2D::new(x, y, theta);
+
+                        let sin_theta = theta.sin();
+                        let cos_theta = theta.cos();
+
+                        let sensor_x = x + offset_x * cos_theta - offset_y * sin_theta;
+                        let sensor_y = y + offset_x * sin_theta + offset_y * cos_theta;
+
+                        let mut hits = 0usize;
+                        let mut score = 0.0f32;
+
+                        for &(px, py) in points {
+                            let world_x = sensor_x + px * cos_theta - py * sin_theta;
+                            let world_y = sensor_y + px * sin_theta + py * cos_theta;
+
+                            let world_point = WorldPoint::new(world_x, world_y);
+                            let grid_coord = storage.world_to_grid(world_point);
+
+                            if !storage.is_valid_coord(grid_coord) {
+                                continue;
+                            }
+
+                            if use_gaussian {
+                                let distance = storage.get_distance(grid_coord);
+                                if distance < f32::MAX {
+                                    let point_score =
+                                        (-distance * distance * inv_two_sigma_sq).exp();
+                                    score += point_score;
+                                    if distance <= hit_threshold {
+                                        hits += 1;
+                                    }
+                                } else {
+                                    score += 0.1;
+                                }
+                            } else {
+                                match storage.get_type(grid_coord) {
+                                    CellType::Wall => {
+                                        hits += 1;
+                                        score += 1.0;
+                                    }
+                                    CellType::Floor => {
+                                        score -= 1.0;
+                                    }
+                                    CellType::Unknown => {
+                                        score += 0.1;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        // Add tie-breaking penalty
+                        let dist_to_prior = ((candidate.x - prior_pose.x).powi(2)
+                            + (candidate.y - prior_pose.y).powi(2))
+                        .sqrt();
+                        let angle_dist = (candidate.theta - prior_pose.theta).abs();
+                        let adjusted_score = score - dist_to_prior * 300.0 - angle_dist * 30.0;
+
+                        if adjusted_score > local_best_score {
+                            local_best_score = adjusted_score;
+                            local_best_pose = candidate;
+                            local_best_hits = hits;
+                        }
+                    }
+                }
+
+                (local_best_pose, local_best_score, local_best_hits)
+            })
+            .reduce(
+                || (center_pose, f32::NEG_INFINITY, 0usize),
+                |a, b| if a.1 > b.1 { a } else { b },
+            );
+
+        let (best_pose, _best_score, best_hits) = best_result;
 
         // Normalize score to 0-1 range
         let normalized_score = if points.is_empty() {

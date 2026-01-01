@@ -95,13 +95,32 @@ fn bench_scan_matching(c: &mut Criterion) {
     let (map, scan) = setup_map();
     let initial_pose = Pose2D::new(3.0, 3.0, 0.0);
 
-    let config = CorrelativeMatcherConfig::default();
-    let matcher = CorrelativeMatcher::new(config);
+    // Sequential version
+    let config_seq = CorrelativeMatcherConfig {
+        use_parallel: false,
+        ..CorrelativeMatcherConfig::default()
+    };
+    let matcher_seq = CorrelativeMatcher::new(config_seq);
 
-    c.bench_function("scan_matching_360pts", |b| {
+    c.bench_function("scan_matching_360pts_sequential", |b| {
         b.iter(|| {
             let result =
-                matcher.match_scan(black_box(&scan), black_box(initial_pose), map.storage());
+                matcher_seq.match_scan(black_box(&scan), black_box(initial_pose), map.storage());
+            black_box(result)
+        })
+    });
+
+    // Parallel version
+    let config_par = CorrelativeMatcherConfig {
+        use_parallel: true,
+        ..CorrelativeMatcherConfig::default()
+    };
+    let matcher_par = CorrelativeMatcher::new(config_par);
+
+    c.bench_function("scan_matching_360pts_parallel", |b| {
+        b.iter(|| {
+            let result =
+                matcher_par.match_scan(black_box(&scan), black_box(initial_pose), map.storage());
             black_box(result)
         })
     });
