@@ -27,9 +27,9 @@ use sangam_io::core::types::{
 use sangam_io::devices::mock::MockDriver;
 use sangam_io::devices::mock::config::SimulationConfig;
 
+use vastu_slam::config::VastuConfig;
 use vastu_slam::io::{Command, Scenario, SvgConfig, SvgVisualizer, markers_by_distance};
-use vastu_slam::matching::CorrelativeMatcherConfig;
-use vastu_slam::{LidarScan, MapConfig, OccupancyGridMap, Pose2D};
+use vastu_slam::{LidarScan, OccupancyGridMap, Pose2D};
 
 /// Command timeout in seconds
 const COMMAND_TIMEOUT_SECS: u64 = 30;
@@ -262,13 +262,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("Waiting for first lidar scan...");
     std::thread::sleep(Duration::from_millis(500));
 
-    // Create SLAM map
-    let map_config = MapConfig::default();
+    // Load VastuSLAM configuration from TOML file
+    let config_path = scenario_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("../configs/config.toml");
+    let vastu_config = if config_path.exists() {
+        log::info!("Loading config from {:?}", config_path);
+        VastuConfig::load(&config_path)?
+    } else {
+        log::info!("Using default config (configs/config.toml not found)");
+        VastuConfig::default()
+    };
+
+    // Create SLAM map from config
+    let map_config = vastu_config.to_map_config();
     let mut map = OccupancyGridMap::new(map_config);
 
-    // Configure matcher with correct lidar offset (must match SensorConfig)
-    let mut matcher_config = CorrelativeMatcherConfig::default();
-    matcher_config.sensor_offset = (-0.110, 0.0); // Lidar 11cm behind robot center
+    // Get matcher config from loaded configuration
+    let mut matcher_config = vastu_config.correlative_matcher_config();
+    // Apply sensor offset from sensor section
+    matcher_config.sensor_offset = (
+        vastu_config.sensor.lidar.offset_x,
+        vastu_config.sensor.lidar.offset_y,
+    );
 
     // Tracking state
     let mut trajectory: Vec<Pose2D> = vec![];
