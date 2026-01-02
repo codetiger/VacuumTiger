@@ -5,7 +5,7 @@
 //! - **Native .vastu format**: Binary format preserving all cell data
 //! - **PGM export**: ROS-compatible occupancy grid images
 //! - **SVG export**: Visualization with trajectories for auditing
-//! - **Scenario parsing**: YAML-based test scenario definitions
+//! - **Scenario parsing**: YAML-based test scenario definitions (requires `scenario` feature)
 //!
 //! ## Saving and Loading Maps
 //!
@@ -47,6 +47,7 @@
 //! ```
 
 pub mod pgm;
+#[cfg(any(test, feature = "scenario"))]
 pub mod scenario;
 pub mod svg;
 pub mod vastu_format;
@@ -55,6 +56,7 @@ pub use vastu_format::{IoError, load_vastu, read_vastu, save_vastu, write_vastu}
 
 pub use pgm::{export_pgm, export_ros_map, export_yaml, write_pgm};
 
+#[cfg(any(test, feature = "scenario"))]
 pub use scenario::{Command, Scenario, ScenarioError, SeedConfig, StartPose, SvgOutputConfig};
 
 pub use svg::{SvgConfig, SvgVisualizer, markers_by_distance, markers_by_time};

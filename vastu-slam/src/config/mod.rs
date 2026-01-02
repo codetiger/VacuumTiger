@@ -1,13 +1,13 @@
 //! Unified configuration loading for VastuSLAM.
 //!
-//! Loads all configuration from a single YAML file with sensible defaults.
+//! Loads all configuration from a single TOML file with sensible defaults.
 //!
 //! ## Quick Start
 //!
 //! ```rust,ignore
 //! use vastu_slam::config::VastuConfig;
 //!
-//! // Load from default path (configs/config.yaml)
+//! // Load from default path (configs/config.toml)
 //! let config = VastuConfig::load_default()?;
 //!
 //! // Or use built-in defaults (no file needed)
@@ -30,37 +30,36 @@
 //! | [`SlamSection`] | Matcher, loop closure, pose graph, motion filtering |
 //! | [`PersistenceSection`] | Output format and directory |
 //!
-//! ## Example YAML
+//! ## Example TOML
 //!
-//! ```yaml
-//! grid:
-//!   resolution: 0.025      # 2.5cm cells
-//!   initial_width: 800     # 20m
+//! ```toml
+//! [grid]
+//! resolution = 0.025      # 2.5cm cells
+//! initial_width = 800     # 20m
 //!
-//! sensor:
-//!   robot:
-//!     radius: 0.17
-//!   lidar:
-//!     offset_x: -0.110
-//!     max_range: 8.0
+//! [sensor.robot]
+//! radius = 0.17
 //!
-//! slam:
-//!   correlative:
-//!     enabled: true
-//!     multi_resolution: true
+//! [sensor.lidar]
+//! offset_x = -0.110
+//! max_range = 8.0
 //!
-//!   # Optional: IMU fusion for improved pose estimation
-//!   pose_extrapolator:
-//!     pose_queue_duration: 0.5        # seconds
-//!     odom_queue_duration: 0.5        # seconds
-//!     imu_gravity_time_constant: 10.0 # seconds
-//!     imu_rotation_weight: 0.3        # 0.0=odom only, 1.0=IMU only
+//! [slam.correlative]
+//! enabled = true
+//! multi_resolution = true
 //!
-//!   # Optional: Scan insertion throttling
-//!   motion_filter:
-//!     max_time_seconds: 5.0           # insert at least every 5s
-//!     max_distance_meters: 0.2        # insert if moved 20cm
-//!     max_angle_radians: 0.035        # insert if rotated ~2°
+//! # Optional: IMU fusion for improved pose estimation
+//! [slam.pose_extrapolator]
+//! pose_queue_duration = 0.5        # seconds
+//! odom_queue_duration = 0.5        # seconds
+//! imu_gravity_time_constant = 10.0 # seconds
+//! imu_rotation_weight = 0.3        # 0.0=odom only, 1.0=IMU only
+//!
+//! # Optional: Scan insertion throttling
+//! [slam.motion_filter]
+//! max_time_seconds = 5.0           # insert at least every 5s
+//! max_distance_meters = 0.2        # insert if moved 20cm
+//! max_angle_radians = 0.035        # insert if rotated ~2deg
 //! ```
 //!
 //! ## Motion Filtering

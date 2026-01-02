@@ -86,5 +86,5 @@ pub mod lidar_update;
 pub mod raycaster;
 mod storage;
 
-pub use config::{ConfigError, GridConfig, LogOddsConfig, MapConfig, SensorConfig};
+pub use config::{GridConfig, LogOddsConfig, MapConfig, SensorConfig};
 pub use storage::{CellCounts, CellMut, GridStorage};

@@ -17,7 +17,7 @@ use super::persistence::PersistenceSection;
 use super::sensor::SensorSection;
 use super::slam::SlamSection;
 
-/// Full VastuSLAM configuration loaded from YAML
+/// Full VastuSLAM configuration loaded from TOML
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct VastuConfig {
     /// Grid settings
@@ -38,16 +38,16 @@ pub struct VastuConfig {
 }
 
 impl VastuConfig {
-    /// Load configuration from a YAML file
+    /// Load configuration from a TOML file
     pub fn load(path: &Path) -> Result<Self, ConfigLoadError> {
         let contents =
             std::fs::read_to_string(path).map_err(|e| ConfigLoadError::Io(e.to_string()))?;
-        Self::from_yaml(&contents)
+        Self::from_toml(&contents)
     }
 
-    /// Load from default config path (configs/config.yaml)
+    /// Load from default config path (configs/config.toml)
     pub fn load_default() -> Result<Self, ConfigLoadError> {
-        let path = Path::new("configs/config.yaml");
+        let path = Path::new("configs/config.toml");
         if path.exists() {
             Self::load(path)
         } else {
@@ -55,9 +55,9 @@ impl VastuConfig {
         }
     }
 
-    /// Parse from YAML string
-    pub fn from_yaml(yaml: &str) -> Result<Self, ConfigLoadError> {
-        serde_yaml::from_str(yaml).map_err(|e| ConfigLoadError::Parse(e.to_string()))
+    /// Parse from TOML string
+    pub fn from_toml(toml_str: &str) -> Result<Self, ConfigLoadError> {
+        toml::from_str(toml_str).map_err(|e| ConfigLoadError::Parse(e.to_string()))
     }
 
     /// Convert to MapConfig for OccupancyGridMap
@@ -138,11 +138,17 @@ mod tests {
     }
 
     #[test]
-    fn test_yaml_roundtrip() {
-        let config = VastuConfig::default();
-        let yaml = serde_yaml::to_string(&config).unwrap();
-        let parsed: VastuConfig = serde_yaml::from_str(&yaml).unwrap();
-        assert_eq!(parsed.grid.resolution, config.grid.resolution);
+    fn test_toml_parsing() {
+        let toml_str = r#"
+[grid]
+resolution = 0.05
+
+[sensor.robot]
+radius = 0.20
+"#;
+        let config = VastuConfig::from_toml(toml_str).unwrap();
+        assert_eq!(config.grid.resolution, 0.05);
+        assert_eq!(config.sensor.robot.radius, 0.20);
     }
 
     #[test]
@@ -162,19 +168,19 @@ mod tests {
     }
 
     #[test]
-    fn test_motion_filtering_from_yaml() {
-        let yaml = r#"
-slam:
-  pose_extrapolator:
-    pose_queue_duration: 0.5
-    imu_gravity_time_constant: 10.0
-    imu_rotation_weight: 0.3
-  motion_filter:
-    max_time_seconds: 5.0
-    max_distance_meters: 0.2
-    max_angle_radians: 0.035
+    fn test_motion_filtering_from_toml() {
+        let toml_str = r#"
+[slam.pose_extrapolator]
+pose_queue_duration = 0.5
+imu_gravity_time_constant = 10.0
+imu_rotation_weight = 0.3
+
+[slam.motion_filter]
+max_time_seconds = 5.0
+max_distance_meters = 0.2
+max_angle_radians = 0.035
 "#;
-        let config = VastuConfig::from_yaml(yaml).unwrap();
+        let config = VastuConfig::from_toml(toml_str).unwrap();
         assert!(config.has_motion_filtering());
 
         let extrapolator = config.pose_extrapolator_config().unwrap();
@@ -186,17 +192,18 @@ slam:
 
     #[test]
     fn test_to_localizer_config() {
-        let yaml = r#"
-slam:
-  correlative:
-    enabled: true
-    linear_search_window: 0.5
-  pose_extrapolator:
-    imu_rotation_weight: 0.4
-  motion_filter:
-    max_distance_meters: 0.15
+        let toml_str = r#"
+[slam.correlative]
+enabled = true
+linear_search_window = 0.5
+
+[slam.pose_extrapolator]
+imu_rotation_weight = 0.4
+
+[slam.motion_filter]
+max_distance_meters = 0.15
 "#;
-        let config = VastuConfig::from_yaml(yaml).unwrap();
+        let config = VastuConfig::from_toml(toml_str).unwrap();
         let localizer_config = config.to_localizer_config();
 
         assert!(localizer_config.matcher.enabled);

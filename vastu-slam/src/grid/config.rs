@@ -249,51 +249,6 @@ pub struct MapConfig {
     pub log_odds: LogOddsConfig,
 }
 
-impl MapConfig {
-    /// Load configuration from a YAML file
-    pub fn from_yaml_file(path: &std::path::Path) -> Result<Self, ConfigError> {
-        let contents =
-            std::fs::read_to_string(path).map_err(|e| ConfigError::IoError(e.to_string()))?;
-        Self::from_yaml(&contents)
-    }
-
-    /// Load configuration from a YAML string
-    pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
-        serde_yaml::from_str(yaml).map_err(|e| ConfigError::ParseError(e.to_string()))
-    }
-
-    /// Save configuration to a YAML file
-    pub fn to_yaml_file(&self, path: &std::path::Path) -> Result<(), ConfigError> {
-        let yaml = self.to_yaml()?;
-        std::fs::write(path, yaml).map_err(|e| ConfigError::IoError(e.to_string()))
-    }
-
-    /// Serialize to YAML string
-    pub fn to_yaml(&self) -> Result<String, ConfigError> {
-        serde_yaml::to_string(self).map_err(|e| ConfigError::ParseError(e.to_string()))
-    }
-}
-
-/// Configuration error type
-#[derive(Debug, Clone)]
-pub enum ConfigError {
-    /// File I/O error
-    IoError(String),
-    /// YAML parsing error
-    ParseError(String),
-}
-
-impl std::fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConfigError::IoError(msg) => write!(f, "IO error: {}", msg),
-            ConfigError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for ConfigError {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,13 +273,5 @@ mod tests {
         let mem = config.initial_memory_bytes();
         // 800 * 800 * 4 = 2,560,000 bytes = 2.44 MB
         assert_eq!(mem, 2560000);
-    }
-
-    #[test]
-    fn test_yaml_serialization() {
-        let config = MapConfig::default();
-        let yaml = config.to_yaml().unwrap();
-        let parsed: MapConfig = MapConfig::from_yaml(&yaml).unwrap();
-        assert_eq!(parsed.grid.resolution, config.grid.resolution);
     }
 }

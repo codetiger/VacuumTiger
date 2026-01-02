@@ -100,7 +100,7 @@ pub use core::{
     PoseExtrapolator, PoseExtrapolatorConfig, SensorObservation, WorldPoint,
 };
 
-pub use grid::{CellCounts, ConfigError, GridConfig, GridStorage, MapConfig, SensorConfig};
+pub use grid::{CellCounts, GridConfig, GridStorage, MapConfig, SensorConfig};
 
 pub use config::{ConfigLoadError, VastuConfig};
 

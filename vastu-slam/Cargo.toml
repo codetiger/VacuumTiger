@@ -7,17 +7,28 @@ license = "MIT"
 
 # Note: This crate requires nightly Rust for portable_simd feature
 
+[features]
+default = []
+scenario = ["serde_yaml"]  # Enable YAML scenario parsing for tests
+
 [dependencies]
 log = "0.4"              # Logging
 serde = { version = "1.0", features = ["derive"] }  # Config serialization
-serde_yaml = "0.9"       # YAML config files
-rayon = "1.10"           # Data parallelism for scan matching
+toml = { version = "0.8", default-features = false, features = ["parse"] }  # TOML config files
+rayon = "1.11"           # Data parallelism for scan matching
+serde_yaml = { version = "0.9", optional = true }  # YAML scenario parsing (optional)
 
 [dev-dependencies]
 env_logger = "0.11"      # Test logging
 approx = "0.5"           # Approximate comparisons (tests only)
 image = { version = "0.25", default-features = false, features = ["png", "pnm"] }
 criterion = "0.5"        # Benchmarking
+serde_yaml = "0.9"       # YAML for tests (always available in tests)
+sangam-io = { path = "../sangam-io", features = ["mock"] }  # Mock device for examples
+
+[[example]]
+name = "scenario_slam"
+required-features = ["scenario"]
 
 [[bench]]
 name = "scan_matching"
@@ -34,3 +45,6 @@ harness = false
 [profile.release]
 opt-level = 3
 lto = true
+codegen-units = 1       # Single codegen unit for better optimization
+panic = "abort"         # Abort on panic (smaller than unwinding)
+strip = true            # Strip symbols from binary
