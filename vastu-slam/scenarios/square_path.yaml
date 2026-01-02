@@ -2,13 +2,13 @@
 # Tests scan matching during combined linear and angular motion
 
 name: "Square Path"
-description: "Navigate a 1m x 1m square path with 90-degree turns"
+description: "Navigate a 1m x 1m square path with exact 90-degree turns"
 
 map: "medium_room"
 
 start_pose:
-  x: 4.0
-  y: 4.0
+  x: 3.5
+  y: 3.5
   theta: 0.0
 
 seed:
@@ -16,77 +16,41 @@ seed:
   rotation: true
 
 commands:
-  # Side 1: Move forward 1m
-  - type: move
-    linear_velocity: 0.2
-    angular_velocity: 0.0
-    duration_ms: 5000
+  # Side 1: Move forward exactly 1m
+  - type: move_distance
+    left_distance_m: 1.0
+    right_distance_m: 1.0
 
-  # Pause
-  - type: stay
-    duration_ms: 500
+  # Turn 90° CW in place
+  - type: rotate
+    degrees: -90
 
-  # Turn 90 degrees CW (PI/2 at 0.5 rad/s = ~3.14s)
-  - type: move
-    linear_velocity: 0.0
-    angular_velocity: -0.5
-    duration_ms: 3142
+  # Side 2: Move forward exactly 1m
+  - type: move_distance
+    left_distance_m: 1.0
+    right_distance_m: 1.0
 
-  # Pause
-  - type: stay
-    duration_ms: 500
+  # Turn 90° CW in place
+  - type: rotate
+    degrees: -90
 
-  # Side 2: Move forward 1m
-  - type: move
-    linear_velocity: 0.2
-    angular_velocity: 0.0
-    duration_ms: 5000
+  # Side 3: Move forward exactly 1m
+  - type: move_distance
+    left_distance_m: 1.0
+    right_distance_m: 1.0
 
-  # Pause
-  - type: stay
-    duration_ms: 500
+  # Turn 90° CW in place
+  - type: rotate
+    degrees: -90
 
-  # Turn 90 degrees CW
-  - type: move
-    linear_velocity: 0.0
-    angular_velocity: -0.5
-    duration_ms: 3142
-
-  # Pause
-  - type: stay
-    duration_ms: 500
-
-  # Side 3: Move forward 1m
-  - type: move
-    linear_velocity: 0.2
-    angular_velocity: 0.0
-    duration_ms: 5000
-
-  # Pause
-  - type: stay
-    duration_ms: 500
-
-  # Turn 90 degrees CW
-  - type: move
-    linear_velocity: 0.0
-    angular_velocity: -0.5
-    duration_ms: 3142
-
-  # Pause
-  - type: stay
-    duration_ms: 500
-
-  # Side 4: Move forward 1m (back to start)
-  - type: move
-    linear_velocity: 0.2
-    angular_velocity: 0.0
-    duration_ms: 5000
+  # Side 4: Move forward exactly 1m (back to start)
+  - type: move_distance
+    left_distance_m: 1.0
+    right_distance_m: 1.0
 
   # Final turn to original heading
-  - type: move
-    linear_velocity: 0.0
-    angular_velocity: -0.5
-    duration_ms: 3142
+  - type: rotate
+    degrees: -90
 
 svg_output:
   scale: 75.0

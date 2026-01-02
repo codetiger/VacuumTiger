@@ -27,9 +27,33 @@ use sangam_io::core::types::{
 use sangam_io::devices::mock::MockDriver;
 use sangam_io::devices::mock::config::SimulationConfig;
 
-use vastu_slam::io::{Scenario, SvgConfig, SvgVisualizer, markers_by_distance};
+use vastu_slam::io::{Command, Scenario, SvgConfig, SvgVisualizer, markers_by_distance};
 use vastu_slam::matching::CorrelativeMatcherConfig;
 use vastu_slam::{LidarScan, MapConfig, OccupancyGridMap, Pose2D};
+
+/// Command timeout in seconds
+const COMMAND_TIMEOUT_SECS: u64 = 30;
+
+/// Encoder tolerance: ~1cm = 45 ticks (at 4464 ticks/m)
+const ENCODER_TOLERANCE_TICKS: i32 = 45;
+
+/// Grace period after stopping before next command (ms)
+const COMMAND_GRACE_PERIOD_MS: u64 = 100;
+
+/// Check if wheel has reached target (approaching from zero, never crossing)
+/// Returns true when delta enters the tolerance zone BEFORE the target
+fn wheel_reached_target(delta: i32, expected: i32, tolerance: i32) -> bool {
+    if expected > 0 {
+        // Moving forward: stop when approaching target from below
+        delta >= expected - tolerance
+    } else if expected < 0 {
+        // Moving backward: stop when approaching target from above
+        delta <= expected + tolerance
+    } else {
+        // No movement expected
+        true
+    }
+}
 
 /// Convert SangamIO PointCloud2D to VastuSLAM LidarScan
 fn to_lidar_scan(points: &[(f32, f32, u8)]) -> LidarScan {
@@ -111,6 +135,23 @@ fn compute_odometry(
     pose.x += dist * pose.theta.cos();
     pose.y += dist * pose.theta.sin();
     pose.theta += dtheta;
+}
+
+/// Get current encoder values (left, right)
+fn get_encoder_values(
+    sensor_data: &HashMap<String, Arc<Mutex<SensorGroupData>>>,
+) -> Option<(u16, u16)> {
+    let sensor_status = sensor_data.get("sensor_status")?;
+    let data = sensor_status.lock().ok()?;
+    let left = match data.values.get("wheel_left") {
+        Some(SensorValue::U16(v)) => *v,
+        _ => return None,
+    };
+    let right = match data.values.get("wheel_right") {
+        Some(SensorValue::U16(v)) => *v,
+        _ => return None,
+    };
+    Some((left, right))
 }
 
 /// Create a command to enable lidar
@@ -298,53 +339,163 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (i, cmd) in scenario.commands.iter().enumerate() {
         let (linear, angular) = cmd.velocities();
-        let duration_ms = cmd.duration_ms();
-        let sim_duration_ms = (duration_ms as f32 / speed_factor) as u64;
 
-        log::debug!(
-            "Command {}/{}: v={:.2} m/s, ω={:.2} rad/s, duration={}ms (sim: {}ms)",
-            i + 1,
-            scenario.commands.len(),
-            linear,
-            angular,
-            duration_ms,
-            sim_duration_ms
+        // Determine if this command uses encoder-based or time-based execution
+        let use_encoder_verification = matches!(
+            cmd,
+            Command::MoveDistance { .. } | Command::Rotate { .. }
         );
 
-        // Send velocity command
-        driver.send_command(set_velocity(linear, angular))?;
+        if use_encoder_verification {
+            // Get target wheel distances for encoder verification
+            let (target_left_m, target_right_m) = cmd.wheel_distances().unwrap_or((0.0, 0.0));
+            let expected_left_ticks = (target_left_m * ticks_per_meter) as i32;
+            let expected_right_ticks = (target_right_m * ticks_per_meter) as i32;
 
-        let cmd_start = Instant::now();
-        while cmd_start.elapsed().as_millis() < sim_duration_ms as u128 {
-            // Update odometry
-            compute_odometry(
-                &sensor_data,
-                &mut prev_wheel_left,
-                &mut prev_wheel_right,
-                &mut current_pose,
-                ticks_per_meter,
-                wheel_base,
+            log::debug!(
+                "Command {}/{}: ENCODER-BASED - target L:{} R:{} ticks, v={:.2} m/s, ω={:.2} rad/s",
+                i + 1,
+                scenario.commands.len(),
+                expected_left_ticks,
+                expected_right_ticks,
+                linear,
+                angular
             );
 
-            // Process lidar scan with matching
-            if let Some(scan) = get_lidar_scan(&sensor_data, &mut last_lidar_seq) {
-                let (_result, corrected_pose, match_result) =
-                    map.observe_lidar_with_matching(&scan, current_pose, &matcher_config);
+            // Record starting encoder values
+            let (start_left, start_right) =
+                get_encoder_values(&sensor_data).unwrap_or((prev_wheel_left, prev_wheel_right));
 
-                if match_result.converged && match_result.score >= 0.5 {
-                    current_pose = corrected_pose;
-                    log::trace!("Match accepted: score={:.3}", match_result.score);
-                } else {
-                    log::debug!(
-                        "Match rejected: score={:.3}, converged={}",
-                        match_result.score,
-                        match_result.converged
-                    );
+            // Send velocity command
+            driver.send_command(set_velocity(linear, angular))?;
+
+            // Monitor until target achieved (with timeout)
+            let timeout = Duration::from_secs(COMMAND_TIMEOUT_SECS);
+            let cmd_start = Instant::now();
+
+            loop {
+                // Update odometry
+                compute_odometry(
+                    &sensor_data,
+                    &mut prev_wheel_left,
+                    &mut prev_wheel_right,
+                    &mut current_pose,
+                    ticks_per_meter,
+                    wheel_base,
+                );
+
+                // Process lidar scan with matching
+                if let Some(scan) = get_lidar_scan(&sensor_data, &mut last_lidar_seq) {
+                    let (_result, corrected_pose, match_result) =
+                        map.observe_lidar_with_matching(&scan, current_pose, &matcher_config);
+
+                    if match_result.converged && match_result.score >= 0.5 {
+                        current_pose = corrected_pose;
+                        log::trace!("Match accepted: score={:.3}", match_result.score);
+                    }
+                    trajectory.push(current_pose);
                 }
-                trajectory.push(current_pose);
+
+                // Check encoder progress
+                let (cur_left, cur_right) =
+                    get_encoder_values(&sensor_data).unwrap_or((start_left, start_right));
+
+                // Calculate accumulated ticks (handle wraparound with signed arithmetic)
+                let delta_left = cur_left.wrapping_sub(start_left) as i16 as i32;
+                let delta_right = cur_right.wrapping_sub(start_right) as i16 as i32;
+
+                // Check if target achieved (directional - stops before crossing)
+                let left_done =
+                    wheel_reached_target(delta_left, expected_left_ticks, ENCODER_TOLERANCE_TICKS);
+                let right_done =
+                    wheel_reached_target(delta_right, expected_right_ticks, ENCODER_TOLERANCE_TICKS);
+
+                if left_done && right_done {
+                    log::debug!(
+                        "Command {}/{}: TARGET ACHIEVED - L:{}/{} R:{}/{} ticks",
+                        i + 1,
+                        scenario.commands.len(),
+                        delta_left,
+                        expected_left_ticks,
+                        delta_right,
+                        expected_right_ticks
+                    );
+                    break;
+                }
+
+                // Timeout safety
+                if cmd_start.elapsed() > timeout {
+                    log::warn!(
+                        "Command {}/{}: TIMEOUT - expected L:{} R:{}, got L:{} R:{}",
+                        i + 1,
+                        scenario.commands.len(),
+                        expected_left_ticks,
+                        expected_right_ticks,
+                        delta_left,
+                        delta_right
+                    );
+                    break;
+                }
+
+                // Short sleep for fast response to encoder changes
+                std::thread::sleep(Duration::from_millis(2));
             }
 
-            std::thread::sleep(Duration::from_millis(20));
+            // Stop motion after encoder-based command
+            driver.send_command(set_velocity(0.0, 0.0))?;
+
+            // Grace period for robot to fully stop before next command
+            std::thread::sleep(Duration::from_millis(COMMAND_GRACE_PERIOD_MS));
+        } else {
+            // Time-based execution for Move and Stay commands
+            let duration_ms = cmd.duration_ms();
+            let sim_duration_ms = (duration_ms as f32 / speed_factor) as u64;
+
+            log::debug!(
+                "Command {}/{}: TIME-BASED - v={:.2} m/s, ω={:.2} rad/s, duration={}ms (sim: {}ms)",
+                i + 1,
+                scenario.commands.len(),
+                linear,
+                angular,
+                duration_ms,
+                sim_duration_ms
+            );
+
+            // Send velocity command
+            driver.send_command(set_velocity(linear, angular))?;
+
+            let cmd_start = Instant::now();
+            while cmd_start.elapsed().as_millis() < sim_duration_ms as u128 {
+                // Update odometry
+                compute_odometry(
+                    &sensor_data,
+                    &mut prev_wheel_left,
+                    &mut prev_wheel_right,
+                    &mut current_pose,
+                    ticks_per_meter,
+                    wheel_base,
+                );
+
+                // Process lidar scan with matching
+                if let Some(scan) = get_lidar_scan(&sensor_data, &mut last_lidar_seq) {
+                    let (_result, corrected_pose, match_result) =
+                        map.observe_lidar_with_matching(&scan, current_pose, &matcher_config);
+
+                    if match_result.converged && match_result.score >= 0.5 {
+                        current_pose = corrected_pose;
+                        log::trace!("Match accepted: score={:.3}", match_result.score);
+                    } else {
+                        log::debug!(
+                            "Match rejected: score={:.3}, converged={}",
+                            match_result.score,
+                            match_result.converged
+                        );
+                    }
+                    trajectory.push(current_pose);
+                }
+
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
     }
 

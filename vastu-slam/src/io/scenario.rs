@@ -71,6 +71,15 @@ impl Default for SeedConfig {
     }
 }
 
+/// Default maximum wheel velocity for auto-calculating duration (m/s)
+const DEFAULT_MAX_WHEEL_VELOCITY: f32 = 0.3;
+
+/// Default wheel base for differential drive kinematics (meters)
+const DEFAULT_WHEEL_BASE: f32 = 0.233;
+
+/// Default angular velocity for rotation commands (rad/s)
+const DEFAULT_ANGULAR_VELOCITY: f32 = 0.5;
+
 /// A movement command
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -84,6 +93,24 @@ pub enum Command {
         /// Duration in milliseconds
         duration_ms: u64,
     },
+    /// Move by specifying wheel distances directly (more accurate for testing)
+    MoveDistance {
+        /// Left wheel distance in meters
+        left_distance_m: f32,
+        /// Right wheel distance in meters
+        right_distance_m: f32,
+        /// Optional duration in ms (auto-calculated if omitted based on max velocity)
+        #[serde(default)]
+        duration_ms: Option<u64>,
+    },
+    /// Rotate in place by a specified angle in degrees
+    Rotate {
+        /// Rotation angle in degrees (positive = CCW, negative = CW)
+        degrees: f32,
+        /// Optional duration in ms (auto-calculated if omitted based on angular velocity)
+        #[serde(default)]
+        duration_ms: Option<u64>,
+    },
     /// Stay still for a duration
     Stay {
         /// Duration in milliseconds
@@ -96,6 +123,26 @@ impl Command {
     pub fn duration_ms(&self) -> u64 {
         match self {
             Command::Move { duration_ms, .. } => *duration_ms,
+            Command::MoveDistance {
+                left_distance_m,
+                right_distance_m,
+                duration_ms,
+            } => {
+                // Use provided duration or auto-calculate from max wheel velocity
+                duration_ms.unwrap_or_else(|| {
+                    let max_distance = left_distance_m.abs().max(right_distance_m.abs());
+                    let duration_secs = max_distance / DEFAULT_MAX_WHEEL_VELOCITY;
+                    (duration_secs * 1000.0) as u64
+                })
+            }
+            Command::Rotate { degrees, duration_ms } => {
+                // Use provided duration or auto-calculate from angular velocity
+                duration_ms.unwrap_or_else(|| {
+                    let radians = degrees.to_radians();
+                    let duration_secs = radians.abs() / DEFAULT_ANGULAR_VELOCITY;
+                    (duration_secs * 1000.0) as u64
+                })
+            }
             Command::Stay { duration_ms } => *duration_ms,
         }
     }
@@ -113,7 +160,74 @@ impl Command {
                 angular_velocity,
                 ..
             } => (*linear_velocity, *angular_velocity),
+            Command::MoveDistance {
+                left_distance_m,
+                right_distance_m,
+                ..
+            } => {
+                // Calculate velocities from wheel distances and duration
+                let duration_secs = self.duration_secs();
+                if duration_secs <= 0.0 {
+                    return (0.0, 0.0);
+                }
+
+                // Wheel velocities
+                let vel_left = left_distance_m / duration_secs;
+                let vel_right = right_distance_m / duration_secs;
+
+                // Differential drive kinematics:
+                // v = (v_r + v_l) / 2
+                // ω = (v_r - v_l) / wheel_base
+                let linear_velocity = (vel_left + vel_right) / 2.0;
+                let angular_velocity = (vel_right - vel_left) / DEFAULT_WHEEL_BASE;
+
+                (linear_velocity, angular_velocity)
+            }
+            Command::Rotate { degrees, .. } => {
+                // Pure rotation: no linear velocity
+                let duration_secs = self.duration_secs();
+                if duration_secs <= 0.0 {
+                    return (0.0, 0.0);
+                }
+
+                let radians = degrees.to_radians();
+                let angular_velocity = radians / duration_secs;
+
+                (0.0, angular_velocity)
+            }
             Command::Stay { .. } => (0.0, 0.0),
+        }
+    }
+
+    /// Get wheel distances (left, right) in meters, if applicable
+    pub fn wheel_distances(&self) -> Option<(f32, f32)> {
+        match self {
+            Command::MoveDistance {
+                left_distance_m,
+                right_distance_m,
+                ..
+            } => Some((*left_distance_m, *right_distance_m)),
+            Command::Rotate { degrees, .. } => {
+                // Calculate wheel arc lengths for rotation
+                // Arc length = angle × (wheel_base / 2)
+                // For CW rotation (negative degrees): left forward (+), right backward (-)
+                // For CCW rotation (positive degrees): left backward (-), right forward (+)
+                let radians = degrees.to_radians();
+                let arc_length = radians * (DEFAULT_WHEEL_BASE / 2.0);
+                // arc_length is negative for CW (negative degrees)
+                // -arc_length flips to positive for left wheel (forward)
+                // arc_length stays negative for right wheel (backward)
+                Some((-arc_length, arc_length))
+            }
+            _ => None,
+        }
+    }
+
+    /// Get rotation angle in degrees, if applicable
+    pub fn rotation_degrees(&self) -> Option<f32> {
+        match self {
+            Command::Rotate { degrees, .. } => Some(*degrees),
+            _ => None,
         }
     }
 }
@@ -309,5 +423,195 @@ commands: []
 "#;
         let scenario = Scenario::from_yaml(yaml).unwrap();
         assert_eq!(scenario.svg_filename(), "my_test_scenario.svg");
+    }
+
+    #[test]
+    fn test_move_distance_parsing() {
+        let yaml = r#"
+name: "Distance Test"
+map: "room"
+commands:
+  - type: move_distance
+    left_distance_m: 0.5
+    right_distance_m: 0.5
+  - type: move_distance
+    left_distance_m: 1.0
+    right_distance_m: 1.0
+    duration_ms: 5000
+"#;
+        let scenario = Scenario::from_yaml(yaml).unwrap();
+        assert_eq!(scenario.commands.len(), 2);
+
+        // First command: auto-calculated duration (0.5m / 0.3m/s = 1.667s)
+        let cmd1 = &scenario.commands[0];
+        assert_eq!(cmd1.wheel_distances(), Some((0.5, 0.5)));
+        let duration_ms = cmd1.duration_ms();
+        assert!(duration_ms > 1600 && duration_ms < 1700, "Expected ~1667ms, got {}", duration_ms);
+
+        // Second command: explicit duration
+        let cmd2 = &scenario.commands[1];
+        assert_eq!(cmd2.duration_ms(), 5000);
+    }
+
+    #[test]
+    fn test_move_distance_velocities_forward() {
+        // Straight forward: equal wheel distances
+        let cmd = Command::MoveDistance {
+            left_distance_m: 0.6,
+            right_distance_m: 0.6,
+            duration_ms: Some(2000), // 2 seconds
+        };
+
+        let (linear, angular) = cmd.velocities();
+        // vel_left = vel_right = 0.6m / 2s = 0.3 m/s
+        // linear = (0.3 + 0.3) / 2 = 0.3 m/s
+        // angular = (0.3 - 0.3) / 0.233 = 0 rad/s
+        assert!((linear - 0.3).abs() < 1e-6, "Expected linear=0.3, got {}", linear);
+        assert!(angular.abs() < 1e-6, "Expected angular=0, got {}", angular);
+    }
+
+    #[test]
+    fn test_move_distance_velocities_rotation() {
+        // Rotation in place: opposite wheel distances
+        let cmd = Command::MoveDistance {
+            left_distance_m: -0.1165, // half wheel base
+            right_distance_m: 0.1165,
+            duration_ms: Some(1000), // 1 second
+        };
+
+        let (linear, angular) = cmd.velocities();
+        // vel_left = -0.1165 m/s, vel_right = 0.1165 m/s
+        // linear = (-0.1165 + 0.1165) / 2 = 0 m/s
+        // angular = (0.1165 - (-0.1165)) / 0.233 = 0.233 / 0.233 = 1 rad/s
+        assert!(linear.abs() < 1e-6, "Expected linear=0, got {}", linear);
+        assert!((angular - 1.0).abs() < 0.01, "Expected angular=1.0, got {}", angular);
+    }
+
+    #[test]
+    fn test_move_distance_auto_duration() {
+        // Auto-calculated duration based on max wheel velocity (0.3 m/s)
+        let cmd = Command::MoveDistance {
+            left_distance_m: 0.9,
+            right_distance_m: 0.6,
+            duration_ms: None,
+        };
+
+        // Duration based on max distance: 0.9m / 0.3m/s = 3s = 3000ms
+        // Allow for floating point rounding (2999 or 3000)
+        let duration = cmd.duration_ms();
+        assert!(
+            (2999..=3001).contains(&duration),
+            "Expected ~3000ms, got {}",
+            duration
+        );
+
+        // Velocities with ~3s duration
+        let (linear, angular) = cmd.velocities();
+        // vel_left = 0.9/3 = 0.3, vel_right = 0.6/3 = 0.2
+        // linear = (0.3 + 0.2) / 2 = 0.25
+        // angular = (0.2 - 0.3) / 0.233 ≈ -0.429
+        assert!((linear - 0.25).abs() < 0.01);
+        assert!((angular + 0.429).abs() < 0.02);
+    }
+
+    #[test]
+    fn test_rotate_parsing() {
+        let yaml = r#"
+name: "Rotate Test"
+map: "room"
+commands:
+  - type: rotate
+    degrees: 90
+  - type: rotate
+    degrees: -180
+    duration_ms: 3000
+"#;
+        let scenario = Scenario::from_yaml(yaml).unwrap();
+        assert_eq!(scenario.commands.len(), 2);
+
+        // First command: 90° CCW, auto-calculated duration
+        let cmd1 = &scenario.commands[0];
+        assert_eq!(cmd1.rotation_degrees(), Some(90.0));
+
+        // Second command: 180° CW with explicit duration
+        let cmd2 = &scenario.commands[1];
+        assert_eq!(cmd2.rotation_degrees(), Some(-180.0));
+        assert_eq!(cmd2.duration_ms(), 3000);
+    }
+
+    #[test]
+    fn test_rotate_velocities_ccw() {
+        // 90° CCW rotation with explicit duration
+        let cmd = Command::Rotate {
+            degrees: 90.0,
+            duration_ms: Some(1000), // 1 second
+        };
+
+        let (linear, angular) = cmd.velocities();
+        // linear = 0 (pure rotation)
+        // angular = π/2 / 1s ≈ 1.571 rad/s
+        assert!(linear.abs() < 1e-6, "Expected linear=0, got {}", linear);
+        assert!(
+            (angular - std::f32::consts::FRAC_PI_2).abs() < 0.01,
+            "Expected angular≈1.571, got {}",
+            angular
+        );
+    }
+
+    #[test]
+    fn test_rotate_velocities_cw() {
+        // 90° CW rotation (negative degrees)
+        let cmd = Command::Rotate {
+            degrees: -90.0,
+            duration_ms: Some(1000),
+        };
+
+        let (linear, angular) = cmd.velocities();
+        assert!(linear.abs() < 1e-6);
+        assert!(
+            (angular + std::f32::consts::FRAC_PI_2).abs() < 0.01,
+            "Expected angular≈-1.571, got {}",
+            angular
+        );
+    }
+
+    #[test]
+    fn test_rotate_auto_duration() {
+        // 360° rotation with default angular velocity (0.5 rad/s)
+        let cmd = Command::Rotate {
+            degrees: 360.0,
+            duration_ms: None,
+        };
+
+        // Duration = 2π / 0.5 rad/s ≈ 12.566s ≈ 12566ms
+        let duration = cmd.duration_ms();
+        assert!(
+            (12500..=12600).contains(&duration),
+            "Expected ~12566ms, got {}",
+            duration
+        );
+    }
+
+    #[test]
+    fn test_rotate_wheel_distances() {
+        // 360° CCW rotation
+        let cmd = Command::Rotate {
+            degrees: 360.0,
+            duration_ms: None,
+        };
+
+        let (left, right) = cmd.wheel_distances().unwrap();
+        // Arc length = 2π × (0.233/2) ≈ 0.732m
+        // CCW: left backward (-), right forward (+)
+        assert!(
+            (left + 0.732).abs() < 0.01,
+            "Expected left≈-0.732, got {}",
+            left
+        );
+        assert!(
+            (right - 0.732).abs() < 0.01,
+            "Expected right≈0.732, got {}",
+            right
+        );
     }
 }

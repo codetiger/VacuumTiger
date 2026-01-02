@@ -2,7 +2,7 @@
 # Tests scan matching during pure rotation
 
 name: "360 Rotation Test"
-description: "Rotate in place at 0.5 rad/s for full 360 degrees"
+description: "Rotate in place exactly 360 degrees CCW"
 
 map: "medium_room"
 
@@ -11,11 +11,9 @@ seed:
   rotation: true
 
 commands:
-  # Full 360 rotation: 2*PI / 0.5 rad/s = ~12.57 seconds
-  - type: move
-    linear_velocity: 0.0
-    angular_velocity: 0.5
-    duration_ms: 12566
+  # Full 360° CCW rotation in place
+  - type: rotate
+    degrees: 360
 
 svg_output:
   scale: 50.0

@@ -2,7 +2,7 @@
 # Tests scan matching during forward motion
 
 name: "Straight Line Test"
-description: "Move forward at 0.2 m/s for 10 seconds (2m total)"
+description: "Move forward exactly 2 meters using wheel distances"
 
 map: "medium_room"
 
@@ -11,10 +11,10 @@ seed:
   rotation: true
 
 commands:
-  - type: move
-    linear_velocity: 0.2
-    angular_velocity: 0.0
-    duration_ms: 10000
+  # Forward 2m: both wheels travel equal distance
+  - type: move_distance
+    left_distance_m: 2.0
+    right_distance_m: 2.0
 
 svg_output:
   scale: 50.0
