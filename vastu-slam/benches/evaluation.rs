@@ -1,6 +1,7 @@
 //! Benchmark evaluation metrics performance.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 use vastu_slam::LidarScan;
 use vastu_slam::Pose2D;
 use vastu_slam::evaluation::{

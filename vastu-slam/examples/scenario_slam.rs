@@ -341,10 +341,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (linear, angular) = cmd.velocities();
 
         // Determine if this command uses encoder-based or time-based execution
-        let use_encoder_verification = matches!(
-            cmd,
-            Command::MoveDistance { .. } | Command::Rotate { .. }
-        );
+        let use_encoder_verification =
+            matches!(cmd, Command::MoveDistance { .. } | Command::Rotate { .. });
 
         if use_encoder_verification {
             // Get target wheel distances for encoder verification
@@ -407,8 +405,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Check if target achieved (directional - stops before crossing)
                 let left_done =
                     wheel_reached_target(delta_left, expected_left_ticks, ENCODER_TOLERANCE_TICKS);
-                let right_done =
-                    wheel_reached_target(delta_right, expected_right_ticks, ENCODER_TOLERANCE_TICKS);
+                let right_done = wheel_reached_target(
+                    delta_right,
+                    expected_right_ticks,
+                    ENCODER_TOLERANCE_TICKS,
+                );
 
                 if left_done && right_done {
                     log::debug!(

@@ -135,7 +135,10 @@ impl Command {
                     (duration_secs * 1000.0) as u64
                 })
             }
-            Command::Rotate { degrees, duration_ms } => {
+            Command::Rotate {
+                degrees,
+                duration_ms,
+            } => {
                 // Use provided duration or auto-calculate from angular velocity
                 duration_ms.unwrap_or_else(|| {
                     let radians = degrees.to_radians();
@@ -446,7 +449,11 @@ commands:
         let cmd1 = &scenario.commands[0];
         assert_eq!(cmd1.wheel_distances(), Some((0.5, 0.5)));
         let duration_ms = cmd1.duration_ms();
-        assert!(duration_ms > 1600 && duration_ms < 1700, "Expected ~1667ms, got {}", duration_ms);
+        assert!(
+            duration_ms > 1600 && duration_ms < 1700,
+            "Expected ~1667ms, got {}",
+            duration_ms
+        );
 
         // Second command: explicit duration
         let cmd2 = &scenario.commands[1];
@@ -466,7 +473,11 @@ commands:
         // vel_left = vel_right = 0.6m / 2s = 0.3 m/s
         // linear = (0.3 + 0.3) / 2 = 0.3 m/s
         // angular = (0.3 - 0.3) / 0.233 = 0 rad/s
-        assert!((linear - 0.3).abs() < 1e-6, "Expected linear=0.3, got {}", linear);
+        assert!(
+            (linear - 0.3).abs() < 1e-6,
+            "Expected linear=0.3, got {}",
+            linear
+        );
         assert!(angular.abs() < 1e-6, "Expected angular=0, got {}", angular);
     }
 
@@ -484,7 +495,11 @@ commands:
         // linear = (-0.1165 + 0.1165) / 2 = 0 m/s
         // angular = (0.1165 - (-0.1165)) / 0.233 = 0.233 / 0.233 = 1 rad/s
         assert!(linear.abs() < 1e-6, "Expected linear=0, got {}", linear);
-        assert!((angular - 1.0).abs() < 0.01, "Expected angular=1.0, got {}", angular);
+        assert!(
+            (angular - 1.0).abs() < 0.01,
+            "Expected angular=1.0, got {}",
+            angular
+        );
     }
 
     #[test]

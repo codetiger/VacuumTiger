@@ -1,7 +1,8 @@
 //! Benchmark grid operations performance.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::f32::consts::PI;
+use std::hint::black_box;
 use vastu_slam::matching::PrecomputedGrids;
 use vastu_slam::{LidarScan, MapConfig, OccupancyGridMap, Pose2D};
 
