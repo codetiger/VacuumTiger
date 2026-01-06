@@ -35,6 +35,16 @@ heartbeat_interval_ms = 20
 # Default: 60 (provides ~330 RPM / 5.5 Hz scan rate)
 lidar_pwm = 60
 
+# Lidar mounting configuration
+# Defines the physical mounting position of the lidar relative to robot center.
+# SangamIO uses this to transform lidar measurements to robot-centered coordinates
+# before streaming to clients.
+[device.hardware.lidar_mounting]
+offset_x = -0.110       # Lidar X offset from robot center (meters, negative = behind)
+offset_y = 0.0          # Lidar Y offset from robot center (meters, positive = left)
+optical_offset = 0.025  # Optical offset from lidar rotation center (meters)
+angle_offset = 0.2182   # Angle offset from robot forward (radians, ~12.5 degrees)
+
 # Coordinate frame transforms (ROS REP-103)
 # Transforms raw sensor data to standard robot frame:
 #   X = forward (direction robot drives)

@@ -65,7 +65,7 @@
 
 pub mod protocol;
 
-use crate::config::AffineTransform1D;
+use crate::config::{AffineTransform1D, LidarMountingConfig};
 use crate::core::types::{SensorGroupData, SensorValue};
 use crate::error::{Error, Result};
 use protocol::{Delta2DPacketReader, ParseResult};
@@ -95,6 +95,8 @@ pub struct Delta2DDriver {
     error_count: Arc<AtomicU64>,
     /// Angle transform for coordinate frame conversion
     angle_transform: AffineTransform1D,
+    /// Lidar mounting configuration for robot-center transformation
+    lidar_mounting: LidarMountingConfig,
 }
 
 impl Delta2DDriver {
@@ -103,7 +105,12 @@ impl Delta2DDriver {
     /// # Arguments
     /// - `port_path`: Serial port path (e.g., "/dev/ttyS1")
     /// - `angle_transform`: Transform applied to all lidar angles (use `AffineTransform1D::identity()` for no change)
-    pub fn new(port_path: &str, angle_transform: AffineTransform1D) -> Self {
+    /// - `lidar_mounting`: Mounting configuration for robot-center transformation
+    pub fn new(
+        port_path: &str,
+        angle_transform: AffineTransform1D,
+        lidar_mounting: LidarMountingConfig,
+    ) -> Self {
         Self {
             port_path: port_path.to_string(),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -111,6 +118,7 @@ impl Delta2DDriver {
             scan_count: Arc::new(AtomicU64::new(0)),
             error_count: Arc::new(AtomicU64::new(0)),
             angle_transform,
+            lidar_mounting,
         }
     }
 
@@ -134,6 +142,7 @@ impl Delta2DDriver {
         let scan_count = Arc::clone(&self.scan_count);
         let error_count = Arc::clone(&self.error_count);
         let angle_transform = self.angle_transform;
+        let lidar_mounting = self.lidar_mounting.clone();
 
         self.reader_handle = Some(
             thread::Builder::new()
@@ -146,6 +155,7 @@ impl Delta2DDriver {
                         scan_count,
                         error_count,
                         angle_transform,
+                        lidar_mounting,
                     );
                 })
                 .map_err(|e| Error::Other(format!("Failed to spawn lidar thread: {}", e)))?,
@@ -163,6 +173,7 @@ impl Delta2DDriver {
         scan_count: Arc<AtomicU64>,
         error_count: Arc<AtomicU64>,
         angle_transform: AffineTransform1D,
+        lidar_mounting: LidarMountingConfig,
     ) {
         let mut reader = Delta2DPacketReader::with_transform(angle_transform);
         let mut accumulated_points: Vec<(f32, f32, u8)> = Vec::with_capacity(400);
@@ -202,10 +213,14 @@ impl Delta2DDriver {
                                         last_scan_time = Instant::now();
                                     }
 
-                                    // Add this point to accumulator
+                                    // Transform point from lidar frame to robot center frame
+                                    let (new_angle, new_distance) = lidar_mounting
+                                        .transform_to_robot_center(point.angle, point.distance);
+
+                                    // Add transformed point to accumulator
                                     accumulated_points.push((
-                                        point.angle,
-                                        point.distance,
+                                        new_angle,
+                                        new_distance,
                                         point.quality,
                                     ));
                                     last_angle = point.angle;

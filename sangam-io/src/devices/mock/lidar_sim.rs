@@ -1,6 +1,11 @@
 //! Lidar simulator with ray-casting
 //!
 //! Simulates Delta-2D lidar sensor with configurable noise.
+//!
+//! The mock simulator generates lidar data as if measured from robot center,
+//! matching the transformed output of real hardware. This ensures downstream
+//! applications receive consistent robot-centered data regardless of whether
+//! they're connected to real hardware or simulation.
 
 use super::config::LidarConfig;
 use super::map_loader::SimulationMap;
@@ -22,7 +27,12 @@ impl LidarSimulator {
         }
     }
 
-    /// Generate a complete 360° scan
+    /// Generate a complete 360° scan from robot center.
+    ///
+    /// Unlike real hardware which measures from the physical lidar position,
+    /// the mock simulator directly generates robot-centered data. This matches
+    /// the output of real hardware after SangamIO applies the mounting offset
+    /// transformation.
     ///
     /// Returns vector of (angle_rad, distance_m, quality) tuples.
     pub fn generate_scan(
@@ -35,26 +45,15 @@ impl LidarSimulator {
         let mut points = Vec::with_capacity(self.config.num_rays);
         let angle_step = TAU / self.config.num_rays as f32;
 
-        // Compute lidar position in world frame
-        let lidar_x = robot_x + self.config.mounting_x * robot_theta.cos()
-            - self.config.mounting_y * robot_theta.sin();
-        let lidar_y = robot_y
-            + self.config.mounting_x * robot_theta.sin()
-            + self.config.mounting_y * robot_theta.cos();
-
         for i in 0..self.config.num_rays {
-            // Local angle (in lidar frame)
+            // Local angle (in robot frame, 0 = forward)
             let local_angle = i as f32 * angle_step;
 
-            // World angle (including robot orientation and lidar offset)
-            let world_angle = robot_theta + local_angle + self.config.angle_offset;
+            // World angle (robot orientation + local angle)
+            let world_angle = robot_theta + local_angle;
 
-            // Adjust for optical offset (radial offset from lidar center)
-            let ray_ox = lidar_x + self.config.optical_offset * world_angle.cos();
-            let ray_oy = lidar_y + self.config.optical_offset * world_angle.sin();
-
-            // Ray-cast against map
-            let mut distance = map.ray_cast(ray_ox, ray_oy, world_angle, self.config.max_range);
+            // Ray-cast from robot center
+            let mut distance = map.ray_cast(robot_x, robot_y, world_angle, self.config.max_range);
 
             // Apply miss rate (random invalid readings)
             if self.noise.chance(self.config.noise.miss_rate) {

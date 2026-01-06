@@ -131,7 +131,11 @@ impl DeviceDriver for CRL200SDriver {
 
         // Initialize lidar driver
         // Driver starts but lidar motor is OFF - will be enabled via command
-        let mut lidar = Delta2DDriver::new(&hardware.lidar_port, hardware.frame_transforms.lidar);
+        let mut lidar = Delta2DDriver::new(
+            &hardware.lidar_port,
+            hardware.frame_transforms.lidar,
+            hardware.lidar_mounting.clone(),
+        );
         lidar.start(lidar_data)?;
         self.lidar = Some(lidar);
         log::info!("Lidar driver started (motor OFF - enable via command)");

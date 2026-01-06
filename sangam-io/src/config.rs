@@ -193,6 +193,115 @@ pub struct FrameTransforms {
 }
 
 // ============================================================================
+// Lidar Mounting Configuration
+// ============================================================================
+
+/// Lidar mounting configuration for coordinate frame transformation.
+///
+/// SangamIO transforms lidar measurements from the physical lidar position
+/// to robot center before streaming. This ensures downstream applications
+/// receive robot-centered data without needing hardware-specific knowledge.
+///
+/// # Transformation
+///
+/// Given a measurement (angle, range) from the lidar:
+/// 1. Apply angle_offset to get adjusted angle
+/// 2. Account for optical_offset (radial offset within lidar)
+/// 3. Compute point in robot frame using offset_x, offset_y
+/// 4. Convert back to polar coordinates from robot center
+///
+/// # CRL-200S Hardware Values
+///
+/// - offset_x = -0.110m (lidar is 110mm behind robot center)
+/// - offset_y = 0.0m (centered laterally)
+/// - optical_offset = 0.025m (25mm from lidar rotation center to laser)
+/// - angle_offset = 0.2182 rad (~12.5° rotation adjustment)
+#[derive(Debug, Clone, Deserialize)]
+pub struct LidarMountingConfig {
+    /// X offset from robot center (meters, negative = behind)
+    #[serde(default = "default_lidar_offset_x")]
+    pub offset_x: f32,
+
+    /// Y offset from robot center (meters, positive = left)
+    #[serde(default)]
+    pub offset_y: f32,
+
+    /// Optical offset from lidar rotation center (meters)
+    /// Distance from the lidar's rotation axis to the laser emission point
+    #[serde(default = "default_optical_offset")]
+    pub optical_offset: f32,
+
+    /// Angle offset from robot forward (radians)
+    /// Applied after scale/offset transform, before XY transformation
+    #[serde(default = "default_angle_offset")]
+    pub angle_offset: f32,
+}
+
+fn default_lidar_offset_x() -> f32 {
+    -0.110
+}
+
+fn default_optical_offset() -> f32 {
+    0.025
+}
+
+fn default_angle_offset() -> f32 {
+    0.2182
+}
+
+impl Default for LidarMountingConfig {
+    fn default() -> Self {
+        Self {
+            offset_x: default_lidar_offset_x(),
+            offset_y: 0.0,
+            optical_offset: default_optical_offset(),
+            angle_offset: default_angle_offset(),
+        }
+    }
+}
+
+impl LidarMountingConfig {
+    /// Transform a lidar point from lidar frame to robot center frame.
+    ///
+    /// Given a measurement (angle, range) from the physical lidar position,
+    /// computes the equivalent measurement from robot center.
+    ///
+    /// # Arguments
+    /// - `angle`: Ray angle in lidar frame (radians, after scale/offset transform)
+    /// - `range`: Distance measured by lidar (meters)
+    ///
+    /// # Returns
+    /// (new_angle, new_range) as if measured from robot center
+    #[inline]
+    pub fn transform_to_robot_center(&self, angle: f32, range: f32) -> (f32, f32) {
+        use std::f32::consts::TAU;
+
+        // Apply angle offset first
+        let adjusted_angle = angle + self.angle_offset;
+
+        // Account for optical offset (distance from lidar rotation center to laser)
+        // The actual measurement origin is offset radially from lidar mount point
+        let effective_ox = self.offset_x + self.optical_offset * adjusted_angle.cos();
+        let effective_oy = self.offset_y + self.optical_offset * adjusted_angle.sin();
+
+        // Point in robot frame
+        let x = effective_ox + range * adjusted_angle.cos();
+        let y = effective_oy + range * adjusted_angle.sin();
+
+        // Convert to polar from robot center
+        let new_range = (x * x + y * y).sqrt();
+        let mut new_angle = y.atan2(x);
+
+        // Normalize angle to [0, 2π)
+        if new_angle < 0.0 {
+            new_angle += TAU;
+        }
+
+        (new_angle, new_range)
+    }
+}
+
+// ============================================================================
 // Hardware Configuration
 // ============================================================================
 
@@ -244,6 +353,16 @@ pub struct HardwareConfig {
     /// Lower values = slower motor = lower scan rate
     #[serde(default = "default_lidar_pwm")]
     pub lidar_pwm: u8,
+
+    /// Lidar mounting configuration for robot-center transformation
+    ///
+    /// Defines the physical mounting position of the lidar relative to
+    /// robot center. SangamIO uses this to transform lidar measurements
+    /// to robot-centered coordinates before streaming to clients.
+    ///
+    /// **Optional**: Yes (defaults to CRL-200S values)
+    #[serde(default)]
+    pub lidar_mounting: LidarMountingConfig,
 }
 
 fn default_lidar_pwm() -> u8 {

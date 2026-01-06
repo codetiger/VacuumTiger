@@ -277,6 +277,10 @@ impl Default for RobotConfig {
 }
 
 /// Lidar sensor configuration (Delta-2D specifications)
+///
+/// Note: Mounting offset configuration has been moved to hardware config.
+/// The mock simulator generates lidar data as if measured from robot center,
+/// matching the transformed output of real hardware.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LidarConfig {
     /// Number of rays per 360° scan
@@ -295,22 +299,6 @@ pub struct LidarConfig {
     #[serde(default = "default_max_range")]
     pub max_range: f32,
 
-    /// Lidar mounting X offset from robot center (meters, negative = behind)
-    #[serde(default = "default_mounting_x")]
-    pub mounting_x: f32,
-
-    /// Lidar mounting Y offset from robot center (meters)
-    #[serde(default)]
-    pub mounting_y: f32,
-
-    /// Optical offset from lidar center (meters)
-    #[serde(default = "default_optical_offset")]
-    pub optical_offset: f32,
-
-    /// Angle offset from robot forward (radians)
-    #[serde(default = "default_angle_offset")]
-    pub angle_offset: f32,
-
     /// Noise configuration
     #[serde(default)]
     pub noise: LidarNoiseConfig,
@@ -328,15 +316,6 @@ fn default_min_range() -> f32 {
 fn default_max_range() -> f32 {
     8.0
 }
-fn default_mounting_x() -> f32 {
-    -0.110
-}
-fn default_optical_offset() -> f32 {
-    0.025
-}
-fn default_angle_offset() -> f32 {
-    0.2182
-}
 
 impl Default for LidarConfig {
     fn default() -> Self {
@@ -345,10 +324,6 @@ impl Default for LidarConfig {
             scan_rate_hz: default_scan_rate_hz(),
             min_range: default_min_range(),
             max_range: default_max_range(),
-            mounting_x: default_mounting_x(),
-            mounting_y: 0.0,
-            optical_offset: default_optical_offset(),
-            angle_offset: default_angle_offset(),
             noise: LidarNoiseConfig::default(),
         }
     }

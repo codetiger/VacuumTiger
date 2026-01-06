@@ -31,15 +31,13 @@ collision_mode = "stop"           # "stop", "slide", "passthrough" - stop for re
 slide_friction = 0.3       # Used when collision_mode = "slide"
 
 # Lidar configuration (Delta-2D specifications)
+# Note: Mounting offset is handled by hardware config, not simulation.
+# The mock simulator generates robot-centered lidar data directly.
 [device.simulation.lidar]
 num_rays = 360           # Rays per 360° scan
 scan_rate_hz = 5.0       # Scans per second
 min_range = 0.15         # Minimum detection range (meters)
 max_range = 8.0          # Maximum detection range (meters)
-mounting_x = -0.110      # Lidar X offset from robot center (negative = behind)
-mounting_y = 0.0         # Lidar Y offset from robot center
-optical_offset = 0.025   # Optical offset from lidar center
-angle_offset = 0.2182    # Angle offset from robot forward (radians)
 
 [device.simulation.lidar.noise]
 range_stddev = 0.0       # Range measurement noise (disabled for testing)
