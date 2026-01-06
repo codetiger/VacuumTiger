@@ -1,0 +1,21 @@
+# DhruvaNav Configuration
+# Navigation controller for VacuumTiger robot
+
+[connection]
+# SangamIO daemon address
+# Use 127.0.0.1 for local mock device, or robot IP for real hardware
+robot_ip = "127.0.0.1"
+port = 5555
+timeout_ms = 5000
+
+[robot]
+# CRL-200S robot parameters
+wheel_base = 0.233        # Distance between wheels (meters)
+ticks_per_meter = 4464.0  # Encoder ticks per meter of travel
+max_linear_vel = 0.2      # Maximum linear velocity (m/s)
+max_angular_vel = 0.5     # Maximum angular velocity (rad/s)
+
+[output]
+# Output file paths
+map_path = "output/map.vastu"
+svg_path = "output/map.svg"

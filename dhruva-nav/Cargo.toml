@@ -1,0 +1,28 @@
+[package]
+name = "dhruva-nav"
+version = "0.1.0"
+edition = "2024"
+description = "Navigation controller for VacuumTiger robot using VastuSLAM"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "dhruva-nav"
+path = "src/main.rs"
+
+[dependencies]
+vastu-slam = { path = "../vastu-slam" }
+prost = "0.13"
+toml = "0.9"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+
+[build-dependencies]
+prost-build = "0.13"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
