@@ -280,12 +280,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut map = OccupancyGridMap::new(map_config);
 
     // Get matcher config from loaded configuration
-    let mut matcher_config = vastu_config.correlative_matcher_config();
-    // Apply sensor offset from sensor section
-    matcher_config.sensor_offset = (
-        vastu_config.sensor.lidar.offset_x,
-        vastu_config.sensor.lidar.offset_y,
-    );
+    // Note: sensor_offset defaults to (0,0) - SangamIO now sends lidar data
+    // already transformed to robot center coordinates
+    let matcher_config = vastu_config.correlative_matcher_config();
 
     // Tracking state
     let mut trajectory: Vec<Pose2D> = vec![];

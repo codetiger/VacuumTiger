@@ -97,7 +97,7 @@ let config = VastuConfig::default();
 // Direct access to sections
 let resolution = config.grid.resolution;
 let robot_radius = config.sensor.robot.radius;
-let lidar_offset = config.sensor.lidar.offset_x;
+let lidar_range = config.sensor.lidar.max_range;
 
 // Convenient methods
 let radius = config.robot_radius();

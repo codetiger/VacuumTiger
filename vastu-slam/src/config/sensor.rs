@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::WorldPoint;
 use crate::grid::SensorConfig;
 
 use super::defaults;
@@ -32,7 +31,6 @@ impl SensorSection {
     pub fn to_sensor_config(&self) -> SensorConfig {
         SensorConfig {
             robot_radius: self.robot.radius,
-            lidar_offset: WorldPoint::new(self.lidar.offset_x, self.lidar.offset_y),
             confidence_threshold: 3,
             max_lidar_range: self.lidar.max_range,
             min_lidar_range: self.lidar.min_range,
@@ -41,16 +39,11 @@ impl SensorSection {
 }
 
 /// LiDAR settings
+///
+/// Note: Lidar mounting offset is now handled by SangamIO.
+/// VastuSLAM receives robot-centered lidar data directly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LidarSettings {
-    /// Offset X from robot center
-    #[serde(default = "defaults::lidar_offset_x")]
-    pub offset_x: f32,
-
-    /// Offset Y from robot center
-    #[serde(default)]
-    pub offset_y: f32,
-
     /// Minimum valid range
     #[serde(default = "defaults::min_range")]
     pub min_range: f32,
@@ -63,8 +56,6 @@ pub struct LidarSettings {
 impl Default for LidarSettings {
     fn default() -> Self {
         Self {
-            offset_x: -0.110,
-            offset_y: 0.0,
             min_range: 0.15,
             max_range: 8.0,
         }

@@ -59,4 +59,4 @@ pub use pgm::{export_pgm, export_ros_map, export_yaml, write_pgm};
 #[cfg(any(test, feature = "scenario"))]
 pub use scenario::{Command, Scenario, ScenarioError, SeedConfig, StartPose, SvgOutputConfig};
 
-pub use svg::{SvgConfig, SvgVisualizer, markers_by_distance, markers_by_time};
+pub use svg::{DebugMarker, SvgConfig, SvgVisualizer, markers_by_distance, markers_by_time};

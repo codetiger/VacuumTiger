@@ -16,10 +16,6 @@ pub fn enabled() -> bool {
     true
 }
 
-pub fn lidar_offset_x() -> f32 {
-    -0.110
-}
-
 pub fn min_range() -> f32 {
     0.15
 }

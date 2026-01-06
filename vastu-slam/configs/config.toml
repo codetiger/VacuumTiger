@@ -26,10 +26,7 @@ auto_expand = true
 # Sensor Configuration
 # ============================================================================
 [sensor.lidar]
-# Sensor offset from robot center (x forward, y left)
-offset_x = -0.110
-offset_y = 0.0
-
+# Note: Lidar offset is now handled by SangamIO (hardware config)
 # Range limits
 min_range = 0.15
 max_range = 8.0

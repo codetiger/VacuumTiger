@@ -82,6 +82,19 @@ pub struct Trajectory {
     pub marker_indices: Vec<usize>,
 }
 
+/// Debug marker for visualization
+#[derive(Clone, Debug)]
+pub struct DebugMarker {
+    /// Position in world coordinates
+    pub position: WorldPoint,
+    /// Radius in pixels
+    pub radius: f32,
+    /// Fill color
+    pub color: String,
+    /// Optional label
+    pub label: Option<String>,
+}
+
 /// SVG visualization builder
 pub struct SvgVisualizer {
     config: SvgConfig,
@@ -95,6 +108,12 @@ pub struct SvgVisualizer {
     odom_trajectory: Option<Trajectory>,
     /// Title to display
     title: Option<String>,
+    /// Debug markers (waypoints, frontiers, etc.)
+    debug_markers: Vec<DebugMarker>,
+    /// Whether frontiers were added (for legend)
+    has_frontiers: bool,
+    /// Whether waypoints were added (for legend)
+    has_waypoints: bool,
 }
 
 impl SvgVisualizer {
@@ -107,6 +126,9 @@ impl SvgVisualizer {
             est_trajectory: None,
             odom_trajectory: None,
             title: None,
+            debug_markers: Vec::new(),
+            has_frontiers: false,
+            has_waypoints: false,
         }
     }
 
@@ -149,6 +171,44 @@ impl SvgVisualizer {
         self
     }
 
+    /// Add waypoints as small markers
+    pub fn with_waypoints(mut self, waypoints: Vec<WorldPoint>) -> Self {
+        if !waypoints.is_empty() {
+            self.has_waypoints = true;
+            for wp in waypoints {
+                self.debug_markers.push(DebugMarker {
+                    position: wp,
+                    radius: 3.0,
+                    color: "#FF8800".to_string(), // Orange for waypoints
+                    label: None,
+                });
+            }
+        }
+        self
+    }
+
+    /// Add frontier targets as larger markers
+    pub fn with_frontiers(mut self, frontiers: Vec<WorldPoint>) -> Self {
+        if !frontiers.is_empty() {
+            self.has_frontiers = true;
+            for (i, frontier) in frontiers.into_iter().enumerate() {
+                self.debug_markers.push(DebugMarker {
+                    position: frontier,
+                    radius: 6.0,
+                    color: "#00AA00".to_string(), // Green for frontiers
+                    label: Some(format!("F{}", i + 1)),
+                });
+            }
+        }
+        self
+    }
+
+    /// Add custom debug markers
+    pub fn with_markers(mut self, markers: Vec<DebugMarker>) -> Self {
+        self.debug_markers.extend(markers);
+        self
+    }
+
     /// Render to SVG string
     pub fn render(&self) -> String {
         let mut svg = String::new();
@@ -160,7 +220,25 @@ impl SvgVisualizer {
 
         let padding = self.config.padding;
         let title_height = if self.title.is_some() { 30.0 } else { 0.0 };
-        let legend_height = 100.0;
+
+        // Calculate dynamic legend height based on entries
+        let mut left_entries = 0;
+        if self.gt_trajectory.is_some() {
+            left_entries += 1;
+        }
+        if self.est_trajectory.is_some() {
+            left_entries += 1;
+        }
+        if self.odom_trajectory.is_some() {
+            left_entries += 1;
+        }
+        if self.has_frontiers {
+            left_entries += 1;
+        }
+        if self.has_waypoints {
+            left_entries += 1;
+        }
+        let legend_height = (left_entries.max(3) * 20 + 25) as f32 + 10.0; // +10 for margin
 
         let width = map_width_px + 2.0 * padding;
         let height = map_height_px + 2.0 * padding + title_height + legend_height;
@@ -212,6 +290,9 @@ impl SvgVisualizer {
         if let Some(ref traj) = self.gt_trajectory {
             self.render_trajectory(&mut svg, traj, min_world, map_height_px);
         }
+
+        // Render debug markers (waypoints, frontiers)
+        self.render_debug_markers(&mut svg, min_world, map_height_px);
 
         writeln!(&mut svg, "  </g>").unwrap();
 
@@ -337,6 +418,38 @@ impl SvgVisualizer {
         writeln!(svg, "    </g>").unwrap();
     }
 
+    /// Render debug markers (waypoints, frontiers, etc.)
+    fn render_debug_markers(&self, svg: &mut String, min_world: WorldPoint, height_px: f32) {
+        if self.debug_markers.is_empty() {
+            return;
+        }
+
+        writeln!(svg, r#"    <g id="debug-markers">"#).unwrap();
+
+        for marker in &self.debug_markers {
+            let px = (marker.position.x - min_world.x) * self.config.scale;
+            let py = height_px - (marker.position.y - min_world.y) * self.config.scale;
+
+            // Draw circle marker
+            writeln!(
+                svg,
+                r#"      <circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" stroke="white" stroke-width="1" opacity="0.8"/>"#,
+                px, py, marker.radius, marker.color
+            ).unwrap();
+
+            // Draw label if present
+            if let Some(ref label) = marker.label {
+                writeln!(
+                    svg,
+                    r##"      <text x="{:.1}" y="{:.1}" font-family="sans-serif" font-size="10" fill="{}" text-anchor="middle" dy="-8">{}</text>"##,
+                    px, py, marker.color, label
+                ).unwrap();
+            }
+        }
+
+        writeln!(svg, "    </g>").unwrap();
+    }
+
     /// Render legend
     fn render_legend(&self, svg: &mut String, svg_width: f32, y_offset: f32) {
         writeln!(
@@ -345,17 +458,39 @@ impl SvgVisualizer {
             y_offset
         ).unwrap();
 
+        // Count left-side entries to calculate legend height
+        let mut left_entries = 0;
+        if self.gt_trajectory.is_some() {
+            left_entries += 1;
+        }
+        if self.est_trajectory.is_some() {
+            left_entries += 1;
+        }
+        if self.odom_trajectory.is_some() {
+            left_entries += 1;
+        }
+        if self.has_frontiers {
+            left_entries += 1;
+        }
+        if self.has_waypoints {
+            left_entries += 1;
+        }
+
+        // Legend height: 20px per entry + 20px padding
+        let legend_height = (left_entries.max(3) * 20 + 25) as f32;
+
         // Legend background
         writeln!(
             svg,
-            r##"    <rect x="10" y="0" width="{:.0}" height="85" fill="white" stroke="#CCC" stroke-width="1" rx="4"/>"##,
-            svg_width - 20.0
+            r##"    <rect x="10" y="0" width="{:.0}" height="{:.0}" fill="white" stroke="#CCC" stroke-width="1" rx="4"/>"##,
+            svg_width - 20.0,
+            legend_height
         ).unwrap();
 
         let mut entry_y = 20.0;
 
-        // Legend entries
-        let entries = [
+        // Trajectory legend entries (lines)
+        let traj_entries = [
             (
                 self.gt_trajectory.as_ref(),
                 "Ground Truth",
@@ -373,7 +508,7 @@ impl SvgVisualizer {
             ),
         ];
 
-        for (traj_opt, label, color) in entries {
+        for (traj_opt, label, color) in traj_entries {
             if traj_opt.is_some() {
                 // Color line
                 writeln!(
@@ -393,6 +528,38 @@ impl SvgVisualizer {
 
                 entry_y += 20.0;
             }
+        }
+
+        // Debug marker legend entries (circles)
+        if self.has_frontiers {
+            // Green circle for frontiers
+            writeln!(
+                svg,
+                r##"    <circle cx="35" cy="{:.0}" r="6" fill="#00AA00" stroke="white" stroke-width="1"/>"##,
+                entry_y
+            ).unwrap();
+            writeln!(
+                svg,
+                r##"    <text x="60" y="{:.0}" fill="#333">Frontier Targets</text>"##,
+                entry_y + 4.0
+            )
+            .unwrap();
+            entry_y += 20.0;
+        }
+
+        if self.has_waypoints {
+            // Orange circle for waypoints
+            writeln!(
+                svg,
+                r##"    <circle cx="35" cy="{:.0}" r="3" fill="#FF8800" stroke="white" stroke-width="1"/>"##,
+                entry_y
+            ).unwrap();
+            writeln!(
+                svg,
+                r##"    <text x="60" y="{:.0}" fill="#333">Path Waypoints</text>"##,
+                entry_y + 4.0
+            )
+            .unwrap();
         }
 
         // Map legend (right side)

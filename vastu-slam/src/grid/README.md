@@ -142,9 +142,9 @@ pub struct GridConfig {
 }
 
 // Robot and sensor parameters
+// Note: Lidar offset is now handled by SangamIO
 pub struct SensorConfig {
     pub robot_radius: f32,      // 0.17m
-    pub lidar_offset: WorldPoint, // (-0.11, 0) from center
     pub max_lidar_range: f32,   // 8.0m
     pub min_lidar_range: f32,   // 0.15m
 }

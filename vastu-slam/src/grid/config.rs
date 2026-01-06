@@ -85,13 +85,13 @@ impl GridConfig {
 }
 
 /// Sensor configuration for grid updates
+///
+/// Note: Lidar mounting offset is now handled by SangamIO.
+/// VastuSLAM receives robot-centered lidar data directly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SensorConfig {
     /// Robot radius in meters (for obstacle inflation)
     pub robot_radius: f32,
-
-    /// Lidar mounting offset from robot center (x, y) in robot frame
-    pub lidar_offset: WorldPoint,
 
     /// How many observations needed for a cell to be "confident"
     pub confidence_threshold: u8,
@@ -107,7 +107,6 @@ impl Default for SensorConfig {
     fn default() -> Self {
         Self {
             robot_radius: 0.17,
-            lidar_offset: WorldPoint::new(-0.110, 0.0), // From SangamIO CRL-200S config
             confidence_threshold: 3,
             max_lidar_range: 8.0,
             min_lidar_range: 0.15,

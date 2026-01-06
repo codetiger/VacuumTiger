@@ -143,13 +143,13 @@ fn test_map_quality_with_room() {
     let config = MapConfig::default();
     let mut map = OccupancyGridMap::new(config);
 
-    // Create a simple room map
-    let scan = common::room_scan(6.0, 6.0, 3.0, 3.0, 360);
+    // Create room with robot at center
+    // Multiple observations at same position to accumulate log-odds
+    let pose = Pose2D::new(3.0, 3.0, 0.0);
 
-    // Multiple observations for better quality
-    for i in 0..10 {
-        let angle = i as f32 * 0.1;
-        let pose = Pose2D::new(3.0, 3.0, angle);
+    for _ in 0..10 {
+        // Generate fresh scan for each observation (robot-centered)
+        let scan = common::room_scan(6.0, 6.0, 3.0, 3.0, 360);
         map.observe_lidar(&scan, pose);
     }
 

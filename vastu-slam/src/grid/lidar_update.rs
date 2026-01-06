@@ -43,8 +43,9 @@ pub fn update_from_lidar(
     // Pre-allocate with typical capacity to avoid reallocations
     let mut new_wall_coords: Vec<GridCoord> = Vec::with_capacity(32);
 
-    // Calculate sensor position in world frame
-    let sensor_pos = robot_pose.transform_point(sensor_config.lidar_offset);
+    // Use robot position directly - lidar data is already robot-centered
+    // (SangamIO transforms lidar measurements to robot center before streaming)
+    let sensor_pos = WorldPoint::new(robot_pose.x, robot_pose.y);
     let mut sensor_coord = storage.world_to_grid(sensor_pos);
 
     // Process each ray
@@ -275,9 +276,9 @@ mod tests {
         assert!(result.cells_floor > 0);
 
         // Check walls in 4 directions
-        // Note: sensor offset moves the lidar backwards
+        // Lidar data is now robot-centered (no offset adjustment needed)
         let check_points = [
-            WorldPoint::new(1.0 - 0.110, 0.0), // Forward (adjusted for lidar offset)
+            WorldPoint::new(1.0, 0.0), // Forward (at 1m from robot center)
         ];
 
         for point in &check_points {
