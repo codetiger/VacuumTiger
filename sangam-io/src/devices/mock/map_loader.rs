@@ -155,7 +155,8 @@ impl SimulationMap {
     pub fn pixel_to_world(&self, px: u32, py: u32) -> (f32, f32) {
         let x = self.origin.0 + (px as f32 + 0.5) * self.resolution;
         // Y is inverted: bottom of image = origin, top of image = +Y
-        let y = self.origin.1 + (self.pixels.height() as f32 - 1.0 - py as f32 + 0.5) * self.resolution;
+        let y =
+            self.origin.1 + (self.pixels.height() as f32 - 1.0 - py as f32 + 0.5) * self.resolution;
         (x, y)
     }
 
